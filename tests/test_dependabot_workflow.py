@@ -142,7 +142,7 @@ class DependabotReusableWorkflow(unittest.TestCase):
                                          'full SHA pin plus version comment required')
 
     def test_readme_documents_the_thin_caller_contract(self):
-        readme = (ROOT / 'docs/workflows.md').read_text()
+        readme = (ROOT / 'README.md').read_text()
         for fragment in ['pull_request_target:', '[opened, synchronize, reopened, ready_for_review]',
                          'group: dependabot-${{ github.event.pull_request.number }}',
                          'cancel-in-progress: true',

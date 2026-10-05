@@ -69,7 +69,7 @@ usage: release.sh prepare <version> <source-sha> [--push]
               current tip of origin/main
   --push      push the candidate branch (default: print, push nothing)
 
-Publication is a separate, manual stage -- see docs/releases.md.
+Publication is a separate, manual stage -- see https://github.com/nicodes/docs/blob/main/tools/history/import-2026-10-05/docs/releases.md.
 USAGE
 	exit 2
 }

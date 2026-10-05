@@ -22,4 +22,4 @@ class ForwardRestoration(unittest.TestCase):
         # that had one would be an uninventoried duplicate free to drift.
         self.assertTrue((ROOT / "helpers/postgres-recovery.py").is_file())
         if not VENDORED:
-            self.assertTrue((ROOT / "docs/postgresql-recovery.md").is_file())
+            self.assertTrue((ROOT / "README.md").is_file())

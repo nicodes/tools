@@ -151,7 +151,7 @@ class ToolWatchWorkflowTests(unittest.TestCase):
         # (fleet: sampleconsole tool-watch run 35528234060).
         self.assertNotIn('concurrency', self.watch)
         self.assertEqual(self.watch['timeout-minutes'], 40)
-        readme = (ROOT/'docs/workflows.md').read_text()
+        readme = (ROOT/'README.md').read_text()
         section = readme[readme.index('### Caller contract: tool watch'):
                          readme.index('### What this repository changed')]
         flat = ' '.join(section.split())
@@ -225,7 +225,7 @@ class CallerContractFloorTests(unittest.TestCase):
     therefore publish a permission floor covering every called job."""
 
     def readme_slice(self, begin, end):
-        text = (ROOT/'docs/workflows.md').read_text()
+        text = (ROOT/'README.md').read_text()
         return ' '.join(text[text.index(begin):text.index(end)].split())
 
     def test_vuln_floor_covers_every_called_job_permission(self):

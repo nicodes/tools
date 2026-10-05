@@ -88,7 +88,7 @@ class ReusableBackupWorkflow(unittest.TestCase):
         for job in self.document['jobs'].values():
             floor.update(job.get('permissions') or {})
         self.assertEqual(floor, {'contents', 'issues'})
-        readme = (ROOT/'docs/workflows.md').read_text()
+        readme = (ROOT/'README.md').read_text()
         section = readme[readme.index('## Reusable backup workflow'):
                          readme.index('<!-- ws1: reusable-backup end -->')]
         snippet = section[section.index('permissions:'):section.index('jobs:')]
@@ -96,7 +96,7 @@ class ReusableBackupWorkflow(unittest.TestCase):
         self.assertIn('issues: write', snippet)
 
     def test_readme_pins_the_startup_failure_contract(self):
-        readme = (ROOT/'docs/workflows.md').read_text()
+        readme = (ROOT/'README.md').read_text()
         section = readme[readme.index('## Reusable backup workflow'):
                          readme.index('<!-- ws1: reusable-backup end -->')]
         flat = ' '.join(section.split())
@@ -130,7 +130,7 @@ class ReusableBackupWorkflow(unittest.TestCase):
             self.assertNotIn('concurrency', job_body)
 
     def test_readme_requires_the_caller_owned_concurrency_contract(self):
-        readme = (ROOT/'docs/workflows.md').read_text()
+        readme = (ROOT/'README.md').read_text()
         section = readme[readme.index('## Reusable backup workflow'):
                          readme.index('<!-- ws1: reusable-backup end -->')]
         flat = ' '.join(section.split())
