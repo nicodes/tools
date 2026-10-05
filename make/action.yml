@@ -1,0 +1,78 @@
+name: Engineering stage
+description: Run canonical Make targets through the caller-owned contract
+inputs:
+  target:
+    description: Space-separated canonical verification targets
+    required: true
+  build-cache:
+    description: Restore explicitly selected BuildKit component caches
+    required: false
+    default: 'false'
+  go-cache:
+    description: Reuse native Go compiler entries; opt in only when external library inputs are bound
+    required: false
+    default: 'false'
+  web-cache:
+    description: Restore separately bound Expo compiler caches; always rebuild and verify outputs
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Restore native Go compiler entries
+      if: inputs.go-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/fleet-go-compiler
+        key: gocompiler-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('.mise.toml', '**/go.mod', '**/go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          gocompiler-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('.mise.toml', '**/go.mod', '**/go.sum') }}-
+    - name: Restore web compiler transforms
+      if: inputs.web-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ runner.temp }}/fleet-webcompiler/*/metro-cache
+          ${{ runner.temp }}/fleet-webcompiler/*/state.json
+        key: webcompiler-v2-${{ runner.os }}-${{ github.repository }}-${{ github.sha }}
+        restore-keys: |
+          webcompiler-v2-${{ runner.os }}-${{ github.repository }}-
+    - name: Restore component layer caches
+      if: inputs.build-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/fleet-buildkit
+        key: layers-${{ runner.os }}-${{ github.repository }}-${{ github.sha }}
+        restore-keys: |
+          layers-${{ runner.os }}-${{ github.repository }}-
+    - name: Prepare the cache-capable builder
+      if: inputs.build-cache == 'true'
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+    - name: Run the engineering contract
+      shell: bash
+      env:
+        ENGINEERING_TARGET: ${{ inputs.target }}
+        CACHE_ENABLED: ${{ inputs.build-cache }}
+        WEB_CACHE_ENABLED: ${{ inputs.web-cache }}
+        GO_CACHE_ENABLED: ${{ inputs.go-cache }}
+      run: |
+        set -euo pipefail
+        target_pattern='^[a-z][a-z0-9]*(-[a-z0-9]+)*( [a-z][a-z0-9]*(-[a-z0-9]+)*)*$'
+        [[ "$ENGINEERING_TARGET" =~ $target_pattern ]] || { echo 'Malformed target list' >&2; exit 1; }
+        read -r -a targets <<< "$ENGINEERING_TARGET"
+        for target in "${targets[@]}"; do
+          case "$target" in
+            install|lint|unit|integration|test|build|artifact-check|browser-install|e2e|vuln|check) ;;
+            *) echo 'Unknown verification target' >&2; exit 1 ;;
+          esac
+        done
+        if [ "$CACHE_ENABLED" = true ]; then
+          export FLEET_BUILDKIT_CACHE="$RUNNER_TEMP/fleet-buildkit"
+        fi
+        if [ "${WEB_CACHE_ENABLED:-false}" = true ]; then
+          export FLEET_WEB_CACHE="$RUNNER_TEMP/fleet-webcompiler"
+        fi
+        if [ "${GO_CACHE_ENABLED:-false}" = true ]; then
+          export GOCACHE="$RUNNER_TEMP/fleet-go-compiler"
+        fi
+        make -- "${targets[@]}"

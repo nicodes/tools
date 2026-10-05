@@ -1,0 +1,159 @@
+name: Backup
+# Encrypted backup transport. Callers own concurrency, slugs and SSH targets.
+# Grant contents: read and issues: write and map the three named secrets.
+"on":
+  workflow_call:
+    inputs:
+      allowed-products:
+        description: Reviewed JSON array of permitted backup project slugs
+        type: string
+        required: true
+      product:
+        description: Caller-owned project slug naming the backup objects
+        type: string
+        required: true
+      server:
+        description: Caller's server URL variable expression (vars.SERVER_HOST or vars.KOMIZO_SERVER_URL)
+        type: string
+        required: true
+      user:
+        description: SSH deploy user for the verified-snapshot connection
+        type: string
+        required: true
+    secrets:
+      KOMIZO_DEPLOY_KEY:
+        description: Repo-level SSH deploy key for the verified-snapshot connection
+        required: true
+      BACKUP_S3_ACCESS_KEY:
+        description: Repo-level object-storage access key for the sealed-pair PUT
+        required: true
+      BACKUP_S3_SECRET_KEY:
+        description: Repo-level object-storage secret key for the sealed-pair PUT
+        required: true
+permissions:
+  contents: read
+jobs:
+  backup:
+    name: Backup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+        timeout-minutes: 3
+      - name: Connect for the verified snapshot
+        # v0.0.11 is the fleet-proven pin (every per-product backup and both
+        # green reusable callers run it); its connect/ tree is byte-identical
+        # to v0.0.10's, so this bump changes no behavior and removes the
+        # stale-pin suspect from incident matrices.
+        uses: nicodes/komizo-actions/connect@b032fc88f82233f1c060e238bc60b2888a913490 # v0.0.11
+        env:
+          KOMIZO_SERVER_URL: "${{ inputs.server }}"
+          KOMIZO_DEPLOY_KEY: "${{ secrets.KOMIZO_DEPLOY_KEY }}"
+          KOMIZO_KNOWN_HOSTS: "${{ vars.KOMIZO_KNOWN_HOSTS }}"
+        with:
+          user: "${{ inputs.user }}"
+        timeout-minutes: 3
+      # The product's export script sources scripts/engineering-env.sh, which
+      # since the 2026-10-01 fleet change resolves the helpers through mise
+      # rather than a vendored copy. CD got this step in the same change; this
+      # workflow did not, so every nightly backup since has died on
+      # "mise: command not found" -- five products, three days, no snapshot.
+      # The scheduled run is the only caller, so no pull request could have
+      # caught it.
+      - name: Install and locate the engineering snapshot
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install_args: http:cicd-engineering
+        timeout-minutes: 5
+      - name: Verify and encrypt the pre-deploy snapshot
+        timeout-minutes: 15
+        run: bash scripts/export-backup.sh
+      - name: Check out the pinned cicd helper source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nicodes/tools
+          ref: 9f50dfcc59b5eadac3bc85ad6404d2df87b77fba # backup helpers with the 404-as-absent PUT fix (bump-along rule, see README)
+          path: .cicd
+          sparse-checkout: helpers
+          persist-credentials: false
+        timeout-minutes: 3
+      - name: Put the encrypted snapshot in object storage
+        timeout-minutes: 10
+        env:
+          BACKUP_ALLOWED_SLUGS: ${{ inputs.allowed-products }}
+          BACKUP_S3_ACCESS_KEY: "${{ secrets.BACKUP_S3_ACCESS_KEY }}"
+          BACKUP_S3_SECRET_KEY: "${{ secrets.BACKUP_S3_SECRET_KEY }}"
+          BACKUP_S3_HOSTNAME: "${{ vars.BACKUP_S3_HOSTNAME }}"
+          BACKUP_S3_BUCKET: "${{ vars.BACKUP_S3_BUCKET }}"
+        run: |
+          set -euo pipefail
+          umask 077
+          cms=.artifacts/backup/export/snapshot.cms
+          receipt=.artifacts/backup/export/receipt.json
+          taken_at="$(python3 - "$receipt" <<'PY'
+          import json
+          import sys
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          try:
+              envelope = json.loads(path.read_text())
+          except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+              raise SystemExit(f'cannot read backup receipt: {error}') from error
+          value = envelope.get('verified_at') if isinstance(envelope, dict) else None
+          if isinstance(value, str) and value.strip():
+              text = value.strip()
+              if text.endswith('Z'):
+                  text = text[:-1] + '+00:00'
+              try:
+                  stamp = datetime.fromisoformat(text)
+              except ValueError as error:
+                  raise SystemExit(f'invalid receipt verified_at: {value!r}') from error
+              if stamp.tzinfo is None:
+                  stamp = stamp.replace(tzinfo=timezone.utc)
+              stamp = stamp.astimezone(timezone.utc)
+          else:
+              stamp = datetime.now(timezone.utc)
+          print(stamp.strftime('%Y%m%dT%H%M%SZ'))
+          PY
+          )"
+          python3 .cicd/helpers/upload-backup.py --slug "${{ inputs.product }}" \
+            --cms "$cms" --receipt "$receipt" --taken-at "$taken_at"
+      - name: Store the encrypted snapshot off host
+        timeout-minutes: 10
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: "backup-${{ github.run_id }}-${{ github.run_attempt }}"
+          path: .artifacts/backup/export/
+          if-no-files-found: error
+          retention-days: 30
+  report:
+    name: Report failure
+    needs:
+      - backup
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out the pinned cicd helper source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nicodes/tools
+          ref: 9f50dfcc59b5eadac3bc85ad6404d2df87b77fba # backup helpers with the 404-as-absent PUT fix (bump-along rule, see README)
+          path: .cicd
+          sparse-checkout: helpers
+          persist-credentials: false
+        timeout-minutes: 3
+      - run: python3 .cicd/helpers/report-failure.py
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        timeout-minutes: 2

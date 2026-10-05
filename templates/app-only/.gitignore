@@ -1,0 +1,15 @@
+# Common generated output. Extend with documented product-local state paths.
+node_modules/
+.expo/
+.artifacts/
+.local/
+__pycache__/
+*.pyc
+app/dist/
+app/dist-e2e/
+app/dist-check/
+app/playwright-report/
+app/test-results/
+.env
+.env.*
+!.env.example

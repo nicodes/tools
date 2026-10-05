@@ -1,0 +1,55 @@
+name: Tool watch
+# Tool watch. Callers own schedules and concurrency.
+# Grant contents: read and issues: write; under-granted callers fail before jobs start.
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  watch:
+    name: Tool watch
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    # Concurrency is CALLER-owned: the caller keeps its workflow-level
+    # `tool-watch` group (`cancel-in-progress: false`) and this job declares
+    # none — a called job naming the caller's group queues behind the
+    # still-running caller and fails with zero steps, no runner and no
+    # annotation.
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+        timeout-minutes: 3
+      - name: Check out the shared report helper
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nicodes/tools
+          ref: 9f50dfcc59b5eadac3bc85ad6404d2df87b77fba # report-failure helper with the portfolio identity widening (bump-along rule, see README)
+          path: .cicd
+          persist-credentials: false
+          sparse-checkout: helpers/
+        timeout-minutes: 3
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+        timeout-minutes: 15
+      - run: python3 .cicd/helpers/watch-tools.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 12
+      - name: Retain the complete update inventory
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tool-updates
+          path: .artifacts/tool-updates.json
+          if-no-files-found: ignore
+          retention-days: 30
+        timeout-minutes: 5
+      - if: failure()
+        run: python3 .cicd/helpers/report-failure.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+        timeout-minutes: 3

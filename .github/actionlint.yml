@@ -1,0 +1,9 @@
+# GitHub supports concurrency.queue:max since May 7, 2026; actionlint 1.7.12
+# lacks the schema. Suppress only that diagnostic in the listed workflows.
+# tests/test_backup_workflow.py validates queue=max and cancel-in-progress=false.
+# Remove these entries when the pinned linter supports the documented field.
+# https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+paths:
+  .github/workflows/backup.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section.*'

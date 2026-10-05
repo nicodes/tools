@@ -1,0 +1,24 @@
+name: Dependency Policy
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  review:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require human review under the existing shared-library policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |-
+          gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json state,isDraft,headRefOid,statusCheckRollup
+          printf "%s\n" "Shared-library dependency updates remain owner-reviewed; no approval or merge is performed." >> "$GITHUB_STEP_SUMMARY"

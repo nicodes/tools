@@ -1,0 +1,64 @@
+name: Test
+description: >
+  Is this commit good. Nothing is published here; a failure means the site
+  is wrong, not that the pipeline is.
+
+  Runs AFTER ../build, because everything it asserts is a property of
+  ./dist. A static site has two ways to be broken that matter -- it did not
+  build, and it built the wrong thing -- and only the second one needs a
+  test.
+
+  The two steps below are the common assertions, shared by every adopter.
+  The product's own assertions -- which routes must exist, what content must
+  be on them -- are added to this file by the product. That is the part
+  worth keeping per-repo.
+
+runs:
+  using: composite
+  steps:
+    # Lint and format, against the biome.json copied verbatim from the
+    # archetype: one canonical configuration for every web repository, so
+    # style is a fleet property rather than a per-repo debate. The engine
+    # is @biomejs/biome, pinned as an exact devDependency in the product's
+    # package.json and installed by ../build's frozen install, which runs
+    # before this action in the Test job -- `bun x` resolves that local
+    # binary, so the gate always runs the pinned version, never a resolved
+    # latest. A source assertion, so it goes first: it needs nothing from
+    # ./dist and is cheaper than the assertions that do.
+    - name: Lint and format are canonical
+      shell: bash
+      run: bun x biome check
+
+    # A build that emits nothing still "succeeds", so the artefact is
+    # checked rather than the exit code.
+    - name: The page was actually written
+      shell: bash
+      run: test -s dist/index.html
+
+    # The point of these sites is that they ship no JavaScript. Nothing else
+    # would notice an integration being added back, and by then the page has
+    # a runtime it did not need.
+    #
+    # This looks at the tree rather than grepping index.html for a
+    # <script src>: a bundle that is emitted but not yet referenced is still
+    # a runtime that arrived -- the emitting is the change worth catching,
+    # and the reference usually follows in the same commit.
+    - name: No JavaScript was shipped
+      shell: bash
+      run: |
+        if find dist -name '*.js' | grep -q .; then
+          echo "::error::dist contains JavaScript -- this site is meant to ship none"
+          find dist -name '*.js'
+          exit 1
+        fi
+
+    # PER-REPO ASSERTIONS GO HERE, as further steps in this action. Example
+    # for a multi-page site: every route is
+    # checked, because a broken route is invisible from the index alone.
+    #
+    #   - name: Every page was actually written
+    #     shell: bash
+    #     run: |
+    #       for page in index devtools/index games/index; do
+    #         test -s "dist/$page.html" || { echo "dist/$page.html is missing or empty"; exit 1; }
+    #       done
