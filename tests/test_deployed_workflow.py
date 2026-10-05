@@ -98,7 +98,7 @@ class DeployedReusableWorkflow(unittest.TestCase):
                          'failure output stays fleet-generic; provenance lives in the header comments')
 
     def test_readme_documents_the_thin_caller_contract(self):
-        readme = (ROOT/'docs/workflows.md').read_text()
+        readme = (ROOT/'README.md').read_text()
         section = readme[readme.index('<!-- ws13/deployed-reusable: begin -->'):
                          readme.index('<!-- ws13/deployed-reusable: end -->')]
         flat = ' '.join(section.split())
