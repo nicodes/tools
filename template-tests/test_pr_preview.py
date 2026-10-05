@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 WORKFLOW = Path(__file__).parents[1] / 'templates' / 'pr-preview.yml'
-README = Path(__file__).parents[1] / 'templates' / 'README.md'
+README = Path(__file__).parents[1] / 'README.md'
 # Template pin is a package dependency; fleet adoption policy lives externally.
 
 GUARD = 'github.event.pull_request.head.repo.full_name == github.repository'
