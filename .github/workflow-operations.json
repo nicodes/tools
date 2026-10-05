@@ -1,0 +1,12 @@
+{
+  "security-scan": {
+    "commands": [
+      [
+        "make",
+        "install",
+        "integration"
+      ]
+    ],
+    "timeout_seconds": 7200
+  }
+}

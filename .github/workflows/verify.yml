@@ -1,0 +1,49 @@
+name: Engineering verification
+on:
+  workflow_call:
+    inputs:
+      runner:
+        type: string
+        default: ubuntu-24.04
+      build-variant:
+        type: string
+        default: production
+permissions:
+  contents: read
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+      - run: make install
+      - run: make lint test vuln
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: test-evidence-${{ github.sha }}
+          path: .artifacts/contract
+          if-no-files-found: error
+  build:
+    name: Build
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 110
+    env:
+      BUILD_VARIANT: ${{ inputs.build-variant }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+      - run: make install
+      - run: make build artifact-check e2e
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: build-evidence-${{ github.sha }}
+          path: .artifacts/contract
+          if-no-files-found: error

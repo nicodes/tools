@@ -1,0 +1,162 @@
+name: Release
+
+# The publish half. See docs/releases.md.
+#
+# PREPARE IS NOT HERE, and cannot be. The candidate commit edits files under
+# .github/workflows, and GITHUB_TOKEN is refused when it tries to push one:
+#
+#   refusing to allow a GitHub App to create or update workflow
+#   `.github/workflows/backup.yml` without `workflows` permission
+#
+# That permission is not grantable to the job token; it needs a PAT or an App
+# credential. komizo-actions runs its prepare in Actions because what it
+# rewrites is */action.yml, which is not a workflow file -- the same design
+# does not transfer. So prepare runs on the operator's machine, with the
+# operator's own push rights, and this workflow does the half that only needs
+# to write a tag.
+#
+# This workflow never moves a tag and never pushes to main.
+#
+# The pin rewriting and the input checking live in scripts/release.sh, not
+# here. They are the parts with sharp edges, they are written down once, and a
+# YAML copy of them would be a second answer to "what does a release contain"
+# that drifts from the first.
+#
+# publish is deliberately separate from prepare, and takes the MERGED sha
+# rather than the candidate's. A candidate is a proposal; what gets tagged is
+# what review actually accepted, and the tree check below is what makes those
+# the same thing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: vX.Y.Z — unused, and identical across both stages
+        required: true
+        type: string
+      sha:
+        description: the full merge commit of the candidate PR
+        required: true
+        type: string
+      pr:
+        description: the merged candidate PR number
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Verify the candidate was merged here, tested, and unchanged
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          MERGED_SHA: ${{ inputs.sha }}
+          PR: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be vX.Y.Z"; exit 1; }
+          [[ "$MERGED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full 40-hex commit"; exit 1; }
+          [[ "$PR" =~ ^[0-9]+$ ]] || { echo "::error::publish requires the merged candidate PR number"; exit 1; }
+
+          # A tag is never moved. An existing one is not an error to work
+          # around; it means this version already shipped.
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::$VERSION already exists -- tags are never moved"; exit 1
+          fi
+
+          # The PR must be a merged PR of THIS repository whose merge commit
+          # is the sha being tagged. Without that, publish would tag any
+          # commit somebody names.
+          read -r state base merge head < <(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" \
+            --json state,baseRefName,mergeCommit,headRefName \
+            -q '[.state, .baseRefName, .mergeCommit.oid, .headRefName] | @tsv')
+          [ "$state" = MERGED ] || { echo "::error::PR #$PR is $state, not MERGED"; exit 1; }
+          [ "$base" = main ] || { echo "::error::PR #$PR merged into $base, not main"; exit 1; }
+          [ "$merge" = "$MERGED_SHA" ] || { echo "::error::PR #$PR merged as $merge, not $MERGED_SHA"; exit 1; }
+          [ "$head" = "release/$VERSION" ] || { echo "::error::PR #$PR is from $head, not release/$VERSION"; exit 1; }
+
+          # That commit must be on main, and CI must have passed on it
+          # exactly -- not on its branch, not on a later commit.
+          git merge-base --is-ancestor "$MERGED_SHA" origin/main ||
+            { echo "::error::$MERGED_SHA is not on main"; exit 1; }
+          ci=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+            --commit "$MERGED_SHA" --event push --limit 1 --json conclusion -q '.[0].conclusion // "none"')
+          [ "$ci" = success ] || { echo "::error::CI on $MERGED_SHA is '$ci', not success"; exit 1; }
+
+          # And the merged TREE must carry the property prepare exists to
+          # create: every cicd self-checkout pinned to one full commit.
+          #
+          # Read from the tree, not from the commit message. The first
+          # version parsed the candidate's subject out of $MERGED_SHA, which
+          # is only there for a squash -- merging the PR with a merge commit
+          # gave "Merge pull request #62 from ..." and the gate refused a
+          # perfectly good release. What is being verified is the content, so
+          # the content is what it reads.
+          pins=$(git grep -hoE '^[[:space:]]*ref:[[:space:]]*[0-9a-f]{40}' "$MERGED_SHA" -- .github/workflows |
+            awk '{print $2}' | sort -u)
+          count=$(printf '%s\n' "$pins" | grep -c . || true)
+          [ "$count" = 1 ] || {
+            echo "::error::the merged tree has $count distinct helper pins, want exactly 1:"
+            printf '%s\n' "$pins"; exit 1; }
+          echo "verified: PR #$PR merged as $MERGED_SHA, CI green, helpers pinned to $pins"
+
+      - name: Tag and release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          MERGED_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          git -c user.name='cicd release' -c user.email='noreply@nicodes.dev' \
+            tag -a "$VERSION" "$MERGED_SHA" -m "$VERSION"
+          git push origin "refs/tags/$VERSION"
+          gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --verify-tag --title "$VERSION" \
+            --notes "Helper checkouts pinned. Consumers pin the commit with the version in a trailing comment; see docs/releases.md."
+
+      - name: Attach the engineering snapshot products install
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          MERGED_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          # Built from the TAGGED commit, not from the checkout, so the
+          # artifact is a function of the tag and nothing else. The builder is
+          # byte-reproducible, so anybody can rebuild this from the tag and
+          # compare the sha256 with the one a product has pinned.
+          name="cicd-engineering-$VERSION.tar.gz"
+          digest=$(python3 helpers/engineering-artifact.py --revision "$MERGED_SHA" --output "$name")
+          echo "$digest  $name" > "$name.sha256"
+          gh release upload "$VERSION" "$name" "$name.sha256" --repo "$GITHUB_REPOSITORY"
+
+          # --notes-file, not a heredoc inside this already-indented block:
+          # the closing delimiter would have to sit at column 0 to be seen.
+          {
+            echo 'Helper checkouts pinned. See docs/releases.md.'
+            echo
+            echo 'Products install the engineering snapshot through mise instead of vendoring it:'
+            echo
+            echo '    [tools]'
+            printf '    "http:cicd-engineering" = { version = "%s", url = "https://github.com/%s/releases/download/v{{ version }}/cicd-engineering-v{{ version }}.tar.gz", checksum = "sha256:%s" }\n' \
+              "${VERSION#v}" "$GITHUB_REPOSITORY" "$digest"
+          } > release-notes.md
+          gh release edit "$VERSION" --repo "$GITHUB_REPOSITORY" --notes-file release-notes.md
+          echo "attached $name sha256:$digest"

@@ -1,0 +1,78 @@
+name: CI
+
+# Every pull request and every merge to main: Build and Test, as two
+# independent jobs.
+#
+# Nothing is published and nothing is deployed. The static host (Vercel in
+# the current adopters) deploys the site from its own build, configured
+# there rather than here, so a green tick means one thing -- this commit is
+# good.
+#
+# The push trigger is NOT redundant the way it would be in a repository with
+# CD. There is no cd.yml in this archetype, and the host's build does not
+# run .github/actions/test -- it runs `bun run build` and ships the result.
+# This workflow is the only thing that ever runs the assertions.
+#
+# Two jobs because the fleet contract is exactly Test and Build, running
+# independently: two checks that branch protection can each require on its
+# own, and each still runs when the other fails. The Test job runs
+# ../build first in its own workspace, because everything ../test asserts is
+# a property of ./dist and independent jobs share nothing.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Read-only. This workflow only inspects the tree.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-24.04
+    # This build is seconds. Ten minutes means something has hung, and it
+    # should say so here rather than sit until the runner's own timeout
+    # hours later.
+    timeout-minutes: 10
+    steps:
+      # Third-party actions are pinned by SHA, with the tag in a trailing
+      # comment so the version is still readable. A tag is a moving
+      # reference: whoever can move it can run code in this job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Reads .mise.toml, which is where bun's version is pinned for everyone
+      # working on this repository: one place to change one version.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      - name: Build
+        uses: ./.github/actions/build
+
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    # Same budget, same reasoning as Build: a hang should say so here rather
+    # than sit until the runner's own timeout hours later.
+    timeout-minutes: 10
+    steps:
+      # Pinned by SHA, tag in the trailing comment, for the same reason as
+      # in Build: whoever can move a tag can run code in this job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # .mise.toml again, so bun is the same version here as in Build.
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+
+      # ../test asserts on ./dist, so this job runs ../build first, in its
+      # own workspace: independent jobs are independent machines and share
+      # nothing.
+      - name: Build
+        uses: ./.github/actions/build
+
+      - name: Test
+        uses: ./.github/actions/test

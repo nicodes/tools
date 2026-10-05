@@ -1,0 +1,9 @@
+{
+  "revision": "2f8265c2a14a38bd30ab7dcee1445fdb1877e170",
+  "files": {
+    "go.mod": "d09c267f73a383814e40b9a3faf4a83281361ba899ae7df985c1c96f9946b9bf",
+    "go.sum": "4ab71f30ee134917e823031c22a6fe3594e827ed10e3d96652d0f959fa2a0ef2",
+    "main.go": "7212486125d3ce5fb28b99547b1308f6a6ead4886d2ab9f66f7f613082fdfee9",
+    "caddy-build.sh": "b0e29b26217672cea28d2b20887bfe08eca9d7c5c5e791ebefd167636af89c0d"
+  }
+}

@@ -1,0 +1,80 @@
+name: Dependabot
+
+# Reusable Dependabot auto-merge gate for every product repository. A called
+# workflow cannot own event triggers, so each caller keeps a thin file with
+# `on: pull_request_target` (plus its `concurrency:` and `permissions:`
+# blocks) and one job that calls this file pinned to a full commit SHA:
+#
+#   uses: nicodes/cicd/.github/workflows/dependabot.yml@<40-hex SHA>
+#
+# The `github` context, `github.token` and caller events all resolve in the
+# CALLER's repository, so the gate below is the per-repo contract unchanged.
+# Security properties preserved from the per-repo form:
+#   - the policy scripts run from the caller's checkout at the pull request's
+#     base SHA (the trusted protected base), never from the PR head. Without
+#     the explicit `ref:` a checkout in this reused workflow would follow the
+#     pull request's merge ref, so the trusted-base pin is load-bearing;
+#   - the caller resolves this workflow file by full SHA, so `pull_request_target`
+#     cannot redirect the gate logic from a fork's head;
+#   - the merge step only runs when the caller's `dependency-policy.py`
+#     marked the update eligible, and `merge-checked.py` pins the exact head
+#     SHA it verified before merging.
+on:
+  workflow_call:
+    inputs:
+      dispatch-target:
+        description: Merged-main workflow filename to dispatch first; empty falls back to cd.yml then ci.yml
+        required: false
+        type: string
+        default: ''
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  checks: read
+  statuses: read
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - name: Verify bot-signed dependency metadata
+        id: metadata
+        continue-on-error: true
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+      - name: Checkout the trusted base policy
+        if: steps.metadata.outcome == 'success'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+      - name: Check out the shared helpers this workflow runs
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nicodes/tools
+          ref: 9f50dfcc59b5eadac3bc85ad6404d2df87b77fba # helpers this reusable workflow runs (bump-along rule, see README)
+          path: .cicd
+          persist-credentials: false
+          sparse-checkout: helpers/
+        timeout-minutes: 3
+      - name: Apply the dependency review policy
+        if: steps.metadata.outcome == 'success'
+        id: policy
+        env:
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          PREVIOUS_VERSION: ${{ steps.metadata.outputs.previous-version }}
+          NEW_VERSION: ${{ steps.metadata.outputs.new-version }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_GROUP: ${{ steps.metadata.outputs.dependency-group }}
+        run: python3 .cicd/helpers/dependency-policy.py
+      - name: Wait for every check and merge the verified head
+        if: steps.policy.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          DISPATCH_TARGET: ${{ inputs.dispatch-target }}
+        run: python3 .cicd/helpers/merge-checked.py

@@ -1,0 +1,201 @@
+name: PR preview
+# Documented template — see templates/README.md, "PR preview deployments".
+# Per-PR preview deployments through the nicodes/komizo-actions/preview
+# composite: every ready same-repo pull request gets a live preview stack, one
+# sticky PR comment carries the URLs, and closing the PR tears the stack down.
+#
+# Copy to .github/workflows/pr-preview.yml in the adopting product, replace
+# the two product-owned values marked <product-...> (both jobs, identical),
+# and set the secrets/vars listed in the README section. The preview
+# composite is already pinned to the v0.0.25 release below.
+on:
+  pull_request:
+    # pull_request, NOT pull_request_target: the preview exists to run the
+    # PR's OWN code (its checked-out head and the images CI built from it),
+    # so the run must execute in the pull_request context. pull_request_target
+    # would execute the trusted base workflow with secrets in scope for every
+    # fork that opens a PR. Here the security control is the same-repo guard
+    # on each job below: a fork PR skips every job at evaluation, before any
+    # secret or the preview infrastructure enters the run at all.
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+permissions:
+  contents: read
+jobs:
+  preview-up:
+    name: Deploy preview
+    # THE GUARD — non-negotiable, job level, on every job that touches secrets
+    # or the preview infrastructure: same-repo PRs only. A fork PR fails this
+    # expression, so the job is skipped with no checkout of untrusted code
+    # next to secrets, no KOMIZO_DEPLOY_KEY in scope, no preview stack.
+    # AND NOT DEPENDABOT. A dependabot pull request is same-repo, so the
+    # guard above passes it -- but GitHub serves such a run the Dependabot
+    # secret store, not this repository's Actions secrets, so every secret
+    # named here arrives empty and the composite refuses:
+    #
+    #   No deploy key. Environment-scoped secrets are invisible to jobs
+    #   without that environment.
+    #
+    # which is a misleading message for the real cause. No placement of the
+    # secret fixes it. A dependency bump has nothing to preview anyway, and
+    # leaving the job to fail blocks its auto-merge on a check that can
+    # never go green.
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read        # checkout of the PR head
+      pull-requests: write  # the one sticky comment, and nothing else
+      packages: read        # the run's GITHUB_TOKEN is the ghcr pull credential (registry-token below)
+    concurrency:
+      # Per-PR group: a new push supersedes the in-flight preview deploy of
+      # the same PR. The close path shares this group with
+      # cancel-in-progress: false (see preview-down), so a close that lands
+      # mid-deploy queues behind it and tears down the finished stack instead
+      # of racing it — and the teardown itself is never cancelled.
+      group: preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    env:
+      APP: <product-slug>   # product-owned: the sample-host app slug
+      COMPONENTS: app       # product-owned: space-separated image components
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The PR's own code, not the base — the whole point of the preview.
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Resolve the PR's image refs
+        id: images
+        run: |
+          set -euo pipefail
+          # The product's own CI builds and pushes these images for the same
+          # head SHA (packages: write lives there, deliberately NOT in this
+          # workflow). This step only derives the refs CI published:
+          # ghcr.io/<owner>/<project>-<component>:<head-sha>.
+          refs=""
+          for component in $COMPONENTS; do
+            refs="$refs ghcr.io/${{ github.repository_owner }}/$APP-$component:${{ github.event.pull_request.head.sha }}"
+          done
+          echo "refs=${refs# }" >> "$GITHUB_OUTPUT"
+      - name: Preview up
+        id: preview
+        uses: nicodes/komizo-actions/preview@ff3c1bb4650ba63c3a6191d8043662d5f0ad48b4 # v0.0.25 — pinned to the release's peeled commit SHA, never the annotated tag object
+        env:
+          # The deploy-key SSH path, identical to the deploy composite's:
+          # the composite cannot read the secrets context, so exactly these
+          # three arrive by name and nothing else does.
+          KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}
+          KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}
+          KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}
+        with:
+          app: ${{ env.APP }}
+          pr-number: ${{ github.event.pull_request.number }}
+          images: ${{ steps.images.outputs.refs }}
+          action: up
+          # Required on up (fail-closed): the pull runs AS ROOT
+          # on the host through the doas wrapper, and root's docker config
+          # carries no ghcr authorization — without a login the pull fails
+          # anonymous. Same wiring as the deploy composite: the run's own
+          # GITHUB_TOKEN (the packages grant above), never a long-lived PAT;
+          # the host drops the credential however the run exits.
+          registry-user: ${{ github.actor }}
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upsert the sticky preview comment
+        # The Vercel pattern with the runner's preinstalled gh CLI and the
+        # workflow's own GITHUB_TOKEN — no external action, so nothing to pin.
+        # First deploy POSTs one marker-tagged comment; every synchronize
+        # PATCHes that same comment (found by the marker) with the fresh URL
+        # and SHA. Exactly one preview comment per PR, ever.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PREVIEW_URL: ${{ steps.preview.outputs.preview-url }}
+          API_URL: ${{ steps.preview.outputs.api-url }}
+          GATE_STATUS: ${{ steps.preview.outputs.gate-status }}
+        run: |
+          set -euo pipefail
+          body=$(printf '<!-- preview -->\n### Preview — %s\n\n| | |\n| --- | --- |\n| App | %s |\n| API | %s |\n| Health gate | %s |' \
+            "$HEAD_SHA" "$PREVIEW_URL" "$API_URL" "$GATE_STATUS")
+          # shellcheck disable=SC2016 # the jq program is passed literally, not expanded
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | contains("<!-- preview -->")) | .id' | head -n 1)
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -f body="$body" > /dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -f body="$body" > /dev/null
+          fi
+  preview-down:
+    name: Tear down preview
+    # The same guard as preview-up: a fork PR's close event touches no secrets
+    # and no preview infrastructure either.
+    # AND NOT DEPENDABOT. A dependabot pull request is same-repo, so the
+    # guard above passes it -- but GitHub serves such a run the Dependabot
+    # secret store, not this repository's Actions secrets, so every secret
+    # named here arrives empty and the composite refuses:
+    #
+    #   No deploy key. Environment-scoped secrets are invisible to jobs
+    #   without that environment.
+    #
+    # which is a misleading message for the real cause. No placement of the
+    # secret fixes it. A dependency bump has nothing to preview anyway, and
+    # leaving the job to fail blocks its auto-merge on a check that can
+    # never go green.
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write  # the final dead-mark update of the sticky comment
+    concurrency:
+      # Same per-PR group as preview-up, so a close that lands mid-deploy
+      # queues behind the in-flight deploy and tears down the finished stack.
+      # cancel-in-progress: false — once running, the teardown is never
+      # superseded by anything else in the group.
+      group: preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    env:
+      APP: <product-slug>   # product-owned: must match preview-up exactly
+      COMPONENTS: app       # product-owned: must match preview-up exactly
+    steps:
+      - name: Resolve the PR's image refs
+        id: images
+        run: |
+          set -euo pipefail
+          refs=""
+          for component in $COMPONENTS; do
+            refs="$refs ghcr.io/${{ github.repository_owner }}/$APP-$component:${{ github.event.pull_request.head.sha }}"
+          done
+          echo "refs=${refs# }" >> "$GITHUB_OUTPUT"
+      - name: Preview down
+        uses: nicodes/komizo-actions/preview@ff3c1bb4650ba63c3a6191d8043662d5f0ad48b4 # v0.0.25 — pinned to the release's peeled commit SHA, never the annotated tag object
+        env:
+          KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}
+          KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}
+          KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}
+        with:
+          app: ${{ env.APP }}
+          pr-number: ${{ github.event.pull_request.number }}
+          images: ${{ steps.images.outputs.refs }}
+          action: down
+      - name: Mark the sticky comment dead
+        # Final update of the same marker-tagged comment: the preview is gone.
+        # Update-only — a PR that never deployed (the up job never succeeded)
+        # has no marker comment, and none is created here.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2016 # the jq program is passed literally, not expanded
+          existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '.[] | select(.body | contains("<!-- preview -->")) | .id' | head -n 1)
+          if [ -n "$existing" ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
+              -f body='<!-- preview --> ~~Preview~~ — torn down (PR closed).' > /dev/null
+          fi

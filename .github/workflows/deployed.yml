@@ -1,0 +1,65 @@
+name: Deployed is main
+# Compare caller main with its latest successful deployment.
+# Requires actions: read and contents: read, including for private repositories.
+on:
+  workflow_call:
+    inputs:
+      deploy-workflow:
+        description: The caller's deploy workflow FILE name, e.g. cd.yml
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  deployed:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: The newest successful deploy is main's HEAD
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+
+          # `main`'s HEAD, from the API rather than a checkout -- this needs one
+          # SHA, not a clone.
+          head="$(gh api repos/${{ github.repository }}/commits/main --jq '.sha' 2>/dev/null)"
+          if [ -z "$head" ]; then
+            echo "::error::could not read main's HEAD. Failing rather than comparing against an empty string, which would match nothing and pass."
+            exit 1
+          fi
+
+          # The newest CD run that SUCCEEDED. `status=success` rather than
+          # filtering client-side, so a long queue of failures cannot push the
+          # last good one off the page and make this compare against nothing.
+          deployed="$(gh api "repos/${{ github.repository }}/actions/workflows/${{ inputs.deploy-workflow }}/runs?status=success&per_page=1" \
+                        --jq '.workflow_runs[0].head_sha' 2>/dev/null)"
+          if [ -z "$deployed" ] || [ "$deployed" = "null" ]; then
+            echo "::error::could not read the newest successful CD run. Failing rather than reporting a match it never made."
+            exit 1
+          fi
+
+          echo "main     $head"
+          echo "deployed $deployed"
+
+          if [ "$head" = "$deployed" ]; then
+            echo "production has main's HEAD"
+            exit 0
+          fi
+
+          # WHAT IS MISSING, not just that something is. The list is the whole
+          # value of this check firing at three in the morning: it says which
+          # commits are on main and not in production, which is the question
+          # anybody woken by it will ask next.
+          echo "::error::production is behind main. Deployed $deployed, main is $head."
+          echo "Commits on main that have not been deployed:" >&2
+          gh api "repos/${{ github.repository }}/compare/$deployed...$head" \
+            --jq '.commits[] | "  \(.sha[0:7]) \(.commit.message | split("\n")[0])"' >&2 || true
+          echo >&2
+          echo "Almost certainly a Dependabot auto-merge: a GITHUB_TOKEN push does not trigger CD." >&2
+          echo "Deploy it with: gh workflow run ${{ inputs.deploy-workflow }} --ref main" >&2
+          exit 1

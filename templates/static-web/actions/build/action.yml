@@ -1,0 +1,36 @@
+name: Build
+description: >
+  The static site, into ./dist -- type-checked first, so a type error does
+  not wait behind a build it was going to fail anyway.
+
+  A composite action rather than a reusable workflow so it runs in the
+  caller's job, under the caller's name -- Build / Build in the Build job,
+  Test / Build in the Test job -- rather than as a nested "caller / callee"
+  check.
+
+  NOTHING LEAVES THE RUNNER. The site is left in ./dist for ../test to
+  assert against. Publishing belongs to the static host, from its own build,
+  and nothing here can reach it.
+
+runs:
+  using: composite
+  steps:
+    # --frozen-lockfile so CI fails on a lockfile that does not match
+    # package.json, rather than quietly resolving something newer than what
+    # anyone has run locally.
+    - name: Install JS dependencies
+      shell: bash
+      run: bun install --frozen-lockfile
+
+    # Before the build rather than after it: a type error is both the
+    # likeliest failure and the cheapest to reach, and it needs nothing from
+    # ./dist. The product's package.json defines the `typecheck` script (the
+    # current adopters run `astro check`, which understands .astro files); a
+    # product with no type checking omits this step.
+    - name: Type check
+      shell: bash
+      run: bun run typecheck
+
+    - name: Build
+      shell: bash
+      run: bun run build

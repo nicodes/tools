@@ -1,0 +1,75 @@
+name: CI
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Validate unified workflow contract
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/fleet-workflow-contract"
+          "$RUNNER_TEMP/fleet-workflow-contract/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r .github/workflow-contract-requirements.txt
+          "$RUNNER_TEMP/fleet-workflow-contract/bin/python" .github/workflow_contract.py
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+      - run: make install check
+  caddy-security-control:
+    name: Caddy security negative control
+    # Build the vulnerable baseline only for this repair's PR, never on main
+    # or other branches. It is an isolated scan fixture, not a published artifact.
+    if: github.event_name == 'pull_request' && github.head_ref == 'fix/caddy-grpc-security-phase3'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@3c2e0cf82a5b2e5249f0d3635a4d83d0ae861518 # v4.2.5
+      - name: Scan the fixed historical baseline with the same compiler and overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          python3 - <<'VERIFY'
+          import hashlib, json
+          from pathlib import Path
+          root = Path('security-fixtures/caddy-grpc-baseline')
+          source = json.loads((root/'SOURCE.json').read_text())
+          for name, digest in source['files'].items():
+              if hashlib.sha256((root/name).read_bytes()).hexdigest() != digest:
+                  raise ValueError('security negative-control fixture differs')
+          VERIFY
+          cp security-fixtures/caddy-grpc-baseline/{go.mod,go.sum,main.go,caddy-build.sh} "$work/"
+          (cd "$work" && mise exec go@1.27.0 -- sh caddy-build.sh)
+          go version -m "$work/caddy" | tee "$work/build-info.txt"
+          govulncheck -mode=binary -json "$work/caddy" > "$work/scan.json"
+          python3 - "$work" <<'PY'
+          import importlib.util
+          import json
+          from pathlib import Path
+          import sys
+
+          root = Path(sys.argv[1])
+          info = (root/'build-info.txt').read_text()
+          if ': go1.27.0\n' not in info or '\tdep\tgoogle.golang.org/grpc\tv1.83.1\t' not in info:
+              raise ValueError('baseline compiler or gRPC module identity differs')
+          spec = importlib.util.spec_from_file_location('scanner', 'helpers/scan-image.py')
+          scanner = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(scanner)
+          verdict = scanner.judge_report((root/'scan.json').read_text())
+          print(json.dumps(verdict), flush=True)
+          if 'GO-2026-6443' not in verdict['reached']:
+              raise ValueError('baseline did not demonstrate the expected vulnerable linked symbol')
+          print('Baseline negative control: GO-2026-6443 linked symbol detected.')
+          PY
