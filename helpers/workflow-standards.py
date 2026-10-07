@@ -29,6 +29,9 @@ def load_workflow(text):
 def validate_profile(data):
     if data.get('version') != 1 or data.get('profile') not in PROFILES:
         raise ValueError('caller must declare a supported engineering profile v1')
+    maximum = data.get('max_job_minutes', 120)
+    if type(maximum) is not int or not 1 <= maximum <= 360:
+        raise ValueError('max_job_minutes must be a reviewed integer between 1 and 360')
     commands = data.get('commands', {})
     if set(commands) != COMMANDS:
         raise ValueError('every canonical command needs an argv or unsupported reason')
@@ -41,7 +44,7 @@ def validate_profile(data):
         raise ValueError('check must execute the profile verification gate')
 
 
-def findings(path, data):
+def findings(path, data, max_job_minutes=120):
     errors = []
     concurrency = data.get('concurrency', {})
     group = concurrency.get('group', '') if isinstance(concurrency, dict) else concurrency
@@ -51,8 +54,8 @@ def findings(path, data):
     if data.get('runs', {}).get('using') == 'composite':
         jobs['composite'] = data['runs']
     for key, job in jobs.items():
-        if 'runs-on' in job and (type(job.get('timeout-minutes')) is not int or not 1 <= job['timeout-minutes'] <= 120):
-            errors.append(f'{key}: runner job needs a timeout between 1 and 120 minutes')
+        if 'runs-on' in job and (type(job.get('timeout-minutes')) is not int or not 1 <= job['timeout-minutes'] <= max_job_minutes):
+            errors.append(f'{key}: runner job needs a timeout between 1 and {max_job_minutes} minutes')
         uses = [job.get('uses')] + [step.get('uses') for step in job.get('steps', [])]
         for reference in filter(None, uses):
             if reference.startswith('./'):
@@ -86,7 +89,7 @@ def main():
     files = list((args.root/'.github/workflows').glob('*.y*ml'))
     files.extend((args.root/'.github/actions').rglob('action.y*ml'))
     for file in sorted(files):
-        errors.extend(findings(file.relative_to(args.root), load_workflow(file.read_text())))
+        errors.extend(findings(file.relative_to(args.root), load_workflow(file.read_text()), profile.get('max_job_minutes', 120)))
     if errors:
         raise SystemExit('\n'.join(errors))
     print('Developer profile and workflow controls verified')

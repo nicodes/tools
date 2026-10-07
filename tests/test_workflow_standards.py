@@ -8,6 +8,21 @@ spec.loader.exec_module(standards)
 
 
 class WorkflowStandardsTests(unittest.TestCase):
+    def test_long_cold_jobs_need_a_reviewed_caller_ceiling(self):
+        data = {'jobs': {'build': {'runs-on': 'ubuntu-24.04', 'timeout-minutes': 180}}}
+        self.assertEqual(len(standards.findings('cd.yml', data)), 1)
+        self.assertEqual(standards.findings('cd.yml', data, max_job_minutes=180), [])
+        data['jobs']['build']['timeout-minutes'] = 181
+        self.assertEqual(len(standards.findings('cd.yml', data, max_job_minutes=180)), 1)
+
+    def test_caller_job_ceiling_cannot_remove_bounding(self):
+        commands = {name: ['make', name] for name in standards.COMMANDS}
+        profile = {'version': 1, 'profile': 'expo-application', 'commands': commands}
+        for maximum in [True, 0, 361, '180', None]:
+            with self.subTest(maximum=maximum), self.assertRaises(ValueError):
+                standards.validate_profile({**profile, 'max_job_minutes': maximum})
+        standards.validate_profile({**profile, 'max_job_minutes': 180})
+
     def test_nonimmutable_refs_literal_groups_and_missing_timeouts_fail(self):
         data = {'concurrency': {'group': 'ci-${ github.ref }'}, 'jobs': {'test': {'runs-on': 'ubuntu-24.04',
                 'steps': [{'uses': 'actions/checkout@main'}]}}}
