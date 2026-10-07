@@ -3,13 +3,19 @@ name: Tool watch
 # Grant contents: read and issues: write; under-granted callers fail before jobs start.
 on:
   workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller
+        type: string
+        required: false
+        default: ubuntu-24.04
 permissions:
   contents: read
 jobs:
   watch:
     name: Tool watch
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 40
     # Concurrency is CALLER-owned: the caller keeps its workflow-level
     # `tool-watch` group (`cancel-in-progress: false`) and this job declares

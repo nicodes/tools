@@ -77,9 +77,12 @@ class DependabotReusableWorkflow(unittest.TestCase):
     def test_trigger_is_workflow_call_only(self):
         self.assertEqual(list(self.doc['on']), ['workflow_call'],
                          'event triggers belong to the thin caller file')
-    def test_dispatch_target_is_the_only_input_and_is_optional(self):
+    def test_dispatch_target_and_runner_inputs_are_optional(self):
         inputs = self.doc['on']['workflow_call']['inputs']
-        self.assertEqual(list(inputs), ['dispatch-target'])
+        self.assertEqual(set(inputs), {'dispatch-target', 'runner'})
+        self.assertEqual(inputs['runner']['type'], 'string')
+        self.assertIs(inputs['runner']['required'], False)
+        self.assertEqual(inputs['runner']['default'], 'ubuntu-24.04')
         target = inputs['dispatch-target']
         self.assertEqual(target['type'], 'string')
         self.assertIs(target['required'], False,
@@ -94,7 +97,7 @@ class DependabotReusableWorkflow(unittest.TestCase):
         self.assertEqual(list(self.doc['jobs']), ['auto-merge'])
         self.assertEqual(self.job['if'],
                          "github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.draft == false")
-        self.assertEqual(self.job['runs-on'], 'ubuntu-24.04')
+        self.assertEqual(self.job['runs-on'], '${{ inputs.runner }}')
         self.assertEqual(self.job['timeout-minutes'], 100)
 
     def test_metadata_comes_from_the_sha_pinned_fetch_action(self):
