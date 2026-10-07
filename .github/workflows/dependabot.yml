@@ -60,7 +60,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: nicodes/tools
-          ref: f09872a823982dccabdd0154ff5f76bc6e8f2e22 # helpers this reusable workflow runs (bump-along rule, see README)
+          ref: daf232a60e3fb7adbea224b94aa7f5eab1608ca0 # v0.11.1 source
           path: .cicd
           persist-credentials: false
           sparse-checkout: helpers/
