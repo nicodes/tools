@@ -76,3 +76,23 @@ runs:
           export GOCACHE="$RUNNER_TEMP/fleet-go-compiler"
         fi
         make -- "${targets[@]}"
+    - name: Summarize engineering stages
+      if: always()
+      shell: bash
+      run: |
+        if [ -f .artifacts/contract/timings.jsonl ]; then
+          source scripts/engineering-env.sh
+          python3 "$CICD_ENGINEERING/helpers/timing-summary.py" --summary "$GITHUB_STEP_SUMMARY"
+        fi
+      continue-on-error: true
+    - name: Retain stage and build identity evidence
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: engineering-${{ github.job }}-${{ github.run_attempt }}-${{ github.action }}
+        path: |
+          .artifacts/contract/timings.jsonl
+          .artifacts/contract/build.json
+        if-no-files-found: ignore
+        retention-days: 30
+      continue-on-error: true
