@@ -98,7 +98,8 @@ class MakeActionBoundary(unittest.TestCase):
     def test_target_lists_preserve_hyphenated_stages_and_reject_shell_text(self):
         import json
         action = json.loads(subprocess.check_output(["bun", "-e", "import {readFileSync} from 'node:fs'; console.log(JSON.stringify(Bun.YAML.parse(readFileSync(process.argv[1], 'utf8'))))", str(HELPER.parent.parent / "make/action.yml")], text=True))
-        script = action["runs"]["steps"][-1]["run"]
+        script = next(step['run'] for step in action['runs']['steps']
+                      if step.get('name') == 'Run the engineering contract')
         with tempfile.TemporaryDirectory() as directory:
             fake_make = Path(directory) / "make"
             fake_make.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
