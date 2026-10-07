@@ -146,8 +146,8 @@ def apply(root, version, commit, checksum, source_digest=None, dry_run=False, re
             change_manifest.append({'path': str(path.relative_to(root)),
                 'before_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
                 'after_sha256': hashlib.sha256(text.encode()).hexdigest(),
-                'before_tools_refs': WORKFLOW_PIN.findall(before),
-                'after_tools_refs': WORKFLOW_PIN.findall(text)})
+                'before_tools_refs': [match.group(0) for match in WORKFLOW_PIN.finditer(before)],
+                'after_tools_refs': [match.group(0) for match in WORKFLOW_PIN.finditer(text)]})
         if dry_run:
             print(''.join(difflib.unified_diff(path.read_text().splitlines(True),
                   text.splitlines(True), fromfile=str(path.relative_to(root)),
