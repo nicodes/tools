@@ -19,7 +19,12 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Start cache setup measurement
+      id: cache-start
+      shell: bash
+      run: python3 -c 'import time; print("started="+str(time.monotonic()))' >> "$GITHUB_OUTPUT"
     - name: Restore native Go compiler entries
+      id: go-cache
       if: inputs.go-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -28,6 +33,7 @@ runs:
         restore-keys: |
           gocompiler-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('.mise.toml', '**/go.mod', '**/go.sum') }}-
     - name: Restore web compiler transforms
+      id: web-cache
       if: inputs.web-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -38,6 +44,7 @@ runs:
         restore-keys: |
           webcompiler-v2-${{ runner.os }}-${{ github.repository }}-
     - name: Restore component layer caches
+      id: layer-cache
       if: inputs.build-cache == 'true'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
@@ -48,6 +55,20 @@ runs:
     - name: Prepare the cache-capable builder
       if: inputs.build-cache == 'true'
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+    - name: Record cache setup evidence
+      if: always()
+      continue-on-error: true
+      shell: bash
+      env:
+        CACHE_EVIDENCE_SCRIPT: ${{ github.action_path }}/../helpers/cache-evidence.py
+        CACHE_STARTED_AT: ${{ steps.cache-start.outputs.started }}
+        GO_CACHE_ENABLED: ${{ inputs.go-cache }}
+        GO_CACHE_HIT: ${{ steps.go-cache.outputs.cache-hit }}
+        WEB_CACHE_ENABLED: ${{ inputs.web-cache }}
+        WEB_CACHE_HIT: ${{ steps.web-cache.outputs.cache-hit }}
+        LAYER_CACHE_ENABLED: ${{ inputs.build-cache }}
+        LAYER_CACHE_HIT: ${{ steps.layer-cache.outputs.cache-hit }}
+      run: python3 "$CACHE_EVIDENCE_SCRIPT"
     - name: Run the engineering contract
       shell: bash
       env:
@@ -93,6 +114,7 @@ runs:
         path: |
           .artifacts/contract/timings.jsonl
           .artifacts/contract/build.json
+          .artifacts/contract/cache.json
         if-no-files-found: ignore
         retention-days: 30
       continue-on-error: true
