@@ -9,6 +9,8 @@ from pathlib import Path
 import re
 import subprocess
 import time
+import datetime
+import sys
 
 STAGES = ('install', 'lint', 'unit', 'integration', 'build', 'artifact-check',
           'browser-install', 'e2e', 'vuln', 'dev', 'stop', 'clean')
@@ -130,6 +132,34 @@ class Runner:
         self.root = Path('.artifacts/contract')
         self.root.mkdir(parents=True, exist_ok=True)
 
+    def timing(self, name, started, result=0, outcome='executed', adapter=None):
+        """Best-effort telemetry must never replace an adapter's outcome."""
+        record = {'stage': name, 'seconds': round(time.monotonic()-started, 3),
+                  'exit_code': result, 'outcome': outcome,
+                  'recorded_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB', 'RUNNER_OS', 'RUNNER_ARCH'):
+            if os.environ.get(key):
+                record[key.lower()] = os.environ[key]
+        if adapter is not None:
+            record['adapter'] = adapter
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with (self.root/'timings.jsonl').open('a') as stream:
+                stream.write(json.dumps(record)+'\n')
+        except OSError as error:
+            print(f'timing output unavailable: {error}', file=sys.stderr)
+
+    def provenance(self, input_identity):
+        def git(*args):
+            return subprocess.check_output(['git', *args], text=True).strip()
+        source = git('rev-parse', 'HEAD')
+        return {'version': 1, 'source_commit': source,
+                'source_tree': git('rev-parse', 'HEAD^{tree}'),
+                'input_identity': input_identity,
+                'tested_commit': source if {'unit', 'integration'} <= self.done else None,
+                'build_variant': os.environ.get('BUILD_VARIANT', 'production'),
+                'toolchain_config_sha256': sha(Path('.mise.toml')) if Path('.mise.toml').is_file() else None}
+
     def stage(self, name):
         if name in self.done:
             return
@@ -141,6 +171,7 @@ class Runner:
         value = self.data['stages'][name]
         if isinstance(value, dict):
             print(f'{name}: inapplicable: {value["inapplicable"]}', flush=True)
+            self.timing(name, time.monotonic(), outcome='inapplicable')
             self.done.add(name)
             return
         if name in ('e2e', 'artifact-check'):
@@ -156,6 +187,7 @@ class Runner:
             raise ValueError('this contract builds production artifacts; use separate fixture outputs for test variants')
         if name == 'build' and self.fresh():
             print('build: reusing artifacts verified against source, environment and image identities', flush=True)
+            self.timing(name, time.monotonic(), outcome='verified-reuse')
             self.done.add(name)
             return
         started = time.monotonic()
@@ -166,26 +198,37 @@ class Runner:
         try:
             for command in value:
                 print(f'{name}: running adapter {command[0]}', flush=True)
-                subprocess.run(command, check=True)
+                adapter_started = time.monotonic()
+                adapter_result = 0
+                try:
+                    subprocess.run(command, check=True)
+                except subprocess.CalledProcessError as error:
+                    adapter_result = error.returncode
+                    raise
+                except KeyboardInterrupt:
+                    adapter_result = 130
+                    raise
+                except BaseException:
+                    adapter_result = 1
+                    raise
+                finally:
+                    self.timing(name, adapter_started, adapter_result, adapter=Path(command[0]).name)
             if name == 'build':
                 if identity(self.data) != before:
                     raise ValueError('build modified source inputs outside declared artifacts')
-                evidence = {'identity': before, 'artifacts': artifacts(self.data)}
+                evidence = {'identity': before, 'artifacts': artifacts(self.data),
+                            'provenance': self.provenance(before)}
                 temporary = self.root/'build.json.tmp'
                 temporary.write_text(json.dumps(evidence, sort_keys=True)+'\n')
                 temporary.replace(self.root/'build.json')
             self.done.add(name)
-        except BaseException:
-            result = 1
+        except BaseException as error:
+            result = error.returncode if isinstance(error, subprocess.CalledProcessError) else 130 if isinstance(error, KeyboardInterrupt) else 1
             if name == 'build':
                 (self.root/'build.json').unlink(missing_ok=True)
             raise
         finally:
-            # clean may remove the evidence directory; recreate only timing output.
-            self.root.mkdir(parents=True, exist_ok=True)
-            with (self.root/'timings.jsonl').open('a') as stream:
-                stream.write(json.dumps({'stage': name, 'seconds': round(time.monotonic()-started, 3),
-                                         'exit_code': result})+'\n')
+            self.timing(name, started, result)
 
     def fresh(self):
         try:
@@ -224,4 +267,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as error:
+        raise SystemExit(error.returncode if error.returncode >= 0 else 128-error.returncode)
