@@ -60,7 +60,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: nicodes/tools
-          ref: a9bf70fec2bebdfe5409166cc6921bd0733ff908 # v0.11.1 source
+          ref: ccb6505173722581cc1574c9339eb64a31c29f2a # v0.11.1 source
           path: .cicd
           persist-credentials: false
           sparse-checkout: helpers/
