@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "profile": "configuration",
+  "commands": {
+    "install": [
+      "make",
+      "install"
+    ],
+    "lint": [
+      "make",
+      "lint"
+    ],
+    "test": [
+      "make",
+      "test"
+    ],
+    "check": [
+      "make",
+      "check"
+    ],
+    "clean": [
+      "make",
+      "clean"
+    ],
+    "build": {
+      "unsupported": "Source-only engineering library has no deployed product service or build artifact; runtime boundary coverage is in make test."
+    },
+    "dev": {
+      "unsupported": "Source-only engineering library has no deployed product service or build artifact; runtime boundary coverage is in make test."
+    },
+    "stop": {
+      "unsupported": "Source-only engineering library has no deployed product service or build artifact; runtime boundary coverage is in make test."
+    }
+  }
+}
