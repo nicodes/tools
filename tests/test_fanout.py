@@ -57,6 +57,16 @@ class MiseEntry(unittest.TestCase):
 
 
 class WorkflowPins(unittest.TestCase):
+    def test_current_make_action_moves(self):
+        text, changed = fanout.bump_workflow(f'- uses: nicodes/tools/make@{OLD} # v0.6.0\n', '0.7.0', NEW)
+        self.assertTrue(changed)
+        self.assertIn(f'nicodes/tools/make@{NEW} # v0.7.0', text)
+
+    def test_nonimmutable_and_unknown_tools_consumers_fail(self):
+        for reference in ['make@main', 'make@v0.6.0', 'unknown@'+OLD, 'make@'+OLD+'x']:
+            with self.subTest(reference=reference), self.assertRaises(ValueError):
+                fanout.bump_workflow('uses: nicodes/tools/'+reference, '0.7.0', NEW)
+
     def test_renamed_and_legacy_calls_are_both_repinned(self):
         body = (f'uses: nicodes/tools/.github/workflows/backup.yml@{OLD}\n'
                 f'uses: nicodes/tools/.github/workflows/vuln.yml@{OLD}\n'
@@ -95,6 +105,44 @@ class WorkflowPins(unittest.TestCase):
 
 
 class ApplyAcrossAProduct(unittest.TestCase):
+    def test_local_action_and_independent_pin_move_together(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.product(directory)
+            action = root/'.github/actions/test/action.yaml'
+            action.parent.mkdir(parents=True)
+            action.write_text(f'uses: nicodes/tools/make@{OLD}\n')
+            pin = root/'engineering-pin.json'
+            pin.write_text('{"repository":"https://github.com/nicodes/tools","revision":"'+OLD+'","source_sha256":"'+OLD_SUM+'"}')
+            fanout.apply(root, '0.7.0', NEW, NEW_SUM, NEW_SUM)
+            self.assertIn(NEW, action.read_text())
+            self.assertIn(NEW_SUM, pin.read_text())
+            self.assertEqual(fanout.apply(root, '0.7.0', NEW, NEW_SUM, NEW_SUM), [])
+
+    def test_invalid_consumer_leaves_all_files_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.product(directory)
+            workflow = root/'.github/workflows/ci.yml'
+            workflow.write_text('uses: nicodes/tools/make@main\n')
+            before = (root/'.mise.toml').read_text()
+            with self.assertRaises(ValueError):
+                fanout.apply(root, '0.7.0', NEW, NEW_SUM)
+            self.assertEqual((root/'.mise.toml').read_text(), before)
+
+    def test_missing_manifest_digest_leaves_all_files_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.product(directory)
+            (root/'engineering-pin.json').write_text('{}')
+            with self.assertRaises(ValueError):
+                fanout.apply(root, '0.7.0', NEW, NEW_SUM)
+            self.assertEqual((root/'.mise.toml').read_text(), MISE)
+
+    def test_dry_run_leaves_all_files_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.product(directory)
+            touched = fanout.apply(root, '0.7.0', NEW, NEW_SUM, dry_run=True)
+            self.assertTrue(touched)
+            self.assertEqual((root/'.mise.toml').read_text(), MISE)
+
     def product(self, directory):
         root = Path(directory)
         (root / '.github/workflows').mkdir(parents=True)
