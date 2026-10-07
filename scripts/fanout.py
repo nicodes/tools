@@ -26,7 +26,7 @@ MISE_LINE = re.compile(r'^\s*"http:cicd-engineering"\s*=', re.M)
 MISE_VERSION = re.compile(r'(\bversion\s*=\s*")([^"]+)(")')
 MISE_CHECKSUM = re.compile(r'(\bchecksum\s*=\s*"sha256:)([a-f0-9]{64})(")')
 WORKFLOW_PIN = re.compile(
-    r'(nicodes/(?:cicd|tools)/(?:make|\.github/workflows/[a-z-]+\.ya?ml))@[a-f0-9]{40}([ \t]*#[ \t]*v?[0-9.]+)?')
+    r'(nicodes/(?:cicd|tools)/(?:make|workflow-standards|\.github/workflows/[a-z-]+\.ya?ml))@[a-f0-9]{40}([ \t]*#[ \t]*v?[0-9.]+)?')
 TOOLS_REFERENCE = re.compile(r'uses:\s*[\"\']?(nicodes/(?:cicd|tools)/[^\s\"\']+)')
 
 

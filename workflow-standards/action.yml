@@ -1,0 +1,14 @@
+name: Workflow and developer standards
+description: Validate caller-owned profile commands and generic workflow controls
+runs:
+  using: composite
+  steps:
+    - name: Validate profile and workflow controls
+      shell: bash
+      env:
+        STANDARDS_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        python3 -m venv "$RUNNER_TEMP/workflow-standards"
+        "$RUNNER_TEMP/workflow-standards/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r "$STANDARDS_ACTION_PATH/requirements.txt"
+        "$RUNNER_TEMP/workflow-standards/bin/python" "$STANDARDS_ACTION_PATH/../helpers/workflow-standards.py"
