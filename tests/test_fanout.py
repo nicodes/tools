@@ -118,6 +118,16 @@ class ApplyAcrossAProduct(unittest.TestCase):
             self.assertIn(NEW_SUM, pin.read_text())
             self.assertEqual(fanout.apply(root, '0.7.0', NEW, NEW_SUM, NEW_SUM), [])
 
+    def test_manifest_records_actual_immutable_revisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.product(directory)
+            changes = []
+            fanout.apply(root, '0.7.0', NEW, NEW_SUM, change_manifest=changes)
+            workflow = next(item for item in changes if item['path'] == '.github/workflows/cd.yml')
+            self.assertEqual(workflow['before_tools_refs'], [f'nicodes/tools/.github/workflows/vuln.yml@{OLD} # v0.6.0'])
+            self.assertEqual(workflow['after_tools_refs'], [f'nicodes/tools/.github/workflows/vuln.yml@{NEW} # v0.7.0'])
+            self.assertNotEqual(workflow['before_sha256'], workflow['after_sha256'])
+
     def test_invalid_consumer_leaves_all_files_untouched(self):
         with tempfile.TemporaryDirectory() as directory:
             root = self.product(directory)
