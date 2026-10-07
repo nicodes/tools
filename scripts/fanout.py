@@ -1,22 +1,10 @@
 #!/usr/bin/env python3
-"""Open the engineering-snapshot bump in every product, for one cicd release.
+"""Review and adopt one verified tools release through isolated worktrees.
 
-WHY THIS IS NOT A WORKFLOW. The bump edits .github/workflows -- the
-`uses: nicodes/cicd/.github/workflows/*.yml@<sha>` pins, which helpers/pins.mjs
-requires to name the same commit as the installed snapshot. GITHUB_TOKEN is
-refused when it pushes a workflow file:
-
-    refusing to allow a GitHub App to create or update workflow
-    `.github/workflows/backup.yml` without `workflows` permission
-
-That permission needs a PAT or an App credential with write access to all
-nine products across three owners -- a standing push-to-any-workflow secret,
-which is precisely what docs/releases.md says this repository will not hold.
-So this runs on the operator's machine with the operator's own rights, for
-the same reason `release.sh prepare` does.
-
-What it removes is the hand-work, not the human: nine clones, nine identical
-edits, nine pull requests. It pushes nothing without --push.
+All supported orchestration references move with the package and independent
+source manifest pin. Dry runs print complete diffs without editing files;
+--push commits ordinary branches and opens or resumes adoption PRs. The caller
+supplies repository checkouts, a worktree root, and an outcome manifest.
 """
 import argparse
 import json
@@ -24,6 +12,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import hashlib
+import tarfile
+import difflib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +26,8 @@ MISE_LINE = re.compile(r'^\s*"http:cicd-engineering"\s*=', re.M)
 MISE_VERSION = re.compile(r'(\bversion\s*=\s*")([^"]+)(")')
 MISE_CHECKSUM = re.compile(r'(\bchecksum\s*=\s*"sha256:)([a-f0-9]{64})(")')
 WORKFLOW_PIN = re.compile(
-    r'(nicodes/(?:cicd|tools)/\.github/workflows/[a-z-]+\.yml)@[a-f0-9]{40}([ \t]*#[ \t]*v?[0-9.]+)?')
+    r'(nicodes/(?:cicd|tools)/(?:make|\.github/workflows/[a-z-]+\.ya?ml))@[a-f0-9]{40}([ \t]*#[ \t]*v?[0-9.]+)?')
+TOOLS_REFERENCE = re.compile(r'uses:\s*[\"\']?(nicodes/(?:cicd|tools)/[^\s\"\']+)')
 
 
 def bump_mise(text, version, checksum):
@@ -57,7 +49,10 @@ def bump_mise(text, version, checksum):
 
 
 def bump_workflow(text, version, commit):
-    """Repin the cicd reusable-workflow calls. Returns (text, changed)."""
+    """Repin supported immutable tools consumers, rejecting unknown formats."""
+    for reference in TOOLS_REFERENCE.findall(text):
+        if not WORKFLOW_PIN.fullmatch(reference):
+            raise ValueError(f'unsupported or non-immutable tools reference: {reference}')
     new = WORKFLOW_PIN.sub(rf'\1@{commit} # v{version}', text)
     return new, new != text
 
@@ -74,23 +69,60 @@ def release_facts(version):
     found = re.search(r'sha256:([a-f0-9]{64})', notes.stdout or '')
     if not found:
         raise SystemExit(f'{tag}: the release notes carry no artifact sha256')
-    return commit.stdout.strip(), found.group(1)
+    checksum = found.group(1)
+    with tempfile.TemporaryDirectory(prefix='engineering-release-') as directory:
+        archive = Path(directory)/f'cicd-engineering-{tag}.tar.gz'
+        subprocess.run(['gh', 'release', 'download', tag, '-R', 'nicodes/tools',
+                        '-p', archive.name, '-D', directory], check=True, timeout=300)
+        if hashlib.sha256(archive.read_bytes()).hexdigest() != checksum:
+            raise ValueError('release archive differs from its published checksum')
+        with tarfile.open(archive) as stream:
+            manifests = [member for member in stream.getmembers()
+                         if member.name.rstrip('/').split('/')[-1] == 'SOURCE.json']
+            if len(manifests) != 1 or not manifests[0].isfile():
+                raise ValueError('release must contain one regular SOURCE.json')
+            source_bytes = stream.extractfile(manifests[0]).read()
+        source = json.loads(source_bytes)
+        if source.get('revision') != commit.stdout.strip():
+            raise ValueError('release source manifest revision differs from tag')
+        source_digest = hashlib.sha256(source_bytes).hexdigest()
+    return commit.stdout.strip(), checksum, source_digest
 
 
-def apply(root, version, commit, checksum):
+def apply(root, version, commit, checksum, source_digest=None, dry_run=False):
     """Every edit this bump makes in one product. Returns the files touched."""
-    touched = []
+    updates = {}
     mise = root / '.mise.toml'
     text, changed = bump_mise(mise.read_text(), version, checksum)
     if changed:
-        mise.write_text(text)
-        touched.append('.mise.toml')
-    for path in sorted((root / '.github/workflows').glob('*.yml')):
+        updates[mise] = text
+    paths = sorted(set((root/'.github/workflows').glob('*.y*ml')) |
+                   set((root/'.github/actions').rglob('action.y*ml')))
+    for path in paths:
         text, changed = bump_workflow(path.read_text(), version, commit)
         if changed:
+            updates[path] = text
+    pin_path = root/'engineering-pin.json'
+    if pin_path.exists():
+        if not source_digest or not re.fullmatch(r'[a-f0-9]{64}', source_digest):
+            raise ValueError('engineering pin requires the verified release manifest digest')
+        pin = json.loads(pin_path.read_text())
+        if pin.get('repository') not in ('https://github.com/nicodes/tools', 'https://github.com/nicodes/cicd'):
+            raise ValueError('unknown engineering pin repository')
+        pin.update(repository='https://github.com/nicodes/tools', revision=commit, source_sha256=source_digest)
+        text = json.dumps(pin, indent=2)+'\n'
+        if text != pin_path.read_text():
+            updates[pin_path] = text
+    # Validate the entire change before writing any file. Other action pin
+    # records (for example komizo-actions) belong to their own releases.
+    for path, text in updates.items():
+        if dry_run:
+            print(''.join(difflib.unified_diff(path.read_text().splitlines(True),
+                  text.splitlines(True), fromfile=str(path.relative_to(root)),
+                  tofile=str(path.relative_to(root)))), end='')
+        else:
             path.write_text(text)
-            touched.append(str(path.relative_to(root)))
-    return touched
+    return [str(path.relative_to(root)) for path in updates]
 
 
 def git(root, *arguments, check=True):
@@ -98,44 +130,57 @@ def git(root, *arguments, check=True):
                           capture_output=True, text=True, timeout=120)
 
 
-def product(repo, version, commit, checksum, push):
-    with tempfile.TemporaryDirectory(prefix='fanout-') as directory:
-        root = Path(directory) / 'repo'
-        clone = subprocess.run(['gh', 'repo', 'clone', repo, str(root), '--', '--depth', '1'],
-                               capture_output=True, text=True, timeout=300)
-        if clone.returncode != 0:
-            return f'{repo}: clone failed: {clone.stderr.strip()}'
-        branch = BRANCH.format(version=version)
-        git(root, 'checkout', '-q', '-B', branch)
-        try:
-            touched = apply(root, version, commit, checksum)
-        except ValueError as error:
-            return f'{repo}: {error}'
-        if not touched:
-            return f'{repo}: already on v{version}'
-        git(root, 'add', '-A')
+def product(repo, version, commit, checksum, source_digest, push, checkout_root, worktree_root):
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
+        raise ValueError('invalid repository name')
+    checkout = checkout_root/repo
+    root = worktree_root/f'engineering-{version}-{repo.replace("/", "-")}'
+    branch = BRANCH.format(version=version)
+    git(checkout, 'fetch', 'origin', 'main')
+    if not root.exists():
+        # Resume an existing branch without resetting it or force pushing.
+        exists = git(checkout, 'show-ref', '--verify', f'refs/heads/{branch}', check=False).returncode == 0
+        arguments = ['worktree', 'add', str(root)]
+        git(checkout, *(arguments+[branch] if exists else arguments+['-b', branch, 'FETCH_HEAD']))
+    if git(root, 'branch', '--show-current').stdout.strip() != branch:
+        raise ValueError('adoption worktree is on another branch')
+    if git(root, 'status', '--porcelain').stdout.strip():
+        raise ValueError('adoption worktree has uncommitted changes; preserve and resolve them first')
+    try:
+        touched = apply(root, version, commit, checksum, source_digest, dry_run=not push)
+    except ValueError as error:
+        raise ValueError(f'{repo}: {error}') from error
+    if not push:
+        return f'{repo}: would bump {len(touched)} file(s) (no --push)' if touched else f'{repo}: already on v{version}'
+    if not touched and git(root, 'rev-parse', 'HEAD').stdout == git(checkout, 'rev-parse', 'FETCH_HEAD').stdout:
+        return f'{repo}: already on v{version}'
+    if touched:
+        git(root, 'add', '--', *touched)
         git(root, 'commit', '-q', '-m', MESSAGE.format(version=version, commit=commit))
-        if not push:
-            return f'{repo}: would bump {len(touched)} file(s) (no --push)'
-        git(root, 'push', '-q', '-f', 'origin', branch)
-        made = subprocess.run(
-            ['gh', 'pr', 'create', '-R', repo, '--head', branch, '--base', 'main',
-             '--title', f'build(deps): engineering snapshot v{version}',
-             '--body', MESSAGE.format(version=version, commit=commit)],
-            capture_output=True, text=True, timeout=120)
-        return f'{repo}: {(made.stdout or made.stderr).strip().splitlines()[-1]}'
+    git(root, 'push', '-q', 'origin', branch)
+    existing = subprocess.run(['gh', 'pr', 'list', '-R', repo, '--head', branch,
+                              '--json', 'url', '--jq', '.[0].url'], capture_output=True, text=True, check=True)
+    if existing.stdout.strip():
+        return f'{repo}: {existing.stdout.strip()}'
+    body = root.parent/f'{root.name}-pr.txt'
+    body.write_text(MESSAGE.format(version=version, commit=commit))
+    made = subprocess.run(
+        ['gh', 'pr', 'create', '-R', repo, '--head', branch, '--base', 'main',
+         '--title', f'build(deps): engineering snapshot v{version}',
+         '--body-file', str(body)],
+        capture_output=True, text=True, timeout=120)
+    return f'{repo}: {(made.stdout or made.stderr).strip().splitlines()[-1]}'
 
 
 MESSAGE = """build(deps): engineering snapshot v{version}
 
-Moves this product to cicd v{version} ({commit}).
+Moves this product to tools v{version} ({commit}).
 
-Both pins move together because helpers/pins.mjs requires it: the installed
-snapshot's revision and every nicodes/cicd reusable-workflow call must name
-one commit, or the product is running helper code from one revision and
-workflows from another.
+Updates the installed archive checksum, independent source manifest pin,
+Make action, and supported reusable workflow references together. Product
+policy and unrelated action releases are preserved.
 
-Opened by scripts/fanout.py from nicodes/cicd.
+Opened by scripts/fanout.py from nicodes/tools.
 """
 
 
@@ -145,19 +190,31 @@ if __name__ == '__main__':
     parser.add_argument('version', help='the release to move the fleet to, without the v')
     parser.add_argument('--fleet', type=Path, required=True)
     parser.add_argument('--push', action='store_true', help='push branches and open pull requests')
+    parser.add_argument('--checkout-root', type=Path, required=True, help='original repository checkouts, used only to fetch/manage worktrees')
+    parser.add_argument('--worktree-root', type=Path, required=True, help='directory for isolated adoption worktrees')
+    parser.add_argument('--manifest', type=Path, required=True, help='write machine-readable adoption outcomes')
     parser.add_argument('--only', action='append', default=[], metavar='REPO',
                         help='limit to these products; repeat for several')
     args = parser.parse_args()
     if not re.fullmatch(r'\d+\.\d+\.\d+', args.version):
         raise SystemExit('version must be X.Y.Z, without the leading v')
-    commit, checksum = release_facts(args.version)
+    commit, checksum, source_digest = release_facts(args.version)
     fleet = json.loads(args.fleet.read_text())
     repos = args.only or sorted(fleet['products'])
     print(f'v{args.version} = {commit}  sha256:{checksum[:12]}', file=sys.stderr)
     failures = 0
+    outcomes = []
     for repo in repos:
-        line = product(repo, args.version, commit, checksum, args.push)
+        try:
+            line = product(repo, args.version, commit, checksum, source_digest, args.push,
+                           args.checkout_root, args.worktree_root)
+        except (ValueError, subprocess.SubprocessError) as error:
+            line = f'{repo}: failed: {error}'
         print(line)
+        outcomes.append({'repository': repo, 'result': line})
         if 'failed' in line or ': no ' in line:
             failures += 1
+    args.manifest.write_text(json.dumps({'version': args.version, 'revision': commit,
+        'archive_sha256': checksum, 'source_sha256': source_digest, 'push': args.push,
+        'outcomes': outcomes}, indent=2)+'\n')
     sys.exit(1 if failures else 0)
