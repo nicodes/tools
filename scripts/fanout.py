@@ -89,7 +89,7 @@ def release_facts(version):
     return commit.stdout.strip(), checksum, source_digest
 
 
-def apply(root, version, commit, checksum, source_digest=None, dry_run=False):
+def apply(root, version, commit, checksum, source_digest=None, dry_run=False, reviewed_policy=None, change_manifest=None):
     """Every edit this bump makes in one product. Returns the files touched."""
     updates = {}
     mise = root / '.mise.toml'
@@ -113,9 +113,41 @@ def apply(root, version, commit, checksum, source_digest=None, dry_run=False):
         text = json.dumps(pin, indent=2)+'\n'
         if text != pin_path.read_text():
             updates[pin_path] = text
+    policy_path = root/'fleet-policy.json'
+    if policy_path.exists():
+        old_bytes = policy_path.read_bytes()
+        old_policy = json.loads(old_bytes)
+        if reviewed_policy is None:
+            if old_policy['baseline']['snapshot_revision'] != commit:
+                raise ValueError('release adoption requires a reviewed fleet policy snapshot')
+        else:
+            policy = json.loads(reviewed_policy)
+            expected = json.loads(old_bytes)
+            expected['baseline']['snapshot_revision'] = commit
+            if policy != expected:
+                raise ValueError('reviewed release policy must change only the snapshot revision')
+            env_path = root/'scripts/engineering-env.sh'
+            env = env_path.read_text()
+            pattern = re.compile(r'(FLEET_BASELINE_SHA256[^\n]*:-)([a-f0-9]{64})([}])')
+            matches = pattern.findall(env)
+            if len(matches) != 1 or matches[0][1] != hashlib.sha256(old_bytes).hexdigest():
+                raise ValueError('existing fleet policy digest is missing or incoherent')
+            digest = hashlib.sha256(reviewed_policy).hexdigest()
+            new_env = pattern.sub(lambda match: match[1]+digest+match[3], env)
+            if reviewed_policy != old_bytes:
+                updates[policy_path] = reviewed_policy.decode()
+            if new_env != env:
+                updates[env_path] = new_env
     # Validate the entire change before writing any file. Other action pin
     # records (for example komizo-actions) belong to their own releases.
     for path, text in updates.items():
+        before = path.read_text()
+        if change_manifest is not None:
+            change_manifest.append({'path': str(path.relative_to(root)),
+                'before_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+                'after_sha256': hashlib.sha256(text.encode()).hexdigest(),
+                'before_tools_refs': WORKFLOW_PIN.findall(before),
+                'after_tools_refs': WORKFLOW_PIN.findall(text)})
         if dry_run:
             print(''.join(difflib.unified_diff(path.read_text().splitlines(True),
                   text.splitlines(True), fromfile=str(path.relative_to(root)),
@@ -130,7 +162,7 @@ def git(root, *arguments, check=True):
                           capture_output=True, text=True, timeout=120)
 
 
-def product(repo, version, commit, checksum, source_digest, push, checkout_root, worktree_root):
+def product(repo, version, commit, checksum, source_digest, push, checkout_root, worktree_root, reviewed_policy=None, change_manifest=None):
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise ValueError('invalid repository name')
     checkout = checkout_root/repo
@@ -147,7 +179,7 @@ def product(repo, version, commit, checksum, source_digest, push, checkout_root,
     if git(root, 'status', '--porcelain').stdout.strip():
         raise ValueError('adoption worktree has uncommitted changes; preserve and resolve them first')
     try:
-        touched = apply(root, version, commit, checksum, source_digest, dry_run=not push)
+        touched = apply(root, version, commit, checksum, source_digest, dry_run=not push, reviewed_policy=reviewed_policy, change_manifest=change_manifest)
     except ValueError as error:
         raise ValueError(f'{repo}: {error}') from error
     if not push:
@@ -178,7 +210,7 @@ Moves this product to tools v{version} ({commit}).
 
 Updates the installed archive checksum, independent source manifest pin,
 Make action, and supported reusable workflow references together. Product
-policy and unrelated action releases are preserved.
+policy is updated only when explicitly supplied and validated; unrelated action releases are preserved.
 
 Opened by scripts/fanout.py from nicodes/tools.
 """
@@ -189,6 +221,7 @@ if __name__ == '__main__':
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('version', help='the release to move the fleet to, without the v')
     parser.add_argument('--fleet', type=Path, required=True)
+    parser.add_argument('--policy', type=Path, help='reviewed caller-owned fleet policy; only the release revision may change')
     parser.add_argument('--push', action='store_true', help='push branches and open pull requests')
     parser.add_argument('--checkout-root', type=Path, required=True, help='original repository checkouts, used only to fetch/manage worktrees')
     parser.add_argument('--worktree-root', type=Path, required=True, help='directory for isolated adoption worktrees')
@@ -205,16 +238,19 @@ if __name__ == '__main__':
     failures = 0
     outcomes = []
     for repo in repos:
+        changes = []
         try:
             line = product(repo, args.version, commit, checksum, source_digest, args.push,
-                           args.checkout_root, args.worktree_root)
+                           args.checkout_root, args.worktree_root, args.policy.read_bytes() if args.policy else None, changes)
         except (ValueError, subprocess.SubprocessError) as error:
             line = f'{repo}: failed: {error}'
         print(line)
-        outcomes.append({'repository': repo, 'result': line})
+        outcomes.append({'repository': repo, 'result': line, 'changes': changes,
+                         'validation': 'rejected' if 'failed' in line else 'transforms verified; hosted checks pending'})
         if 'failed' in line or ': no ' in line:
             failures += 1
     args.manifest.write_text(json.dumps({'version': args.version, 'revision': commit,
         'archive_sha256': checksum, 'source_sha256': source_digest, 'push': args.push,
+        'policy_sha256': hashlib.sha256(args.policy.read_bytes()).hexdigest() if args.policy else None,
         'outcomes': outcomes}, indent=2)+'\n')
     sys.exit(1 if failures else 0)
