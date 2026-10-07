@@ -78,6 +78,19 @@ def checkout_of(job, repository):
                 and step.get('with', {}).get('repository') == repository)
 
 
+class CallerRunnerSelectionTests(unittest.TestCase):
+    def test_runner_override_applies_to_every_job_and_defaults_to_github(self):
+        for name in ('backup.yml', 'dependabot.yml', 'tools.yml', 'vuln.yml'):
+            with self.subTest(workflow=name):
+                document = load(name)
+                runner = document['on']['workflow_call']['inputs']['runner']
+                self.assertEqual(runner['type'], 'string')
+                self.assertIs(runner['required'], False)
+                self.assertEqual(runner['default'], 'ubuntu-24.04')
+                for job in document['jobs'].values():
+                    self.assertEqual(job['runs-on'], '${{ inputs.runner }}')
+
+
 class VulnerabilityScanWorkflowTests(unittest.TestCase):
     def setUp(self):
         self.document = load('vuln.yml')
@@ -87,13 +100,13 @@ class VulnerabilityScanWorkflowTests(unittest.TestCase):
     def test_the_only_trigger_is_workflow_call(self):
         self.assertEqual(list(self.document['on']), ['workflow_call'])
 
-    def test_scan_manifest_is_the_only_input(self):
+    def test_scan_manifest_and_optional_runner_inputs(self):
         inputs = self.document['on']['workflow_call']['inputs']
-        self.assertEqual(set(inputs), {'scan-config'})
+        self.assertEqual(set(inputs), {'scan-config', 'runner'})
         self.assertEqual(inputs['scan-config']['default'], 'deploy/scan.json')
 
     def test_scan_job_keeps_the_fleet_runner_and_read_permissions(self):
-        self.assertEqual(self.scan['runs-on'], 'ubuntu-24.04')
+        self.assertEqual(self.scan['runs-on'], '${{ inputs.runner }}')
         self.assertEqual(self.scan['timeout-minutes'], 110)
         self.assertEqual(self.scan['permissions'],
                          {'contents': 'read', 'packages': 'read', 'deployments': 'read'})
@@ -137,9 +150,10 @@ class ToolWatchWorkflowTests(unittest.TestCase):
         self.document = load('tools.yml')
         self.watch = self.document['jobs']['watch']
 
-    def test_the_only_trigger_is_workflow_call_with_no_inputs(self):
-        self.assertEqual(self.document['on'], {'workflow_call': None})
-        self.assertIsNone(self.document['on']['workflow_call'])
+    def test_the_only_trigger_is_workflow_call_with_optional_runner(self):
+        self.assertEqual(list(self.document['on']), ['workflow_call'])
+        inputs = self.document['on']['workflow_call']['inputs']
+        self.assertEqual(set(inputs), {'runner'})
 
     def test_watch_stays_main_only(self):
         self.assertEqual(self.watch['if'], "github.ref == 'refs/heads/main'")

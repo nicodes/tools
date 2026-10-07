@@ -62,14 +62,15 @@ class ReusableBackupWorkflow(unittest.TestCase):
                     checkouts.append(configuration)
         return checkouts
 
-    def test_declares_exactly_the_three_call_inputs_and_three_named_secrets(self):
+    def test_declares_required_product_inputs_optional_runner_and_named_secrets(self):
         trigger = self.document.get('on', self.document.get(True))
         call = trigger['workflow_call']
         inputs = call['inputs']
-        self.assertEqual(set(inputs), {'product', 'server', 'user', 'allowed-products'})
+        self.assertEqual(set(inputs), {'product', 'server', 'user', 'allowed-products', 'runner'})
         for name, specification in inputs.items():
             self.assertEqual(specification['type'], 'string', name)
-            self.assertTrue(specification['required'], name)
+            self.assertEqual(specification['required'], name != 'runner', name)
+        self.assertEqual(inputs['runner']['default'], 'ubuntu-24.04')
         # Callers may map these by name (e.g. samplehost's SSH_DEPLOY_KEY rename);
         # naming anything else startup_failures the call with zero jobs
         # (live matrix 2026-09-20: example-org/deploy-actions run 35483654530).
@@ -115,7 +116,7 @@ class ReusableBackupWorkflow(unittest.TestCase):
 
     def test_backup_job_matches_the_fleet_contract_and_declares_no_concurrency(self):
         job = self.document['jobs']['backup']
-        self.assertEqual(job['runs-on'], 'ubuntu-24.04')
+        self.assertEqual(job['runs-on'], '${{ inputs.runner }}')
         self.assertEqual(job['environment'], 'production')
         self.assertEqual(job['timeout-minutes'], 40)
         self.assertEqual(job['permissions'], {'contents': 'read'})
