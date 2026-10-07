@@ -62,6 +62,11 @@ class WorkflowPins(unittest.TestCase):
         self.assertTrue(changed)
         self.assertIn(f'nicodes/tools/make@{NEW} # v0.7.0', text)
 
+    def test_godot_setup_action_moves_with_release(self):
+        text, changed = fanout.bump_workflow(f'- uses: nicodes/tools/godot-setup@{OLD} # v0.6.0\n', '0.7.0', NEW)
+        self.assertTrue(changed)
+        self.assertIn(f'nicodes/tools/godot-setup@{NEW} # v0.7.0', text)
+
     def test_nonimmutable_and_unknown_tools_consumers_fail(self):
         for reference in ['make@main', 'make@v0.6.0', 'unknown@'+OLD, 'make@'+OLD+'x']:
             with self.subTest(reference=reference), self.assertRaises(ValueError):
