@@ -1,0 +1,46 @@
+name: Verified Godot setup
+description: Install caller-pinned Linux x86_64 Godot and optional export templates
+inputs:
+  version:
+    description: Reviewed stable Godot version
+    required: true
+  binary-checksum:
+    description: Reviewed sha256 or sha512 checksum, including algorithm prefix
+    required: true
+  templates-checksum:
+    description: Reviewed templates checksum, required when installing templates
+    default: ''
+  install-templates:
+    description: Install reviewed export templates
+    default: 'false'
+  origin:
+    description: Official release repository, godot or godot-builds
+    default: godot
+  expected-version:
+    description: Optional exact official version output
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Cache pinned archives
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: ${{ runner.temp }}/fleet-godot/archives
+        key: fleet-godot-${{ runner.os }}-${{ runner.arch }}-${{ inputs.origin }}-${{ inputs.version }}-${{ inputs.binary-checksum }}-${{ inputs.templates-checksum }}
+    - name: Verify archives and install fresh binaries
+      shell: bash
+      env:
+        GODOT_SETUP_SCRIPT: ${{ github.action_path }}/../helpers/godot-setup.py
+        GODOT_VERSION: ${{ inputs.version }}
+        GODOT_BINARY_PIN: ${{ inputs.binary-checksum }}
+        GODOT_TEMPLATES_PIN: ${{ inputs.templates-checksum }}
+        GODOT_TEMPLATES: ${{ inputs.install-templates }}
+        GODOT_ORIGIN: ${{ inputs.origin }}
+        GODOT_EXPECTED_VERSION: ${{ inputs.expected-version }}
+      run: |
+        set -euo pipefail
+        [[ "$GODOT_TEMPLATES" == true || "$GODOT_TEMPLATES" == false ]] || { echo "install-templates must be true or false" >&2; exit 1; }
+        args=(--version "$GODOT_VERSION" --binary-checksum "$GODOT_BINARY_PIN" --templates-checksum "$GODOT_TEMPLATES_PIN" --origin "$GODOT_ORIGIN" --root "$RUNNER_TEMP/fleet-godot")
+        if [[ "$GODOT_TEMPLATES" == true ]]; then args+=(--templates); fi
+        if [[ -n "$GODOT_EXPECTED_VERSION" ]]; then args+=(--expected-version "$GODOT_EXPECTED_VERSION"); fi
+        python3 "$GODOT_SETUP_SCRIPT" "${args[@]}"
