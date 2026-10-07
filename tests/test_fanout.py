@@ -179,6 +179,30 @@ class ApplyAcrossAProduct(unittest.TestCase):
             self.assertIn('version = "0.7.0"', (root / '.mise.toml').read_text())
             self.assertIn(f'@{NEW} # v0.7.0', (root / '.github/workflows/cd.yml').read_text())
 
+    def test_reviewed_policy_and_digest_move_atomically(self):
+        import hashlib
+        import json
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.product(directory)
+            policy = {'baseline': {'snapshot_revision': OLD}, 'auth': {'enforced': True}}
+            old = (json.dumps(policy)+'\n').encode()
+            (root/'fleet-policy.json').write_bytes(old)
+            env = root/'scripts/engineering-env.sh'
+            env.parent.mkdir()
+            env.write_text('export FLEET_BASELINE_SHA256="${FLEET_BASELINE_SHA256:-'+hashlib.sha256(old).hexdigest()+'}"\n')
+            with self.assertRaises(ValueError):
+                fanout.apply(root, '0.7.0', NEW, NEW_SUM)
+            self.assertEqual((root/'.mise.toml').read_text(), MISE)
+            policy['baseline']['snapshot_revision'] = NEW
+            reviewed = (json.dumps(policy)+'\n').encode()
+            fanout.apply(root, '0.7.0', NEW, NEW_SUM, reviewed_policy=reviewed)
+            self.assertEqual((root/'fleet-policy.json').read_bytes(), reviewed)
+            self.assertIn(hashlib.sha256(reviewed).hexdigest(), env.read_text())
+            self.assertEqual(fanout.apply(root, '0.7.0', NEW, NEW_SUM, reviewed_policy=reviewed), [])
+            policy['auth']['enforced'] = False
+            with self.assertRaises(ValueError):
+                fanout.apply(root, '0.7.0', NEW, NEW_SUM, reviewed_policy=json.dumps(policy).encode())
+
 
 if __name__ == '__main__':
     unittest.main()
