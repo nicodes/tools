@@ -25,7 +25,9 @@ class ObservabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runner = contract.Runner({'stages': {'unit': [['adapter', 'secret-argument']]}})
             runner.root = Path(directory)
-            with mock.patch.object(contract.subprocess, 'run', side_effect=subprocess.CalledProcessError(7, ['adapter'])):
+            with mock.patch.object(contract, 'identity', return_value='b'*64), \
+                 mock.patch.object(contract.subprocess, 'check_output', return_value='a'*40+'\n'), \
+                 mock.patch.object(contract.subprocess, 'run', side_effect=subprocess.CalledProcessError(7, ['adapter'])):
                 with self.assertRaises(subprocess.CalledProcessError) as failure:
                     runner.stage('unit')
             self.assertEqual(failure.exception.returncode, 7)
@@ -36,7 +38,9 @@ class ObservabilityTests(unittest.TestCase):
 
     def test_unwritable_telemetry_does_not_mask_adapter_failure(self):
         runner = contract.Runner({'stages': {'unit': [['adapter']]}})
-        with mock.patch.object(contract.subprocess, 'run', side_effect=subprocess.CalledProcessError(9, ['adapter'])), \
+        with mock.patch.object(contract, 'identity', return_value='b'*64), \
+             mock.patch.object(contract.subprocess, 'check_output', return_value='a'*40+'\n'), \
+             mock.patch.object(contract.subprocess, 'run', side_effect=subprocess.CalledProcessError(9, ['adapter'])), \
              mock.patch.object(Path, 'mkdir', side_effect=OSError('unwritable')):
             with self.assertRaises(subprocess.CalledProcessError) as failure:
                 runner.stage('unit')
@@ -49,8 +53,12 @@ class ObservabilityTests(unittest.TestCase):
         self.assertIn('3.000', rendered)
 
     def test_provenance_does_not_claim_tests_from_another_job(self):
-        runner = contract.Runner({})
+        runner = contract.Runner({'stages': {'unit': [['adapter']], 'integration': [['adapter']]}})
         with mock.patch.object(contract.subprocess, 'check_output', return_value='a'*40+'\n'):
             self.assertIsNone(runner.provenance('b'*64)['tested_commit'])
             runner.done.update(['unit', 'integration'])
+            self.assertIsNone(runner.provenance('b'*64)['tested_commit'])
+            runner.test_receipts.update({name: {'source_commit': 'a'*40, 'input_identity': 'b'*64}
+                                         for name in ('unit', 'integration')})
             self.assertEqual(runner.provenance('b'*64)['tested_commit'], 'a'*40)
+            self.assertIsNone(runner.provenance('c'*64)['tested_commit'])
