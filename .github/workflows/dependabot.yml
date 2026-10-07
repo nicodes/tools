@@ -22,6 +22,11 @@ name: Dependabot
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label selected by the caller
+        type: string
+        required: false
+        default: ubuntu-24.04
       dispatch-target:
         description: Merged-main workflow filename to dispatch first; empty falls back to cd.yml then ci.yml
         required: false
@@ -36,7 +41,7 @@ permissions:
 jobs:
   auto-merge:
     if: github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.draft == false
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 100
     steps:
       - name: Verify bot-signed dependency metadata
