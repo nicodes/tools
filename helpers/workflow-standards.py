@@ -47,13 +47,19 @@ def findings(path, data):
     group = concurrency.get('group', '') if isinstance(concurrency, dict) else concurrency
     if re.search(r'\$\{(?!\{)\s*github\.', str(group)):
         errors.append('literal GitHub expression in concurrency group')
-    jobs = data.get('jobs', {})
+    jobs = dict(data.get('jobs', {}))
+    if data.get('runs', {}).get('using') == 'composite':
+        jobs['composite'] = data['runs']
     for key, job in jobs.items():
         if 'runs-on' in job and (type(job.get('timeout-minutes')) is not int or not 1 <= job['timeout-minutes'] <= 120):
             errors.append(f'{key}: runner job needs a timeout between 1 and 120 minutes')
         uses = [job.get('uses')] + [step.get('uses') for step in job.get('steps', [])]
         for reference in filter(None, uses):
-            if reference.startswith('./') or reference.startswith('docker://'):
+            if reference.startswith('./'):
+                continue
+            if reference.startswith('docker://'):
+                if not re.fullmatch(r'docker://[^\s@]+@sha256:[a-f0-9]{64}', reference):
+                    errors.append(f'{key}: container action must name an immutable digest')
                 continue
             if not re.fullmatch(r'[\w.-]+/[\w./-]+@[a-f0-9]{40}', reference):
                 errors.append(f'{key}: external uses must name an immutable commit')
@@ -77,7 +83,9 @@ def main():
         process = subprocess.run(command, cwd=args.root)
         raise SystemExit(process.returncode if process.returncode >= 0 else 128-process.returncode)
     errors = []
-    for file in sorted((args.root/'.github/workflows').glob('*.y*ml')):
+    files = list((args.root/'.github/workflows').glob('*.y*ml'))
+    files.extend((args.root/'.github/actions').rglob('action.y*ml'))
+    for file in sorted(files):
         errors.extend(findings(file.relative_to(args.root), load_workflow(file.read_text())))
     if errors:
         raise SystemExit('\n'.join(errors))

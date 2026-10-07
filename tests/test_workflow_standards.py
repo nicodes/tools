@@ -30,3 +30,11 @@ class WorkflowStandardsTests(unittest.TestCase):
     def test_duplicate_yaml_keys_cannot_hide_a_job(self):
         with self.assertRaises(ValueError):
             standards.load_workflow('jobs:\n  test: {}\n  test: {}\n')
+
+    def test_composite_actions_and_container_digests_are_checked(self):
+        data = {'runs': {'using': 'composite', 'steps': [
+            {'uses': 'actions/cache@v4'}, {'uses': 'docker://alpine:latest'}]}}
+        self.assertEqual(len(standards.findings('action.yml', data)), 2)
+        data['runs']['steps'] = [{'uses': 'docker://alpine@sha256:'+'a'*64},
+                                 {'uses': './.github/actions/setup'}]
+        self.assertEqual(standards.findings('action.yml', data), [])
