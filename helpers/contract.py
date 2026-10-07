@@ -129,6 +129,7 @@ class Runner:
     def __init__(self, data):
         self.data = data
         self.done = set()
+        self.test_receipts = {}
         self.root = Path('.artifacts/contract')
         self.root.mkdir(parents=True, exist_ok=True)
 
@@ -153,10 +154,15 @@ class Runner:
         def git(*args):
             return subprocess.check_output(['git', *args], text=True).strip()
         source = git('rev-parse', 'HEAD')
+        applicable = {name for name in ('unit', 'integration')
+                      if isinstance(self.data['stages'][name], list)}
+        verified = {name for name, receipt in self.test_receipts.items()
+                    if receipt['input_identity'] == input_identity and receipt['source_commit'] == source}
         return {'version': 1, 'source_commit': source,
                 'source_tree': git('rev-parse', 'HEAD^{tree}'),
                 'input_identity': input_identity,
-                'tested_commit': source if {'unit', 'integration'} <= self.done else None,
+                'tested_commit': source if applicable and applicable <= verified else None,
+                'test_receipts': self.test_receipts.copy(),
                 'build_variant': os.environ.get('BUILD_VARIANT', 'production'),
                 'toolchain_config_sha256': sha(Path('.mise.toml')) if Path('.mise.toml').is_file() else None}
 
@@ -192,7 +198,8 @@ class Runner:
             return
         started = time.monotonic()
         result = 0
-        before = identity(self.data) if name == 'build' else None
+        before = identity(self.data) if name in ('build', 'unit', 'integration') else None
+        test_source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() if name in ('unit', 'integration') else None
         if name == 'build':
             (self.root/'build.json').unlink(missing_ok=True)
         try:
@@ -213,6 +220,8 @@ class Runner:
                     raise
                 finally:
                     self.timing(name, adapter_started, adapter_result, adapter=Path(command[0]).name)
+            if name in ('unit', 'integration') and identity(self.data) == before:
+                self.test_receipts[name] = {'source_commit': test_source, 'input_identity': before}
             if name == 'build':
                 if identity(self.data) != before:
                     raise ValueError('build modified source inputs outside declared artifacts')
@@ -233,7 +242,9 @@ class Runner:
     def fresh(self):
         try:
             evidence = json.loads((self.root/'build.json').read_text())
-            return evidence['identity'] == identity(self.data) and evidence['artifacts'] == artifacts(self.data)
+            return (isinstance(evidence['provenance']['test_receipts'], dict)
+                    and evidence['identity'] == identity(self.data)
+                    and evidence['artifacts'] == artifacts(self.data))
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
             return False
 
