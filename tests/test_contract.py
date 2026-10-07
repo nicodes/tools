@@ -79,6 +79,48 @@ class ContractBoundaries(unittest.TestCase):
         self.data['stages']['build'] = [['sh', '-c', 'mkdir -p output; ln -s ../input.txt output/value']]
         self.run_target('build', success=False)
 
+    def test_provenance_requires_executed_tests_against_unchanged_build_inputs(self):
+        def run(*targets):
+            (self.root/'engineering.json').write_text(json.dumps(self.data))
+            result = subprocess.run(['python3', HELPER, *targets], cwd=self.root,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads((self.root/'.artifacts/contract/build.json').read_text())['provenance']
+
+        proof = run('test', 'build')
+        self.assertIsNone(proof['tested_commit'])
+        self.assertEqual(proof['test_receipts'], {})
+        self.data['stages']['unit'] = [['sh', '-c', 'test -s input.txt']]
+        proof = run('test', 'build')
+        self.assertEqual(proof['tested_commit'], proof['source_commit'])
+        self.assertEqual(set(proof['test_receipts']), {'unit'})
+        self.data['stages']['integration'] = [['sh', '-c', 'echo changed >> input.txt']]
+        proof = run('test', 'build')
+        self.assertIsNone(proof['tested_commit'])
+        self.assertEqual(set(proof['test_receipts']), {'unit'})
+        self.data['stages']['integration'] = [['sh', '-c', 'test -s input.txt']]
+        proof = run('test', 'build')
+        self.assertEqual(proof['tested_commit'], proof['source_commit'])
+        self.assertEqual(set(proof['test_receipts']), {'unit', 'integration'})
+
+    def test_failed_applicable_test_cannot_create_a_build_proof(self):
+        self.data['stages']['unit'] = [['sh', '-c', 'exit 23']]
+        (self.root/'engineering.json').write_text(json.dumps(self.data))
+        result = subprocess.run(['python3', HELPER, 'test', 'build'], cwd=self.root,
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 23)
+        self.assertFalse((self.root/'.artifacts/contract/build.json').exists())
+
+    def test_legacy_build_proof_without_execution_receipts_is_not_reused(self):
+        self.run_target('build')
+        path = self.root/'.artifacts/contract/build.json'
+        evidence = json.loads(path.read_text())
+        del evidence['provenance']['test_receipts']
+        path.write_text(json.dumps(evidence))
+        self.run_target('build')
+        self.assertEqual(self.count(), 2)
+        self.assertEqual(json.loads(path.read_text())['provenance']['test_receipts'], {})
+
 class ImageNamespaceInputs(unittest.TestCase):
     def test_default_and_selected_namespaces_bind_the_declared_build_input(self):
         from unittest.mock import patch
