@@ -16,6 +16,7 @@ unit:
 	python3 -m unittest discover -s template-tests -v
 
 lint:
+	python3 helpers/workflow-standards.py
 	@for file in helpers/*.mjs helpers/*.cjs; do node --check "$$file"; done
 	actionlint
 	actionlint templates/full-stack/ci.yml templates/app-only/ci.yml templates/full-stack/bun-updates.yml templates/app-only/bun-updates.yml templates/static-web/ci.yml templates/pr-preview.yml
