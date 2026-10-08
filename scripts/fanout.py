@@ -97,19 +97,30 @@ def wire_test_evidence(text):
             if existing:
                 raise ValueError(f'{name}: same-job publication must use its own test receipt')
         elif existing:
+            download_index = next(i for i, step in enumerate(steps) if step.get('id') == 'engineering-test-evidence')
+            if any(step.get('uses', '').startswith('actions/checkout@') for step in steps[download_index+1:]):
+                raise ValueError(f'{name}: checkout would delete downloaded Test evidence')
             if len(existing) != 1 or existing[0].get('uses') != DOWNLOAD_ARTIFACT or existing[0].get('with') != expected:
                 raise ValueError(f'{name}: existing Test evidence download differs from the reviewed contract')
         else:
-            addition = ('    steps:\n'
-                        '      - name: Download same-run engineering Test evidence\n'
+            addition = ('      - name: Download same-run engineering Test evidence\n'
                         '        id: engineering-test-evidence\n'
                         f'        uses: {DOWNLOAD_ARTIFACT} # v8.0.1\n'
                         '        with:\n'
                         f'          pattern: engineering-{test_job}-*\n'
                         '          path: .artifacts/test-evidence\n')
-            if block.count('    steps:\n') != 1:
-                raise ValueError(f'{name}: unsupported publication step layout')
-            block = block.replace('    steps:\n', addition, 1)
+            # Download after checkout: checkout's default git clean removes
+            # untracked evidence downloaded into the workspace beforehand.
+            step_blocks = list(re.finditer(r'^      - ', block, re.M))
+            publication = None
+            for step_index, step_start in enumerate(step_blocks):
+                step_end = step_blocks[step_index+1].start() if step_index+1 < len(step_blocks) else len(block)
+                if re.search(r'helpers/release\.py[\"\']?\s+publish\b', block[step_start.start():step_end]):
+                    publication = step_start.start()
+                    break
+            if publication is None or re.search(r'uses:\s*actions/checkout@', block[publication:]):
+                raise ValueError(f'{name}: unsupported checkout/publication step order')
+            block = block[:publication]+addition+block[publication:]
         lines = block.splitlines(keepends=True)
         for line_index, line in enumerate(lines):
             if not re.search(r'helpers/release\.py[\"\']?\s+publish\b', line):
