@@ -269,7 +269,7 @@ class ToolMaintenanceRenameTests(unittest.TestCase):
     def test_own_maintenance_workflow_survives_under_its_new_name(self):
         document = load('dependency-maintenance.yml')
         self.assertEqual(document['name'], 'Dependency Maintenance')
-        self.assertEqual(document['on']['schedule'], [{'cron': '31 9 * * 1'}])
+        self.assertEqual(document['on']['schedule'], [{'cron': '31 11 * * 1'}])
         self.assertIn('python3 helpers/watch-tools.py', run_steps(document['jobs']['watch']))
 
 
