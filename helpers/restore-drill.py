@@ -2,6 +2,7 @@
 """Boot an authenticated off-host snapshot with its real application images offline."""
 import argparse
 from contextlib import nullcontext
+from datetime import datetime, timezone
 import fcntl
 import importlib.util
 import json
@@ -74,6 +75,23 @@ def probe_endpoint(docker_run, watched, url, timeout=175):
         except RuntimeError:
             time.sleep(1)
     raise TimeoutError('restored service did not become healthy before its deadline')
+
+
+def restored_blob_mounts(payload, config, uid):
+    """Expose authenticated restored files, never an empty replacement volume."""
+    files = payload/'files'
+    if not config.get('blobs'):
+        if files.exists() and any(files.rglob('*')):
+            raise ValueError('snapshot files require an explicit application blob mount')
+        return []
+    files.mkdir(mode=0o700, exist_ok=True)
+    paths = [files, *files.rglob('*')]
+    if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in paths):
+        raise ValueError('restored blob mount must contain only authenticated regular files')
+    if os.getuid() == 0:
+        for path in paths:
+            os.chown(path, uid, uid)
+    return ['--mount', f'type=bind,src={files},dst={config["blobs"]},readonly']
 
 
 def postgres_drill(project, export, key, pull=False, *, config):
@@ -165,11 +183,7 @@ def postgres_drill(project, export, key, pull=False, *, config):
                 environment.chmod(0o600)
                 api = prefix+'-api'
                 containers.append(api)
-                # A blob volume only for a product that keeps files outside
-                # the database. The API stats that directory rather than
-                # creating it, so it has to be a mount, not a path in /tmp.
-                blobs = ['--tmpfs', f'{config["blobs"]}:rw,noexec,nosuid,uid={uid},gid={uid},mode=0700,size=32m'] \
-                    if config.get('blobs') else []
+                blobs = restored_blob_mounts(payload, config, uid)
                 docker('run', '-d', '--name', api, *netns, *common, '--memory=192m', *blobs,
                        '--mount', f'type=bind,src={dsn},dst={config["dsn_file"]},readonly',
                        '--env-file', str(environment), images[api_component])
@@ -187,6 +201,9 @@ def postgres_drill(project, export, key, pull=False, *, config):
                 report.update({'revision': revision, 'images': {**images, 'engine': restored['engine']},
                                'archive_sha256': evidence['archive_sha256'], 'backend': 'postgresql',
                                'database_integrity': 'ok', 'database_restore': restored['database_restore'],
+                               'database_boot': 'passed', 'backup_verified_at': evidence['verified_at'],
+                               'ciphertext_sha256': snapshot.sha256(root/'encrypted'/'snapshot.cms'),
+                               'files_restored': sum(name.startswith('files/') for name in manifest['files']),
                                'api_boot': 'passed', 'frontend_artifact': 'passed'})
         finally:
             failed = []
@@ -311,7 +328,9 @@ def drill(project, export, key, pull=False, *, config):
             if '<html' not in html.lower() or '<script' not in html.lower():
                 raise ValueError('the restored frontend artifact did not serve an application document')
             report.update({'revision': revision, 'images': images, 'archive_sha256': evidence['archive_sha256'],
-                           'database_integrity': 'ok', 'database_boot': 'passed', 'api_boot': 'passed', 'frontend_artifact': 'passed'})
+                           'database_integrity': 'ok', 'database_boot': 'passed', 'api_boot': 'passed', 'frontend_artifact': 'passed',
+                           'backup_verified_at': evidence['verified_at'],
+                           'ciphertext_sha256': snapshot.sha256(root/'encrypted'/'snapshot.cms')})
         finally:
             failed = []
             for name in reversed(containers):
@@ -359,7 +378,12 @@ def main():
                         if total > 17 * 1024**3 + 1024**2 or shutil.disk_usage(directory).free < len(block) + 512 * 1024**2:
                             raise ValueError('restore input exceeds the size or disk headroom bound')
                         output.write(block)
-            print(json.dumps(drill(args.project, export, args.key, args.pull, config=load_config(args.config)), indent=2))
+            started_at = datetime.now(timezone.utc).isoformat()
+            started = time.monotonic()
+            report = drill(args.project, export, args.key, args.pull, config=load_config(args.config))
+            report.update(version=1, started_at=started_at, completed_at=datetime.now(timezone.utc).isoformat(),
+                          duration_seconds=round(time.monotonic()-started, 3))
+            print(json.dumps(report, indent=2))
     signal.alarm(0)
 
 

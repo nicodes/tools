@@ -1,6 +1,22 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 2f963435af14704a84d3480ecaae3c9f98b20af57ad7723c752897253cfd7a2f -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a12d5c0a51e4db14f83d5b5b0d52a92496b3cd3de926f8d2648177e083a3cf06 -->
 
 # Reusable engineering tools
+
+## Installed release acceptance
+
+Before publishing an engineering release, CI and the release gate execute the
+checksum-bound archive from an isolated installation. Required checks cover
+bootstrap, publication handoffs, encrypted backup transport, recovery boundaries,
+and real disposable PostgreSQL restoration. Skipped or empty required suites fail.
+The published `consumer-check.json` names the exact source, archive and manifest.
+Registry and object-storage checks use fixture transports; this evidence does not
+establish a production backup or restore.
+
+Tools and deployment-action adoption pushes require a caller-owned
+`--rollout-policy` and zero-based `--cohort`. Earlier cohorts must have adopted the
+target immutable release and passed their declared fresh workflow acceptance.
+The selected repositories must equal the reviewed cohort. Missing, stale, failed,
+pending or inaccessible acceptance stops expansion before repository edits.
 
 Source-only helpers, GitHub Actions and templates for caller-owned projects.
 Applications keep their business logic, identities, domains, credentials,
@@ -615,7 +631,6 @@ Use the checked release archive without rebuilding. Do not copy a generic
 privileged deploy workflow.
 
 Select the template matching the caller's build and deployment layout.
-
 
 Container publication requires the actual test receipt for the exact source.
 The shared `make` action retains `test.json` with its engineering job artifacts.
