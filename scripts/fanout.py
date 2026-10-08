@@ -85,8 +85,9 @@ def wire_test_evidence(text):
         test_job = name if same_job else candidates[0]
         end = blocks[index+1].start() if index+1 < len(blocks) else len(text)
         block = text[match.start():end]
-        existing = [step for step in steps if step.get('id') == 'engineering-test-evidence']
         expected = {'pattern': f'engineering-{test_job}-*', 'path': '.artifacts/test-evidence'}
+        existing = [step for step in steps if step.get('id') == 'engineering-test-evidence'
+                    or (step.get('uses') == DOWNLOAD_ARTIFACT and step.get('with') == expected)]
         if same_job:
             target = own[0]['with']['target']
             if 'test' not in target.split() and 'check' not in target.split():
@@ -98,7 +99,7 @@ def wire_test_evidence(text):
             if existing:
                 raise ValueError(f'{name}: same-job publication must use its own test receipt')
         elif existing:
-            download_index = next(i for i, step in enumerate(steps) if step.get('id') == 'engineering-test-evidence')
+            download_index = steps.index(existing[0])
             if any(step.get('uses', '').startswith('actions/checkout@') for step in steps[download_index+1:]):
                 raise ValueError(f'{name}: checkout would delete downloaded Test evidence')
             if len(existing) != 1 or existing[0].get('uses') != DOWNLOAD_ARTIFACT or existing[0].get('with') != expected:
