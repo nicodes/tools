@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a12d5c0a51e4db14f83d5b5b0d52a92496b3cd3de926f8d2648177e083a3cf06 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: eb6b127382b5aad0e6efbd982a76862423da9cd4ef092d929a2a08fa64beee97 -->
 
 # Reusable engineering tools
 
@@ -481,31 +481,62 @@ it; the bun pin lives in `.mise.toml` and moves with the product.
 
 ## PR preview deployments
 
-`pr-preview.yml` is the per-PR preview template: every same-repo pull request
-gets a live preview stack through the `nicodes/komizo-actions/preview`
-composite, one sticky PR comment carries the URLs, and closing the PR tears
-the stack down. It is a documented template, not an archetype — copy it into
+`pr-preview.yml` is the per-PR preview template. Previews are opt-in: a
+trusted `/preview` comment brings a live preview stack up for the pull
+request through the `nicodes/komizo-actions/preview` composite, pushes keep
+it current while the PR carries the `preview` label, `/preview down` or
+closing the PR tears it down, and one sticky PR comment carries the URLs. It
+is a documented template, not an archetype — copy it into
 `.github/workflows/pr-preview.yml` and finish the product-owned parts.
+
+The rule, decided by the secret-free `request` job
+(`nicodes/komizo-actions/preview-request`) that every privileged job gates on:
+
+| Event | Result |
+| --- | --- |
+| `pull_request` `closed` | tear down, always (idempotent; a lost label must not strand a stack) |
+| `pull_request` `synchronize`, `reopened` | redeploy only while the PR carries the `preview` label |
+| `pull_request` `opened`, `ready_for_review` | nothing |
+| `issue_comment` `created`, exact body `/preview` | deploy, then add the `preview` label |
+| `issue_comment` `created`, exact body `/preview down` | tear down, then remove the label |
+
+Comments count only from an OWNER, MEMBER or COLLABORATOR, and only on pull
+requests. Every deploy also requires a same-repository head (never a fork), a
+trusted author, an open non-draft PR; dependabot PRs are refused both ways.
 
 Adopting it:
 
 - **What to copy.** `pr-preview.yml` verbatim, then replace the two
-  product-owned values in BOTH jobs, identically: `APP` (the deployment app slug)
-  and `COMPONENTS` (the space-separated image components whose refs the
-  preview deploys, named `ghcr.io/<owner>/<project>-<component>:<head-sha>`).
-  Do not repin the composite on copy: the template already ships the real
-  v0.0.25 pin (`ff3c1bb4650ba63c3a6191d8043662d5f0ad48b4`, the release's
-  peeled commit SHA, never the annotated tag object). Future composite
-  updates move through the fleet pin record, `ACTION-PINS.json` at the
-  repository root, as usual.
+  product-owned values in BOTH privileged jobs, identically: `APP` (the
+  deployment app slug) and `COMPONENTS` (the space-separated image components
+  whose refs the preview deploys, named
+  `ghcr.io/<owner>/<project>-<component>:<head-sha>`). Do not repin the
+  composites on copy: the template already ships the real
+  v0.0.33 pin (`398fe9d90aa68daadf6569cb7679df4478218a37`, the release's
+  peeled commit SHA, never the annotated tag object) for `preview-request`
+  and `preview` alike. Future composite updates move through the product's
+  fleet pin record, `ACTION-PINS.json` at the repository root, as usual.
+- **Create the label once.** `gh label create preview` in the adopting
+  repository. The workflow adds and removes the label under
+  `pull-requests: write` but never creates it: that would need
+  `issues: write`, which no job holds. Without the label the up job fails
+  after its sticky comment with a clear error; the down path warns and
+  continues.
 - **Secrets and vars to set.** Exactly the deploy composite's SSH path, as
   repo-level entries: the `KOMIZO_DEPLOY_KEY` secret and the
   `KOMIZO_SERVER_URL` and `KOMIZO_KNOWN_HOSTS` variables. The workflow names
-  no other product-owned secret: the sticky comment uses the workflow's own
-  `GITHUB_TOKEN`, and the jobs' permissions floor is `contents: read` plus
-  `pull-requests: write`. Image builds and their `packages: write` push stay
-  in the product's own CI; this workflow only derives the refs CI already
-  published for the PR's head SHA.
+  no other product-owned secret: the sticky comment and the label use the
+  workflow's own `GITHUB_TOKEN`, and the privileged jobs' permissions floor
+  is `contents: read` plus `pull-requests: write` (the request job holds
+  `pull-requests: read`). Image builds and their
+  `packages: write` push stay in the product's own CI; this workflow only
+  derives the refs CI already published for the PR's head SHA and waits (at
+  most 25 minutes) for them to appear.
+- **Use the resolved identity.** Both privileged jobs read `pr` and `sha`
+  from the request job's outputs, never `github.event.pull_request.*`: a
+  comment-triggered run carries no pull request payload. The only
+  `github.event.pull_request` expression left is the concurrency key,
+  `preview-${{ github.event.pull_request.number || github.event.issue.number }}`.
 - **Per-preview runtime secrets are product-owned, and they need the host.**
   The template deploys a preview; it does not give that preview its Clerk
   instance, its allowed origins or anything else the product's server reads
@@ -529,26 +560,46 @@ Adopting it:
   (never a long-lived PAT); it travels on stdin to the host's root-owned
   preview wrapper, which drops it however the run exits. The teardown job
   needs neither the inputs nor `packages: read` — `down` pulls nothing.
-- **The same-repo guard is non-negotiable.** Every job that touches secrets or
+- **The request gate is non-negotiable.** Every job that touches secrets or
   the preview infrastructure carries the job-level
-  `if: … github.event.pull_request.head.repo.full_name == github.repository`.
-  The trigger is `pull_request`, never `pull_request_target`: the preview runs
-  the PR's own code, so the guard — not the trigger — is the security control.
-  Never weaken, move to step level, or delete it.
-- **Fork PRs skip everything.** A pull request from a fork fails the guard at
-  job evaluation: no checkout of untrusted code next to secrets, no
+  `if: needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'`
+  (or `== 'down'`). The trigger is `pull_request` plus `issue_comment`, never
+  `pull_request_target`: the preview runs the PR's own code, so the gate —
+  not the trigger — is the security control, and the same-repo, draft,
+  dependabot and trusted-author checks live in the SHA-pinned, unit-tested
+  composite rather than in per-job expressions (which could not see a
+  comment event's PR anyway). Never weaken, move to step level, or delete it.
+  The `types:` list on `pull_request` stays complete: the fleet workflow
+  contract requires every lifecycle event, and `issue_comment` is an
+  additional trigger it ignores.
+- **Fork PRs skip everything.** A pull request from a fork is refused by the
+  request job: no checkout of untrusted code next to secrets, no
   `KOMIZO_DEPLOY_KEY` in scope, no preview stack created or torn down. Both
-  jobs skip, silently, on every event type including `closed`.
+  privileged jobs skip, silently, on every event type including `closed`.
 - **The one-sticky-comment invariant.** Exactly one preview comment per PR,
   marked `<!-- preview -->`. The first successful deploy creates it; every
-  `synchronize` updates that same comment in place with the fresh URL, API
-  URL, head SHA and health-gate status; the close path makes a final update
+  redeploy updates that same comment in place with the fresh URL, API URL,
+  head SHA and health-gate status; the teardown path makes a final update
   marking it torn down, and creates nothing if no deploy ever succeeded.
-- **Concurrency.** Both jobs share the per-PR group `preview-<number>`. A new
-  push cancels the in-flight deploy (`cancel-in-progress: true`); the teardown
-  declares `cancel-in-progress: false` in the same group, so a close that
-  lands mid-deploy queues behind it and tears down the finished stack, and the
-  teardown itself is never superseded.
+- **The label is the signal, written after the fact.** `preview` is added
+  only after the composite verified the stack up (and after the comment with
+  the URL landed), and removed only after it verified the teardown. A label
+  left behind by host-side garbage collection costs one wasted redeploy on
+  the next push, which recreates the state — accepted and cheaper than
+  asking the host from the decision job.
+- **Concurrency.** Both privileged jobs share the per-PR group
+  `preview-<number>`. A new push cancels the in-flight deploy
+  (`cancel-in-progress: true`); the teardown declares
+  `cancel-in-progress: false` in the same group, so a close that lands
+  mid-deploy queues behind it and tears down the finished stack, and the
+  teardown itself is never superseded. The request job is never queued.
+  One window remains: a `/preview down` queued behind an in-flight up is
+  displaced if a push lands before that up finishes (a group holds one
+  pending job), and the push redeploys; the cancelled "Tear down preview"
+  run is visible, and commenting `/preview down` again recovers.
+- **Label steps name the repository.** Both `gh pr edit` steps set
+  `GH_REPO: ${{ github.repository }}`: gh otherwise resolves the repository
+  from a git remote, and the teardown job has no checkout.
 
 ## Fleet tool baseline
 
