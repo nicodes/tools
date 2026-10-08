@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import importlib.util
 
 REFERENCE = re.compile(r'(nicodes/komizo-actions/[\w-]+)@([^\s\"\']+)')
 
@@ -130,7 +131,11 @@ def main():
     parser.add_argument('--worktree-root', type=Path, required=True)
     parser.add_argument('--manifest', type=Path, required=True)
     parser.add_argument('--push', action='store_true')
+    parser.add_argument('--rollout-policy', type=Path)
+    parser.add_argument('--cohort', type=int)
     args = parser.parse_args()
+    if args.push and (args.rollout_policy is None or args.cohort is None):
+        parser.error('--push requires --rollout-policy and --cohort')
     if '.worktrees' not in args.worktree_root.resolve().parts:
         parser.error('adoption worktrees must be under .worktrees')
     remote = subprocess.check_output(['git', 'ls-remote', 'https://github.com/nicodes/komizo-actions.git',
@@ -139,13 +144,21 @@ def main():
     resolved = refs.get('refs/tags/v'+args.version+'^{}', refs.get('refs/tags/v'+args.version))
     if resolved != args.revision:
         parser.error('published tag does not resolve to the reviewed immutable revision')
+    acceptance = None
+    if args.rollout_policy is not None:
+        spec = importlib.util.spec_from_file_location('rollout_gate', Path(__file__).with_name('rollout_gate.py'))
+        rollout = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rollout)
+        acceptance = rollout.gate(args.rollout_policy, args.cohort, args.repository,
+                                 'actions', args.version, resolved)
     outcomes = []
     for repo in args.repository:
         try:
             outcomes.append(adopt(repo, args, resolved))
         except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
             outcomes.append({'repository': repo, 'error': str(error)})
-    args.manifest.write_text(json.dumps({'version': args.version, 'revision': resolved, 'outcomes': outcomes}, indent=2)+'\n')
+    args.manifest.write_text(json.dumps({'version': args.version, 'revision': resolved,
+                                       'acceptance': acceptance, 'outcomes': outcomes}, indent=2)+'\n')
     raise SystemExit(int(any('error' in outcome for outcome in outcomes)))
 
 
