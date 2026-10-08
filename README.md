@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 368ee9c345145d336d9a308aea48f53d05b40e1a6ac682c94f0b720b7ada2f98 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a12d5c0a51e4db14f83d5b5b0d52a92496b3cd3de926f8d2648177e083a3cf06 -->
 
 # Reusable engineering tools
 
@@ -631,3 +631,22 @@ Use the checked release archive without rebuilding. Do not copy a generic
 privileged deploy workflow.
 
 Select the template matching the caller's build and deployment layout.
+
+Container publication requires the actual test receipt for the exact source.
+The shared `make` action retains `test.json` with its engineering job artifacts.
+Download the current run's test-job artifacts into `.artifacts/test-evidence`
+before publishing. The default test job ID is `Test`; callers with another ID
+pass `--test-job` (for example `--test-job test` for the shipped templates).
+Artifact selection uses `engineering-<job-id>-*`, rather than the display name.
+For tools v0.14 and later, `scripts/fanout.py` adds this download and explicit job
+binding during adoption, and rejects absent or ambiguous test prerequisites.
+Local publishers use the receipt from `make test` or `make check`
+in `.artifacts/contract`. Build and test input digests are recorded separately;
+a different PR merge checkout cannot certify a head artifact.
+
+PR-head publication retains the workflow's merge identity separately. The head
+must match the runner's pull-request event, and successful tests must actually
+run on that head. The adoption helper adds those tests to a preview-producing
+Build job and uses its own receipt; the existing merge Test job remains intact.
+This adds test execution for the second source rather than claiming a merge
+test certified an independently built head image.
