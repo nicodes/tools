@@ -1,71 +1,99 @@
-name: PR preview
-# Documented template — see templates/README.md, "PR preview deployments".
-# Per-PR preview deployments through the nicodes/komizo-actions/preview
-# composite: every ready same-repo pull request gets a live preview stack, one
-# sticky PR comment carries the URLs, and closing the PR tears the stack down.
+name: PR Preview
+# Documented template — see the README, "PR preview deployments".
+# Opt-in per-PR preview deployments through the nicodes/komizo-actions
+# preview-request and preview composites: a trusted `/preview` comment brings
+# a live preview stack up for the pull request, pushes keep it current while
+# the PR carries the `preview` label, `/preview down` or closing the PR tears
+# it down, and one sticky PR comment carries the URLs.
 #
 # Copy to .github/workflows/pr-preview.yml in the adopting product, replace
 # the two product-owned values marked <product-...> (both jobs, identical),
-# and set the secrets/vars listed in the README section. The preview
-# composite is already pinned to the v0.0.25 release below.
+# create the `preview` label once (`gh label create preview`), and set the
+# secrets/vars listed in the README section. The composites are already
+# pinned to the release named below.
 on:
   pull_request:
     # pull_request, NOT pull_request_target: the preview exists to run the
     # PR's OWN code (its checked-out head and the images CI built from it),
     # so the run must execute in the pull_request context. pull_request_target
     # would execute the trusted base workflow with secrets in scope for every
-    # fork that opens a PR. Here the security control is the same-repo guard
-    # on each job below: a fork PR skips every job at evaluation, before any
-    # secret or the preview infrastructure enters the run at all.
+    # fork that opens a PR. Here the security control is the secret-free
+    # request job below: it refuses forks, drafts, dependabot and untrusted
+    # authors, and every job that holds a secret is gated on its decision, so
+    # a refused run skips those jobs at evaluation, before any secret or the
+    # preview infrastructure enters the run at all.
+    #
+    # The full type list stays: the fleet workflow contract requires it. The
+    # opt-in rule is applied inside the jobs, not by trimming the trigger.
     types: [opened, synchronize, reopened, ready_for_review, closed]
+  issue_comment:
+    # The comment path. `/preview` deploys, `/preview down` tears down; the
+    # request job checks the commenter and ignores everything else.
+    types: [created]
 permissions:
   contents: read
 jobs:
+  request:
+    name: Preview request
+    # THE DECISION — secret-free and cheap: no deploy key, no registry token,
+    # a hosted runner, seconds. It reads the event payload (plus one PR lookup
+    # on comments, which carry no head sha) and publishes enabled/action/pr/
+    # sha. Both privileged jobs gate on those outputs.
+    #
+    # Comments on plain issues are skipped here rather than in the composite,
+    # so an issue thread does not cost a runner.
+    if: github.event_name != 'issue_comment' || github.event.issue.pull_request != null
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read  # the PR lookup on comments, nothing else
+    outputs:
+      enabled: ${{ steps.request.outputs.enabled }}
+      action: ${{ steps.request.outputs.action }}
+      pr: ${{ steps.request.outputs.pr }}
+      sha: ${{ steps.request.outputs.sha }}
+    steps:
+      - id: request
+        uses: nicodes/komizo-actions/preview-request@398fe9d90aa68daadf6569cb7679df4478218a37 # v0.0.33 — pinned to the release's peeled commit SHA, never the annotated tag object
+        with:
+          label: preview
   preview-up:
     name: Deploy preview
-    # THE GUARD — non-negotiable, job level, on every job that touches secrets
-    # or the preview infrastructure: same-repo PRs only. A fork PR fails this
-    # expression, so the job is skipped with no checkout of untrusted code
-    # next to secrets, no KOMIZO_DEPLOY_KEY in scope, no preview stack.
-    # AND NOT DEPENDABOT. A dependabot pull request is same-repo, so the
-    # guard above passes it -- but GitHub serves such a run the Dependabot
-    # secret store, not this repository's Actions secrets, so every secret
-    # named here arrives empty and the composite refuses:
-    #
-    #   No deploy key. Environment-scoped secrets are invisible to jobs
-    #   without that environment.
-    #
-    # which is a misleading message for the real cause. No placement of the
-    # secret fixes it. A dependency bump has nothing to preview anyway, and
-    # leaving the job to fail blocks its auto-merge on a check that can
-    # never go green.
-    if: >-
-      github.event.action != 'closed' &&
-      github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
+    needs: request
+    # Gated on the request decision alone. The composite (SHA-pinned, unit
+    # tested) is where the same-repo, draft, dependabot and trusted-author
+    # guards live now; an expression over github.event.pull_request cannot
+    # serve here because a comment event carries no pull_request payload.
+    if: needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'up'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # 25 of these minutes are the wait for CI's image push (see that step).
+    timeout-minutes: 35
     permissions:
       contents: read        # checkout of the PR head
-      pull-requests: write  # the one sticky comment, and nothing else
+      pull-requests: write  # the sticky comment and the preview label, nothing else
       packages: read        # the run's GITHUB_TOKEN is the ghcr pull credential (registry-token below)
     concurrency:
       # Per-PR group: a new push supersedes the in-flight preview deploy of
       # the same PR. The close path shares this group with
       # cancel-in-progress: false (see preview-down), so a close that lands
       # mid-deploy queues behind it and tears down the finished stack instead
-      # of racing it — and the teardown itself is never cancelled.
-      group: preview-${{ github.event.pull_request.number }}
+      # of racing it — and the teardown itself is never cancelled. The group
+      # key reads the PR number from whichever payload the event has.
+      group: preview-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
     env:
       APP: <product-slug>   # product-owned: the sample-host app slug
       COMPONENTS: app       # product-owned: space-separated image components
+      PR_NUMBER: ${{ needs.request.outputs.pr }}
+      HEAD_SHA: ${{ needs.request.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The PR's own code, not the base — the whole point of the preview.
-          ref: ${{ github.event.pull_request.head.sha }}
+          # The resolved head, not github.event.pull_request.head.sha: a
+          # comment-triggered run has no pull_request payload.
+          ref: ${{ needs.request.outputs.sha }}
       - name: Resolve the PR's image refs
         id: images
         run: |
@@ -76,12 +104,45 @@ jobs:
           # ghcr.io/<owner>/<project>-<component>:<head-sha>.
           refs=""
           for component in $COMPONENTS; do
-            refs="$refs ghcr.io/${{ github.repository_owner }}/$APP-$component:${{ github.event.pull_request.head.sha }}"
+            refs="$refs ghcr.io/${{ github.repository_owner }}/$APP-$component:$HEAD_SHA"
           done
           echo "refs=${refs# }" >> "$GITHUB_OUTPUT"
+      # CI pushes these images in the LAST step of its Build job, and nothing
+      # sequences that against this workflow: on a push both start on
+      # `pull_request` and run in parallel. Without this wait the composite
+      # pulls a tag that will not exist for another ten minutes and the
+      # preview fails in about ten seconds. On a `/preview` comment the
+      # images usually exist already and the wait returns at once.
+      #
+      # Waiting here rather than switching to `workflow_run`: that trigger
+      # runs in the BASE repository's context with secrets in scope, which is
+      # precisely the `pull_request_target` hazard the trigger comment above
+      # rejects.
+      - name: Wait for CI to publish the PR-head images
+        env:
+          REFS: ${{ steps.images.outputs.refs }}
+          REGISTRY_TOKEN: ${{ github.token }}
+          REGISTRY_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
+          # A new push supersedes this run through the concurrency group, so a
+          # long wait costs nothing: it is cancelled the moment it is stale.
+          deadline=$(( SECONDS + 25 * 60 ))
+          for ref in $REFS; do
+            until docker manifest inspect "$ref" >/dev/null 2>&1; do
+              if (( SECONDS >= deadline )); then
+                echo "::error::$ref was never published. The CI Build job pushes the PR-head images in its last step -- if Build failed, fix that first; this preview cannot deploy an image that does not exist."
+                exit 1
+              fi
+              sleep 20
+            done
+            echo "published: $ref"
+          done
       - name: Preview up
         id: preview
-        uses: nicodes/komizo-actions/preview@ff3c1bb4650ba63c3a6191d8043662d5f0ad48b4 # v0.0.25 — pinned to the release's peeled commit SHA, never the annotated tag object
+        uses: nicodes/komizo-actions/preview@398fe9d90aa68daadf6569cb7679df4478218a37 # v0.0.33 — pinned to the release's peeled commit SHA, never the annotated tag object
         env:
           # The deploy-key SSH path, identical to the deploy composite's:
           # the composite cannot read the secrets context, so exactly these
@@ -91,7 +152,7 @@ jobs:
           KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}
         with:
           app: ${{ env.APP }}
-          pr-number: ${{ github.event.pull_request.number }}
+          pr-number: ${{ needs.request.outputs.pr }}
           images: ${{ steps.images.outputs.refs }}
           action: up
           # Required on up (fail-closed): the pull runs AS ROOT
@@ -105,19 +166,18 @@ jobs:
       - name: Upsert the sticky preview comment
         # The Vercel pattern with the runner's preinstalled gh CLI and the
         # workflow's own GITHUB_TOKEN — no external action, so nothing to pin.
-        # First deploy POSTs one marker-tagged comment; every synchronize
+        # First deploy POSTs one marker-tagged comment; every redeploy
         # PATCHes that same comment (found by the marker) with the fresh URL
         # and SHA. Exactly one preview comment per PR, ever.
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PREVIEW_URL: ${{ steps.preview.outputs.preview-url }}
           API_URL: ${{ steps.preview.outputs.api-url }}
           GATE_STATUS: ${{ steps.preview.outputs.gate-status }}
         run: |
           set -euo pipefail
-          body=$(printf '<!-- preview -->\n### Preview — %s\n\n| | |\n| --- | --- |\n| App | %s |\n| API | %s |\n| Health gate | %s |' \
+          # shellcheck disable=SC2016 # the command names are Markdown, not expanded
+          body=$(printf '<!-- preview -->\n### Preview — %s\n\n| | |\n| --- | --- |\n| App | %s |\n| API | %s |\n| Health gate | %s |\n\nPushes redeploy while the `preview` label is on. Comment `/preview down` to remove it.' \
             "$HEAD_SHA" "$PREVIEW_URL" "$API_URL" "$GATE_STATUS")
           # shellcheck disable=SC2016 # the jq program is passed literally, not expanded
           existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
@@ -127,41 +187,40 @@ jobs:
           else
             gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" -f body="$body" > /dev/null
           fi
+      - name: Mark the PR as previewed
+        # The `preview` label is the "a preview is up" signal the request job
+        # reads on the next push. Added only after a successful up, so a
+        # failed deploy never arms redeploys. The label must exist in the
+        # repository (created once by an operator: `gh label create preview`);
+        # creating it here would need issues: write, which this job does not
+        # hold.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr edit "$PR_NUMBER" --add-label preview
   preview-down:
     name: Tear down preview
-    # The same guard as preview-up: a fork PR's close event touches no secrets
-    # and no preview infrastructure either.
-    # AND NOT DEPENDABOT. A dependabot pull request is same-repo, so the
-    # guard above passes it -- but GitHub serves such a run the Dependabot
-    # secret store, not this repository's Actions secrets, so every secret
-    # named here arrives empty and the composite refuses:
-    #
-    #   No deploy key. Environment-scoped secrets are invisible to jobs
-    #   without that environment.
-    #
-    # which is a misleading message for the real cause. No placement of the
-    # secret fixes it. A dependency bump has nothing to preview anyway, and
-    # leaving the job to fail blocks its auto-merge on a check that can
-    # never go green.
-    if: >-
-      github.event.action == 'closed' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.actor != 'dependabot[bot]'
+    needs: request
+    # Runs on close (whether or not the label is still there — teardown is
+    # idempotent on the host, and a lost label must not strand a stack) and
+    # on `/preview down`. The request job has already refused fork PRs.
+    if: needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'down'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
-      pull-requests: write  # the final dead-mark update of the sticky comment
+      pull-requests: write  # the final dead-mark update of the sticky comment, and the label removal
     concurrency:
       # Same per-PR group as preview-up, so a close that lands mid-deploy
       # queues behind the in-flight deploy and tears down the finished stack.
       # cancel-in-progress: false — once running, the teardown is never
       # superseded by anything else in the group.
-      group: preview-${{ github.event.pull_request.number }}
+      group: preview-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: false
     env:
       APP: <product-slug>   # product-owned: must match preview-up exactly
       COMPONENTS: app       # product-owned: must match preview-up exactly
+      PR_NUMBER: ${{ needs.request.outputs.pr }}
+      HEAD_SHA: ${{ needs.request.outputs.sha }}
     steps:
       - name: Resolve the PR's image refs
         id: images
@@ -169,33 +228,41 @@ jobs:
           set -euo pipefail
           refs=""
           for component in $COMPONENTS; do
-            refs="$refs ghcr.io/${{ github.repository_owner }}/$APP-$component:${{ github.event.pull_request.head.sha }}"
+            refs="$refs ghcr.io/${{ github.repository_owner }}/$APP-$component:$HEAD_SHA"
           done
           echo "refs=${refs# }" >> "$GITHUB_OUTPUT"
       - name: Preview down
-        uses: nicodes/komizo-actions/preview@ff3c1bb4650ba63c3a6191d8043662d5f0ad48b4 # v0.0.25 — pinned to the release's peeled commit SHA, never the annotated tag object
+        uses: nicodes/komizo-actions/preview@398fe9d90aa68daadf6569cb7679df4478218a37 # v0.0.33 — pinned to the release's peeled commit SHA, never the annotated tag object
         env:
           KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}
           KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}
           KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}
         with:
           app: ${{ env.APP }}
-          pr-number: ${{ github.event.pull_request.number }}
+          pr-number: ${{ needs.request.outputs.pr }}
           images: ${{ steps.images.outputs.refs }}
           action: down
+      - name: Clear the preview label
+        # The stack is verified gone; the next push must not redeploy it.
+        # Removing a label the PR does not carry is a no-op. A repository
+        # without the label at all is warned about, not failed: the teardown
+        # itself succeeded, and there was no label to arm a redeploy.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr edit "$PR_NUMBER" --remove-label preview || echo "::warning::could not remove the preview label; create it once with 'gh label create preview'"
       - name: Mark the sticky comment dead
         # Final update of the same marker-tagged comment: the preview is gone.
         # Update-only — a PR that never deployed (the up job never succeeded)
         # has no marker comment, and none is created here.
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC2016 # the jq program is passed literally, not expanded
           existing=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
             --jq '.[] | select(.body | contains("<!-- preview -->")) | .id' | head -n 1)
           if [ -n "$existing" ]; then
+            # shellcheck disable=SC2016 # the command name is Markdown, not expanded
             gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" \
-              -f body='<!-- preview --> ~~Preview~~ — torn down (PR closed).' > /dev/null
+              -f body='<!-- preview --> ~~Preview~~ — torn down. Comment `/preview` to bring it back.' > /dev/null
           fi
