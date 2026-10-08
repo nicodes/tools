@@ -101,6 +101,39 @@ class ReleaseBinding(unittest.TestCase):
         self.assertEqual(receipt['images'], data['images'])
         self.assertEqual(receipt['publisher_context']['GITHUB_RUN_ID'], '123')
 
+    def test_authenticated_pr_head_needs_actual_head_tests_in_the_same_context(self):
+        event = self.root / '.artifacts/event.json'
+        event.write_text(json.dumps({'pull_request': {'head': {'sha': self.sha},
+                                                     'base': {'sha': 'b'*40},
+                                                     'merge_commit_sha': 'c'*40}}))
+        self.context.update(GITHUB_SHA='c'*40, GITHUB_EVENT_NAME='pull_request', GITHUB_EVENT_PATH=str(event))
+        self.produce_tests()
+        self.run_cli('record')
+        self.run_cli('publish')
+        proof = json.loads((self.release / 'publication.json').read_text())
+        self.assertEqual(proof['tested_commit'], self.sha)
+        self.assertEqual(proof['test_provenance']['execution_context']['GITHUB_SHA'], 'c'*40)
+        self.change_test_proof(lambda proof: proof.update(source_commit='c'*40, tested_commit='c'*40))
+        self.calls.write_text('')
+        self.run_cli('publish', False)
+        self.assert_no_publication()
+
+    def test_pr_head_context_cannot_authorize_another_head_or_event(self):
+        event = self.root / '.artifacts/event.json'
+        event.write_text(json.dumps({'pull_request': {'head': {'sha': self.sha},
+                                                     'base': {'sha': 'b'*40},
+                                                     'merge_commit_sha': 'c'*40}}))
+        self.context.update(GITHUB_SHA='c'*40, GITHUB_EVENT_NAME='pull_request', GITHUB_EVENT_PATH=str(event))
+        self.produce_tests()
+        self.run_cli('record')
+        for change in ({'GITHUB_EVENT_NAME': 'workflow_dispatch'}, {'GITHUB_EVENT_NAME': 'pull_request_target'},
+                       {'GITHUB_EVENT_PATH': ''}, {'GITHUB_SHA': 'd'*40}):
+            self.run_cli('publish', False, change)
+            self.assert_no_publication()
+        event.write_text(json.dumps({'pull_request': {'head': {'sha': 'e'*40}}}))
+        self.run_cli('publish', False)
+        self.assert_no_publication()
+
     def test_changed_archive_stops_before_docker_load(self):
         self.run_cli('record')
         (self.release / 'images.tar.gz').write_bytes(b'tampered')
