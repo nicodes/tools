@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 6bccb407bb774f97860b55fcfcfaba9248c8f5d65a02c72e2c56d2749e17b817 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: eb6b127382b5aad0e6efbd982a76862423da9cd4ef092d929a2a08fa64beee97 -->
 
 # Reusable engineering tools
 
@@ -526,8 +526,9 @@ Adopting it:
   repo-level entries: the `KOMIZO_DEPLOY_KEY` secret and the
   `KOMIZO_SERVER_URL` and `KOMIZO_KNOWN_HOSTS` variables. The workflow names
   no other product-owned secret: the sticky comment and the label use the
-  workflow's own `GITHUB_TOKEN`, and the jobs' permissions floor is
-  `contents: read` plus `pull-requests: write`. Image builds and their
+  workflow's own `GITHUB_TOKEN`, and the privileged jobs' permissions floor
+  is `contents: read` plus `pull-requests: write` (the request job holds
+  `pull-requests: read`). Image builds and their
   `packages: write` push stay in the product's own CI; this workflow only
   derives the refs CI already published for the PR's head SHA and waits (at
   most 25 minutes) for them to appear.
@@ -592,6 +593,13 @@ Adopting it:
   `cancel-in-progress: false` in the same group, so a close that lands
   mid-deploy queues behind it and tears down the finished stack, and the
   teardown itself is never superseded. The request job is never queued.
+  One window remains: a `/preview down` queued behind an in-flight up is
+  displaced if a push lands before that up finishes (a group holds one
+  pending job), and the push redeploys; the cancelled "Tear down preview"
+  run is visible, and commenting `/preview down` again recovers.
+- **Label steps name the repository.** Both `gh pr edit` steps set
+  `GH_REPO: ${{ github.repository }}`: gh otherwise resolves the repository
+  from a git remote, and the teardown job has no checkout.
 
 ## Fleet tool baseline
 

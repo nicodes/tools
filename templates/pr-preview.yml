@@ -196,6 +196,10 @@ jobs:
         # hold.
         env:
           GH_TOKEN: ${{ github.token }}
+          # gh pr edit resolves the repository from the working tree's git
+          # remote by default; name it explicitly so the step does not depend
+          # on a checkout (preview-down has none).
+          GH_REPO: ${{ github.repository }}
         run: gh pr edit "$PR_NUMBER" --add-label preview
   preview-down:
     name: Tear down preview
@@ -213,7 +217,11 @@ jobs:
       # Same per-PR group as preview-up, so a close that lands mid-deploy
       # queues behind the in-flight deploy and tears down the finished stack.
       # cancel-in-progress: false — once running, the teardown is never
-      # superseded by anything else in the group.
+      # superseded by anything else in the group. One window remains: a
+      # `/preview down` queued behind an in-flight up is displaced if a push
+      # lands before that up finishes (the group holds one pending job), and
+      # the push redeploys; the cancelled teardown run is visible, and
+      # commenting `/preview down` again recovers.
       group: preview-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: false
     env:
@@ -249,6 +257,8 @@ jobs:
         # itself succeeded, and there was no label to arm a redeploy.
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job: gh needs the repository named.
+          GH_REPO: ${{ github.repository }}
         run: gh pr edit "$PR_NUMBER" --remove-label preview || echo "::warning::could not remove the preview label; create it once with 'gh label create preview'"
       - name: Mark the sticky comment dead
         # Final update of the same marker-tagged comment: the preview is gone.
