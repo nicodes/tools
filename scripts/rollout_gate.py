@@ -42,7 +42,9 @@ def validate_plan(plan):
             for workflow in member['workflows']:
                 if (not re.fullmatch(r'[\w-]+\.yml', workflow.get('file', ''))
                         or type(workflow.get('max_age_hours')) is not int or workflow['max_age_hours'] <= 0
-                        or type(workflow.get('exact_main', True)) is not bool):
+                        or type(workflow.get('exact_main', True)) is not bool
+                        or workflow.get('source', 'main') not in ('main', 'merged-pr')
+                        or ('job' in workflow and not isinstance(workflow['job'], str))):
                     raise ValueError('workflow acceptance requires a filename and positive freshness bound')
 
 
@@ -61,10 +63,30 @@ def verify_consumer(member, kind, version, revision, checksum, now):
             raise ValueError(repo+': merged main has not adopted the target action release')
     evidence = []
     for requirement in member['workflows']:
-        query = {'branch': 'main', 'per_page': 1}
+        expected_revision = head
+        query = {'branch': 'main', 'per_page': 10}
+        if requirement.get('source') == 'merged-pr':
+            pulls = api(f'repos/{repo}/commits/{head}/pulls')
+            candidates = [pull for pull in pulls if pull.get('merge_commit_sha') == head and pull.get('merged_at')
+                          and pull.get('base', {}).get('ref') == 'main'
+                          and pull.get('head', {}).get('repo', {}).get('full_name') == repo]
+            if len(candidates) != 1:
+                raise ValueError(repo+': cannot establish the merged canary PR identity')
+            expected_revision = candidates[0]['head']['sha']
+            query = {'event': 'pull_request', 'per_page': 10}
         if requirement.get('exact_main', True):
-            query['head_sha'] = head
+            query['head_sha'] = expected_revision
         runs = api(f'repos/{repo}/actions/workflows/{requirement["file"]}/runs?'+urlencode(query))['workflow_runs']
+        if requirement.get('job'):
+            selected = []
+            for run in runs:
+                jobs = api(f'repos/{repo}/actions/runs/{run["id"]}/jobs?per_page=100')['jobs']
+                matching = [job for job in jobs if job.get('name') == requirement['job']]
+                # Closing a PR runs cleanup with preview deployment skipped.
+                if matching and matching[0].get('conclusion') != 'skipped':
+                    selected = [run] if len(matching) == 1 and matching[0].get('conclusion') == 'success' else []
+                    break
+            runs = selected
         if not runs:
             raise ValueError(repo+': required acceptance workflow has no run: '+requirement['file'])
         run = runs[0]
@@ -72,7 +94,7 @@ def verify_consumer(member, kind, version, revision, checksum, now):
         age = (now-stamp).total_seconds()/3600
         if (run.get('status') != 'completed' or run.get('conclusion') != 'success'
                 or not 0 <= age <= requirement['max_age_hours']
-                or (requirement.get('exact_main', True) and run['head_sha'] != head)):
+                or (requirement.get('exact_main', True) and run['head_sha'] != expected_revision)):
             raise ValueError(repo+': acceptance is failed, pending, stale or from another source: '+requirement['file'])
         evidence.append({key: run.get(key) for key in ('id', 'head_sha', 'run_attempt', 'html_url', 'updated_at')})
     return {'repository': repo, 'main_revision': head, 'workflows': evidence}

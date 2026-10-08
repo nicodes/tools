@@ -78,3 +78,26 @@ class CohortAcceptance(unittest.TestCase):
     def test_first_cohort_needs_no_prior_acceptance(self):
         proof = self.gate(cohort=0, repos=['org/canary'])
         self.assertEqual(proof['accepted_consumers'], [])
+
+    def test_preview_requires_real_deploy_job_not_successful_cleanup(self):
+        member = {'repository': 'org/canary', 'workflows': [{'file': 'pr-preview.yml',
+                  'source': 'merged-pr', 'job': 'Deploy preview', 'max_age_hours': 48}]}
+        head = 'd'*40
+        deploy = {**self.run, 'id': 2, 'head_sha': head}
+        cleanup = {**deploy, 'id': 3}
+        result = 'success'
+        def api(path):
+            if path.endswith('/pulls'):
+                return [{'merge_commit_sha': MAIN, 'merged_at': NOW.isoformat(), 'base': {'ref': 'main'},
+                         'head': {'sha': head, 'repo': {'full_name': 'org/canary'}}}]
+            if '/jobs?' in path:
+                return {'jobs': [{'name': 'Deploy preview', 'conclusion': 'skipped' if '/3/' in path else result}]}
+            if '/runs?' in path:
+                return {'workflow_runs': [cleanup, deploy]}
+            return self.api(path)
+        with patch.object(rollout, 'api', api):
+            proof = rollout.verify_consumer(member, 'tools', '0.15.0', REVISION, DIGEST, NOW)
+            self.assertEqual(proof['workflows'][0]['id'], 2)
+            result = 'failure'
+            with self.assertRaises(ValueError):
+                rollout.verify_consumer(member, 'tools', '0.15.0', REVISION, DIGEST, NOW)
