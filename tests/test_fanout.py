@@ -24,6 +24,61 @@ MISE = ('[tools]\n'
         'bun = "1.4.1"\n')
 
 
+class PublicationEvidence(unittest.TestCase):
+    def workflow(self, test_job='test'):
+        return f'''jobs:
+  {test_job}:
+    name: Test
+    steps:
+      - uses: nicodes/tools/make@{OLD}
+        with:
+          target: install lint test vuln
+  build:
+    steps: []
+  publish:
+    needs: [{test_job}, build]
+    steps:
+      - name: Publish the validated images
+        run: python3 "$CICD_ENGINEERING"/helpers/release.py publish --revision "$GITHUB_SHA"
+'''
+
+    def test_actual_job_id_controls_artifact_selection_and_publisher(self):
+        for job in ('test', 'verify_tests'):
+            with self.subTest(job=job):
+                text = fanout.wire_test_evidence(self.workflow(job))
+                self.assertIn(f'pattern: engineering-{job}-*', text)
+                self.assertIn(f'--test-job {job}', text)
+                self.assertIn('path: .artifacts/test-evidence', text)
+                self.assertIn(fanout.DOWNLOAD_ARTIFACT, text)
+                self.assertEqual(fanout.wire_test_evidence(text), text)
+
+    def test_trigger_mappings_do_not_become_jobs(self):
+        text = 'name: CD\non:\n  workflow_dispatch:\n  push:\n    branches: [main]\n'+self.workflow()
+        wired = fanout.wire_test_evidence(text)
+        self.assertIn('pattern: engineering-test-*', wired)
+        self.assertTrue(wired.startswith('name: CD\non:\n'))
+
+    def test_missing_or_ambiguous_test_dependency_is_refused(self):
+        text = self.workflow()
+        for invalid in (text.replace('needs: [test, build]', 'needs: [build]'),
+                        text.replace('target: install lint test vuln', 'target: install lint'),
+                        text.replace('  build:\n    steps: []', f'  build:\n    steps:\n      - uses: nicodes/tools/make@{OLD}\n        with:\n          target: test')):
+            with self.assertRaises(ValueError):
+                fanout.wire_test_evidence(invalid)
+
+    def test_wrong_existing_download_or_job_is_refused(self):
+        text = fanout.wire_test_evidence(self.workflow())
+        for invalid in (text.replace('engineering-test-*', 'engineering-Build-*'),
+                        text.replace('--test-job test', '--test-job Test'),
+                        text.replace('.artifacts/test-evidence', '/tmp/unrelated')):
+            with self.assertRaises(ValueError):
+                fanout.wire_test_evidence(invalid)
+
+    def test_unrelated_product_owned_publication_is_unchanged(self):
+        text = 'jobs:\n  deploy:\n    steps:\n      - run: make deploy\n'
+        self.assertEqual(fanout.wire_test_evidence(text), text)
+
+
 class MiseEntry(unittest.TestCase):
     def test_version_and_checksum_move_together(self):
         text, changed = fanout.bump_mise(MISE, '0.7.0', NEW_SUM)
