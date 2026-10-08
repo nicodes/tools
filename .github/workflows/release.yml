@@ -52,7 +52,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: read # verify the merged candidate in private repositories
@@ -117,6 +117,12 @@ jobs:
             printf '%s\n' "$pins"; exit 1; }
           echo "verified: PR #$PR merged as $MERGED_SHA, CI green, helpers pinned to $pins"
 
+      - name: Verify installed consumers before creating a release
+        env:
+          MERGED_SHA: ${{ inputs.sha }}
+        run: python3 scripts/check-consumers.py --revision "$MERGED_SHA" --postgres
+        timeout-minutes: 15
+
       - name: Tag and release
         shell: bash
         env:
@@ -145,9 +151,10 @@ jobs:
           # byte-reproducible, so anybody can rebuild this from the tag and
           # compare the sha256 with the one a product has pinned.
           name="cicd-engineering-$VERSION.tar.gz"
-          digest=$(python3 helpers/engineering-artifact.py --revision "$MERGED_SHA" --output "$name")
+          cp .artifacts/consumers/engineering.tar.gz "$name"
+          digest=$(sha256sum "$name" | cut -d' ' -f1)
           echo "$digest  $name" > "$name.sha256"
-          gh release upload "$VERSION" "$name" "$name.sha256" --repo "$GITHUB_REPOSITORY"
+          gh release upload "$VERSION" "$name" "$name.sha256" .artifacts/consumers/consumer-check.json --repo "$GITHUB_REPOSITORY"
 
           # --notes-file, not a heredoc inside this already-indented block:
           # the closing delimiter would have to sit at column 0 to be seen.

@@ -2,6 +2,7 @@
 """Boot an authenticated off-host snapshot with its real application images offline."""
 import argparse
 from contextlib import nullcontext
+from datetime import datetime, timezone
 import fcntl
 import importlib.util
 import json
@@ -187,6 +188,8 @@ def postgres_drill(project, export, key, pull=False, *, config):
                 report.update({'revision': revision, 'images': {**images, 'engine': restored['engine']},
                                'archive_sha256': evidence['archive_sha256'], 'backend': 'postgresql',
                                'database_integrity': 'ok', 'database_restore': restored['database_restore'],
+                               'database_boot': 'passed', 'backup_verified_at': evidence['verified_at'],
+                               'ciphertext_sha256': snapshot.sha256(root/'encrypted'/'snapshot.cms'),
                                'api_boot': 'passed', 'frontend_artifact': 'passed'})
         finally:
             failed = []
@@ -311,7 +314,9 @@ def drill(project, export, key, pull=False, *, config):
             if '<html' not in html.lower() or '<script' not in html.lower():
                 raise ValueError('the restored frontend artifact did not serve an application document')
             report.update({'revision': revision, 'images': images, 'archive_sha256': evidence['archive_sha256'],
-                           'database_integrity': 'ok', 'database_boot': 'passed', 'api_boot': 'passed', 'frontend_artifact': 'passed'})
+                           'database_integrity': 'ok', 'database_boot': 'passed', 'api_boot': 'passed', 'frontend_artifact': 'passed',
+                           'backup_verified_at': evidence['verified_at'],
+                           'ciphertext_sha256': snapshot.sha256(root/'encrypted'/'snapshot.cms')})
         finally:
             failed = []
             for name in reversed(containers):
@@ -359,7 +364,12 @@ def main():
                         if total > 17 * 1024**3 + 1024**2 or shutil.disk_usage(directory).free < len(block) + 512 * 1024**2:
                             raise ValueError('restore input exceeds the size or disk headroom bound')
                         output.write(block)
-            print(json.dumps(drill(args.project, export, args.key, args.pull, config=load_config(args.config)), indent=2))
+            started_at = datetime.now(timezone.utc).isoformat()
+            started = time.monotonic()
+            report = drill(args.project, export, args.key, args.pull, config=load_config(args.config))
+            report.update(version=1, started_at=started_at, completed_at=datetime.now(timezone.utc).isoformat(),
+                          duration_seconds=round(time.monotonic()-started, 3))
+            print(json.dumps(report, indent=2))
     signal.alarm(0)
 
 
