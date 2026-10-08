@@ -215,6 +215,12 @@ class PrPreviewTemplate(unittest.TestCase):
                            'the label is cleared only after the teardown was verified')
         self.assertIn(remove + ' || echo "::warning::', self.down,
                       'a missing label never fails a teardown that already succeeded')
+        for name, section, command in [('preview-up', self.up, add), ('preview-down', self.down, remove)]:
+            with self.subTest(job=name):
+                step = section[section.rindex('env:', 0, section.index(command)):section.index(command)]
+                self.assertIn('GH_REPO: ${{ github.repository }}', step,
+                              'gh pr edit resolves the repository from a git remote by default; preview-down has '
+                              'no checkout, so without GH_REPO the label flip fails (and down would swallow it)')
         creating = [line for line in self.code.splitlines() if 'gh label create' in line]
         self.assertEqual(len(creating), 1, 'the operator hint in the down warning is the only mention outside comments')
         self.assertIn('::warning::', creating[0],
