@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import subprocess
 import unittest
+import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,6 +22,19 @@ def fixture_config(project, postgres=False):
 
 
 class RestoreBoundaries(unittest.TestCase):
+    def test_restored_files_are_mounted_readonly_instead_of_replaced_by_empty_tmpfs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'files').mkdir()
+            original = root/'files'/'original.png'
+            original.write_bytes(b'authenticated original')
+            with patch.object(drill.os, 'getuid', return_value=1000):
+                mounts = drill.restored_blob_mounts(root, {'blobs': '/blobs'}, 1000)
+            self.assertEqual(mounts, ['--mount', f'type=bind,src={root}/files,dst=/blobs,readonly'])
+            self.assertEqual(original.read_bytes(), b'authenticated original')
+            with self.assertRaisesRegex(ValueError, 'explicit'):
+                drill.restored_blob_mounts(root, {}, 1000)
+
     def test_registry_pull_requires_authenticated_product_and_image_identity(self):
         evidence = {'image_reference': 'ghcr.io/nicodes/wrong-db:'+'a'*40, 'image_id': 'sha256:'+'b'*64}
         snapshot = SimpleNamespace(unseal=lambda *_: evidence)
