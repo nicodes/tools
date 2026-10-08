@@ -87,6 +87,13 @@ def check(archive, revision, archive_sha256, source_sha256, postgres=False):
                if key in ('PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SYSTEMROOT')}
         env.update(PYTHONPATH=str(root/'tests'), PYTHONDONTWRITEBYTECODE='1',
                    CICD_TEST_POSTGRES='1' if postgres else '0')
+        consumer = Path(directory)/'consumer'
+        consumer.mkdir()
+        (consumer/'engineering-pin.json').write_text(json.dumps({'revision': revision, 'source_sha256': source_sha256}))
+        bootstrap = subprocess.run([sys.executable, str(root/'helpers/engineering-bootstrap.py')],
+                                  cwd=consumer, env={**env, 'CICD_ENGINEERING': str(root)},
+                                  capture_output=True, text=True, timeout=60)
+        bootstrap_passed = bootstrap.returncode == 0 and bootstrap.stdout.strip() == str(root)
         for name, modules in scenarios.items():
             result = subprocess.run([sys.executable, '-c', RUNNER, *modules], cwd=root,
                                     env=env, capture_output=True, text=True, timeout=600)
@@ -96,6 +103,10 @@ def check(archive, revision, archive_sha256, source_sha256, postgres=False):
                 outcome = {'tests': 0, 'skipped': 0, 'success': False}
             outcome['success'] = (result.returncode == 0 and outcome.get('success') is True
                                   and outcome.get('tests', 0) > 0 and outcome.get('skipped') == 0)
+            if name == 'bootstrap':
+                outcome['success'] = outcome['success'] and bootstrap_passed
+                outcome['installed_lookup'] = 'passed' if bootstrap_passed else 'failed'
+                outcome['tests'] += 1
             report['scenarios'][name] = outcome
             if not outcome['success']:
                 print(result.stderr[-12000:], file=sys.stderr)
