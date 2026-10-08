@@ -67,6 +67,15 @@ class PublicationEvidence(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'checkout would delete'):
             fanout.wire_test_evidence(invalid)
 
+    def test_equivalent_download_without_step_id_is_preserved(self):
+        wired = fanout.wire_test_evidence(self.workflow())
+        existing = wired.replace('        id: engineering-test-evidence\n', '')
+        self.assertEqual(fanout.wire_test_evidence(existing), existing)
+        invalid = existing.replace('      - name: Publish the validated images',
+                                   f'      - uses: actions/checkout@{OLD}\n      - name: Publish the validated images')
+        with self.assertRaisesRegex(ValueError, 'checkout would delete'):
+            fanout.wire_test_evidence(invalid)
+
     def test_trigger_mappings_do_not_become_jobs(self):
         text = 'name: CD\non:\n  workflow_dispatch:\n  push:\n    branches: [main]\n'+self.workflow()
         wired = fanout.wire_test_evidence(text)
