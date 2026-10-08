@@ -52,6 +52,21 @@ class PublicationEvidence(unittest.TestCase):
                 self.assertIn(fanout.DOWNLOAD_ARTIFACT, text)
                 self.assertEqual(fanout.wire_test_evidence(text), text)
 
+    def test_checkout_precedes_download_and_publication(self):
+        text = self.workflow().replace('      - name: Publish the validated images',
+                                      f'      - uses: actions/checkout@{OLD}\n      - name: Publish the validated images')
+        wired = fanout.wire_test_evidence(text)
+        self.assertLess(wired.index('actions/checkout@'), wired.index('id: engineering-test-evidence'))
+        self.assertLess(wired.index('id: engineering-test-evidence'), wired.index('name: Publish the validated images'))
+        self.assertEqual(fanout.wire_test_evidence(wired), wired)
+
+    def test_existing_download_before_checkout_is_refused(self):
+        wired = fanout.wire_test_evidence(self.workflow())
+        invalid = wired.replace('      - name: Publish the validated images',
+                                f'      - uses: actions/checkout@{OLD}\n      - name: Publish the validated images')
+        with self.assertRaisesRegex(ValueError, 'checkout would delete'):
+            fanout.wire_test_evidence(invalid)
+
     def test_trigger_mappings_do_not_become_jobs(self):
         text = 'name: CD\non:\n  workflow_dispatch:\n  push:\n    branches: [main]\n'+self.workflow()
         wired = fanout.wire_test_evidence(text)
