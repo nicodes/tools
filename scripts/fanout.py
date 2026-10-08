@@ -15,6 +15,7 @@ import tempfile
 import hashlib
 import tarfile
 import difflib
+import yaml
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,68 @@ MISE_CHECKSUM = re.compile(r'(\bchecksum\s*=\s*"sha256:)([a-f0-9]{64})(")')
 WORKFLOW_PIN = re.compile(
     r'(nicodes/(?:cicd|tools)/(?:make|workflow-standards|godot-setup|\.github/workflows/[a-z-]+\.ya?ml))@[a-f0-9]{40}([ \t]*#[ \t]*v?[0-9.]+)?')
 TOOLS_REFERENCE = re.compile(r'uses:\s*[\"\']?(nicodes/(?:cicd|tools)/[^\s\"\']+)')
+DOWNLOAD_ARTIFACT = 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
+
+
+def wire_test_evidence(text):
+    """Bind each shared publisher to its actual prerequisite job ID."""
+    if not re.search(r'helpers/release\.py[\"\']?\s+publish\b', text):
+        return text
+    document = yaml.safe_load(text)
+    jobs = document.get('jobs', {})
+    blocks = list(re.finditer(r'^  ([A-Za-z0-9_-]+):\s*$', text, re.M))
+    updates = []
+    for index, match in enumerate(blocks):
+        name = match[1]
+        if name not in jobs:
+            continue
+        job = jobs[name]
+        steps = job.get('steps', [])
+        publishers = [step for step in steps if re.search(r'helpers/release\.py[\"\']?\s+publish\b', step.get('run', ''))]
+        if not publishers:
+            continue
+        needs = job.get('needs', [])
+        needs = [needs] if isinstance(needs, str) else needs
+        candidates = [dependency for dependency in needs if any(
+            re.fullmatch(r'nicodes/(?:tools|cicd)/make@[a-f0-9]{40}', step.get('uses', ''))
+            and {'test', 'check'} & set(step.get('with', {}).get('target', '').split())
+            for step in jobs.get(dependency, {}).get('steps', []))]
+        if len(candidates) != 1:
+            raise ValueError(f'{name}: publication requires exactly one prerequisite engineering Test job')
+        test_job = candidates[0]
+        end = blocks[index+1].start() if index+1 < len(blocks) else len(text)
+        block = text[match.start():end]
+        existing = [step for step in steps if step.get('id') == 'engineering-test-evidence']
+        expected = {'pattern': f'engineering-{test_job}-*', 'path': '.artifacts/test-evidence'}
+        if existing:
+            if len(existing) != 1 or existing[0].get('uses') != DOWNLOAD_ARTIFACT or existing[0].get('with') != expected:
+                raise ValueError(f'{name}: existing Test evidence download differs from the reviewed contract')
+        else:
+            addition = ('    steps:\n'
+                        '      - name: Download same-run engineering Test evidence\n'
+                        '        id: engineering-test-evidence\n'
+                        f'        uses: {DOWNLOAD_ARTIFACT} # v8.0.1\n'
+                        '        with:\n'
+                        f'          pattern: engineering-{test_job}-*\n'
+                        '          path: .artifacts/test-evidence\n')
+            if block.count('    steps:\n') != 1:
+                raise ValueError(f'{name}: unsupported publication step layout')
+            block = block.replace('    steps:\n', addition, 1)
+        lines = block.splitlines(keepends=True)
+        for line_index, line in enumerate(lines):
+            if not re.search(r'helpers/release\.py[\"\']?\s+publish\b', line):
+                continue
+            if line.rstrip().endswith('\\'):
+                raise ValueError(f'{name}: unsupported multiline publisher command')
+            option = re.search(r'--test-job\s+([^\s]+)', line)
+            if option and option[1] != test_job:
+                raise ValueError(f'{name}: publisher declares a different Test job')
+            if not option:
+                lines[line_index] = line.rstrip('\n')+f' --test-job {test_job}\n'
+        updates.append((match.start(), end, ''.join(lines)))
+    for start, end, block in reversed(updates):
+        text = text[:start]+block+text[end:]
+    return text
 
 
 def bump_mise(text, version, checksum):
@@ -100,6 +163,9 @@ def apply(root, version, commit, checksum, source_digest=None, dry_run=False, re
                    set((root/'.github/actions').rglob('action.y*ml')))
     for path in paths:
         text, changed = bump_workflow(path.read_text(), version, commit)
+        if tuple(map(int, version.split('.'))) >= (0, 14, 0):
+            text = wire_test_evidence(text)
+            changed = text != path.read_text()
         if changed:
             updates[path] = text
     pin_path = root/'engineering-pin.json'
