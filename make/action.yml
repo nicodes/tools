@@ -114,6 +114,7 @@ runs:
         path: |
           .artifacts/contract/timings.jsonl
           .artifacts/contract/build.json
+          .artifacts/contract/test.json
           .artifacts/contract/cache.json
         if-no-files-found: ignore
         retention-days: 30

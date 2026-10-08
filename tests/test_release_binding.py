@@ -23,6 +23,8 @@ class ReleaseBinding(unittest.TestCase):
         (self.root / '.mise.toml').write_text('[tools]\npython = "3.13.11"\n')
         declaration = {'version': 1, 'stages': {name: {'inapplicable': 'fixture'} for name in STAGES},
                        'artifacts': ['.artifacts/release'], 'build_environment': ['PRIVATE_BUILD_INPUT']}
+        for stage in ('unit', 'integration'):
+            declaration['stages'][stage] = [[os.sys.executable, '-c', 'pass']]
         (self.root / 'engineering.json').write_text(json.dumps(declaration))
         self.git('init', '-q')
         self.git('add', '.')
@@ -36,7 +38,9 @@ class ReleaseBinding(unittest.TestCase):
         self.calls = self.root / '.artifacts/docker-calls'
         self.context = {'GITHUB_SERVER_URL': 'https://github.com', 'GITHUB_REPOSITORY': 'org/demo',
                         'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1',
-                        'PRIVATE_BUILD_INPUT': 'secret-must-never-be-recorded'}
+                        'PRIVATE_BUILD_INPUT': 'secret-must-never-be-recorded',
+                        'GITHUB_JOB': 'Build', 'GITHUB_SHA': self.sha}
+        self.produce_tests()
 
     def git(self, *args):
         return subprocess.run(['git', '-C', str(self.root), *args], check=True, text=True, capture_output=True)
@@ -48,9 +52,23 @@ class ReleaseBinding(unittest.TestCase):
         env.update(PATH=str(self.bin)+os.pathsep+env['PATH'], DOCKER_CALLS=str(self.calls))
         result = subprocess.run([os.sys.executable, str(HELPER), operation, '--project', 'demo',
                                  '--image-base', 'ghcr.io/org/demo', '--revision', self.sha,
-                                 '--components', 'api'], cwd=self.root, env=env, text=True, capture_output=True)
+                                 '--components', 'api', '--test-evidence-directory', '.artifacts/contract'], cwd=self.root, env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode == 0, success, result.stderr)
         return result
+
+    def produce_tests(self, success=True):
+        env = {key: value for key, value in os.environ.items() if not key.startswith('GITHUB_')}
+        env.update(self.context)
+        env['GITHUB_JOB'] = 'Test'
+        result = subprocess.run([os.sys.executable, str(HELPER.with_name('contract.py')), 'test'],
+                                cwd=self.root, env=env, text=True, capture_output=True)
+        self.assertEqual(result.returncode == 0, success, result.stderr)
+
+    def change_test_proof(self, change):
+        file = self.root / '.artifacts/contract/test.json'
+        data = json.loads(file.read_text())
+        change(data)
+        file.write_text(json.dumps(data))
 
     def manifest(self):
         return json.loads((self.release / 'release.json').read_text())
@@ -77,6 +95,9 @@ class ReleaseBinding(unittest.TestCase):
         self.run_cli('publish')
         receipt = json.loads((self.release / 'publication.json').read_text())
         self.assertEqual(receipt['build_provenance'], proof)
+        self.assertEqual(receipt['tested_commit'], self.sha)
+        self.assertEqual(receipt['test_provenance']['tested_commit'], self.sha)
+        self.assertEqual(set(receipt['test_provenance']['test_receipts']), {'unit', 'integration'})
         self.assertEqual(receipt['images'], data['images'])
         self.assertEqual(receipt['publisher_context']['GITHUB_RUN_ID'], '123')
 
@@ -147,3 +168,86 @@ class ReleaseBinding(unittest.TestCase):
         self.assertIsNone(proof['tested_commit'])
         self.run_cli('publish', False, {'GITHUB_SHA': 'c'*40})
         self.assert_no_publication()
+
+    def test_missing_tests_cannot_publish_a_successful_build(self):
+        self.run_cli('record')
+        (self.root / '.artifacts/contract/test.json').unlink()
+        self.run_cli('publish', False)
+        self.assert_no_publication()
+
+    def test_tests_from_another_source_or_merge_cannot_certify_this_head(self):
+        for key in ['source_commit', 'tested_commit', 'source_tree']:
+            self.produce_tests()
+            self.run_cli('record')
+            self.change_test_proof(lambda proof: proof.update({key: 'b'*40}))
+            self.run_cli('publish', False)
+            self.assert_no_publication()
+
+    def test_test_run_job_or_attempt_must_match_the_trusted_workflow(self):
+        for key, value in [('GITHUB_RUN_ID', 'different'), ('GITHUB_REPOSITORY', 'other/repo'),
+                           ('GITHUB_JOB', 'Build'), ('GITHUB_SHA', 'b'*40), ('GITHUB_RUN_ATTEMPT', '2')]:
+            self.produce_tests()
+            self.run_cli('record')
+            self.change_test_proof(lambda proof: proof['execution_context'].update({key: value}))
+            self.run_cli('publish', False)
+            self.assert_no_publication()
+
+    def test_incomplete_or_mismatched_applicable_test_receipts_are_refused(self):
+        for change in [lambda proof: proof['test_receipts'].pop('integration'),
+                       lambda proof: proof['test_receipts']['unit'].update(input_identity='b'*64),
+                       lambda proof: proof.update(configuration_sha256={})]:
+            self.produce_tests()
+            self.run_cli('record')
+            self.change_test_proof(change)
+            self.run_cli('publish', False)
+            self.assert_no_publication()
+
+    def test_failed_test_removes_a_prior_success_receipt(self):
+        file = self.root / 'engineering.json'
+        declaration = json.loads(file.read_text())
+        declaration['stages']['unit'] = [[os.sys.executable, '-c', 'raise SystemExit(3)']]
+        file.write_text(json.dumps(declaration))
+        self.git('add', 'engineering.json')
+        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'failing fixture test')
+        self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
+        self.context['GITHUB_SHA'] = self.sha
+        self.produce_tests(False)
+        self.assertFalse((self.root / '.artifacts/contract/test.json').exists())
+        self.run_cli('record')
+        self.run_cli('publish', False)
+        self.assert_no_publication()
+
+    def test_symlink_test_receipt_is_refused_before_load(self):
+        self.run_cli('record')
+        file = self.root / '.artifacts/contract/test.json'
+        other = file.with_name('retained-test.json')
+        file.rename(other)
+        file.symlink_to(other)
+        self.run_cli('publish', False)
+        self.assert_no_publication()
+
+    def commit_declaration(self, declaration):
+        (self.root / 'engineering.json').write_text(json.dumps(declaration))
+        self.git('add', 'engineering.json')
+        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'changed test fixture')
+        self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
+        self.context['GITHUB_SHA'] = self.sha
+
+    def test_inapplicable_tests_never_produce_publication_evidence(self):
+        declaration = json.loads((self.root / 'engineering.json').read_text())
+        for name in ('unit', 'integration'):
+            declaration['stages'][name] = {'inapplicable': 'fixture has no tests'}
+        self.commit_declaration(declaration)
+        self.produce_tests()
+        self.assertFalse((self.root / '.artifacts/contract/test.json').exists())
+        self.run_cli('record')
+        self.run_cli('publish', False)
+        self.assert_no_publication()
+
+    def test_changed_test_inputs_do_not_create_a_success_receipt(self):
+        declaration = json.loads((self.root / 'engineering.json').read_text())
+        declaration['stages']['integration'] = [[os.sys.executable, '-c',
+                                               "from pathlib import Path; Path('.mise.toml').write_text('mutated during tests')"]]
+        self.commit_declaration(declaration)
+        self.produce_tests()
+        self.assertFalse((self.root / '.artifacts/contract/test.json').exists())
