@@ -2,13 +2,19 @@
 """Record and publish the exact container images validated by the Build gate."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 
-import contract
+# Artifact adapters also import this module by file path. Resolve its sibling
+# from the verified snapshot rather than the caller's cwd or PYTHONPATH.
+_contract_spec = importlib.util.spec_from_file_location(
+    '_engineering_release_contract', Path(__file__).resolve().with_name('contract.py'))
+contract = importlib.util.module_from_spec(_contract_spec)
+_contract_spec.loader.exec_module(contract)
 
 
 def digest(file):
