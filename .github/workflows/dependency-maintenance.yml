@@ -1,7 +1,7 @@
 name: Dependency Maintenance
 on:
   schedule:
-    - cron: '31 9 * * 1'
+    - cron: '31 11 * * 1'
   workflow_dispatch:
 permissions:
   contents: read
