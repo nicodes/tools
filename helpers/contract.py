@@ -12,6 +12,26 @@ import time
 import datetime
 import sys
 
+CONTEXT_KEYS = ('GITHUB_SERVER_URL', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID',
+                'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB', 'GITHUB_SHA',
+                'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA', 'GITHUB_EVENT_NAME')
+CONFIG_FILES = ('.mise.toml', 'engineering.json', 'engineering-profile.json',
+                'engineering-pin.json', 'fleet-policy.json')
+
+
+def checkout_binding():
+    tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True, timeout=10).strip()
+    clean = subprocess.run(['git', 'diff', '--quiet', 'HEAD', '--'], timeout=30).returncode
+    if clean not in (0, 1):
+        raise ValueError('cannot determine tracked source state')
+    return {'source_tree': tree, 'tracked_source_clean': clean == 0,
+            'configuration_sha256': {name: sha(Path(name)) for name in CONFIG_FILES if Path(name).is_file()}}
+
+
+def execution_context():
+    return {key: os.environ[key] for key in CONTEXT_KEYS if os.environ.get(key)}
+
+
 STAGES = ('install', 'lint', 'unit', 'integration', 'build', 'artifact-check',
           'browser-install', 'e2e', 'vuln', 'dev', 'stop', 'clean')
 GROUPS = {'test': ('unit', 'integration'),
@@ -170,8 +190,16 @@ class Runner:
         if name in self.done:
             return
         if name in GROUPS:
+            receipt = self.root/'test.json'
+            receipt.unlink(missing_ok=True)
             for child in GROUPS[name]:
                 self.stage(child)
+            proof = self.provenance(identity(self.data))
+            if proof['tested_commit'] is not None:
+                proof.update(checkout_binding(), execution_context=execution_context())
+                temporary = self.root/'test.json.tmp'
+                temporary.write_text(json.dumps(proof, sort_keys=True)+'\n')
+                temporary.replace(receipt)
             self.done.add(name)
             return
         value = self.data['stages'][name]
