@@ -42,6 +42,24 @@ class ReleaseBinding(unittest.TestCase):
                         'GITHUB_JOB': 'Build', 'GITHUB_SHA': self.sha}
         self.produce_tests()
 
+    def test_file_path_import_uses_snapshot_sibling_without_pythonpath(self):
+        (self.root/'contract.py').write_text('raise RuntimeError("caller contract must not load")\n')
+        script = """
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('adapter_release', sys.argv[1])
+release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release)
+proof = release.build_provenance(sys.argv[2])
+assert proof['source_commit'] == sys.argv[2]
+assert proof['tested_commit'] is None
+assert len(proof['input_identity']) == 64
+"""
+        for mode in ([], ['-I']):
+            with self.subTest(mode=mode):
+                result = subprocess.run([os.sys.executable, *mode, '-c', script, str(HELPER), self.sha],
+                                        cwd=self.root, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+
     def git(self, *args):
         return subprocess.run(['git', '-C', str(self.root), *args], check=True, text=True, capture_output=True)
 
