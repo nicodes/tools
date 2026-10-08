@@ -37,6 +37,27 @@ def wire_test_evidence(text):
     if not re.search(r'helpers/release\.py[\"\']?\s+publish\b', text):
         return text
     document = yaml.safe_load(text)
+    if document.get('runs', {}).get('using') == 'composite':
+        if 'engineering-test-evidence' in text:
+            downloads = [step for step in document['runs']['steps'] if step.get('id') == 'engineering-test-evidence']
+            if len(downloads) != 1 or downloads[0].get('uses') != DOWNLOAD_ARTIFACT or downloads[0].get('with') != {'pattern': 'engineering-test-*', 'path': '.artifacts/test-evidence'}:
+                raise ValueError('composite publication evidence differs from the reviewed contract')
+            for step in document['runs']['steps']:
+                if re.search(r'helpers/release\.py[\"\']?\s+publish\b', step.get('run', '')) and not re.search(r'--test-job test(?:\s|$)', step['run']):
+                    raise ValueError('composite publisher declares a different Test job')
+            return text
+        addition = ('  steps:\n'
+                    '    - name: Download same-run engineering Test evidence\n'
+                    '      id: engineering-test-evidence\n'
+                    f'      uses: {DOWNLOAD_ARTIFACT} # v8.0.1\n'
+                    '      with:\n'
+                    '        pattern: engineering-test-*\n'
+                    '        path: .artifacts/test-evidence\n')
+        if text.count('  steps:\n') != 1:
+            raise ValueError('unsupported composite publication layout')
+        text = text.replace('  steps:\n', addition, 1)
+        return re.sub(r'(^[^\n]*helpers/release\.py[\"\']?\s+publish[^\n]*)(\n|$)',
+                      r'\1 --test-job test\2', text, flags=re.M)
     jobs = document.get('jobs', {})
     blocks = list(re.finditer(r'^  ([A-Za-z0-9_-]+):\s*$', text, re.M))
     updates = []
@@ -55,14 +76,27 @@ def wire_test_evidence(text):
             re.fullmatch(r'nicodes/(?:tools|cicd)/make@[a-f0-9]{40}', step.get('uses', ''))
             and {'test', 'check'} & set(step.get('with', {}).get('target', '').split())
             for step in jobs.get(dependency, {}).get('steps', []))]
-        if len(candidates) != 1:
+        own = [step for step in steps if re.fullmatch(r'nicodes/(?:tools|cicd)/make@[a-f0-9]{40}', step.get('uses', ''))
+               and 'build' in step.get('with', {}).get('target', '').split()]
+        same_job = not candidates and len(own) == 1
+        if len(candidates) != 1 and not same_job:
             raise ValueError(f'{name}: publication requires exactly one prerequisite engineering Test job')
-        test_job = candidates[0]
+        test_job = name if same_job else candidates[0]
         end = blocks[index+1].start() if index+1 < len(blocks) else len(text)
         block = text[match.start():end]
         existing = [step for step in steps if step.get('id') == 'engineering-test-evidence']
         expected = {'pattern': f'engineering-{test_job}-*', 'path': '.artifacts/test-evidence'}
-        if existing:
+        if same_job:
+            target = own[0]['with']['target']
+            if 'test' not in target.split() and 'check' not in target.split():
+                new_target = target.replace('build', 'test build', 1)
+                pattern = re.compile(r'^(\s*target:\s*)'+re.escape(target)+r'\s*$', re.M)
+                block, count = pattern.subn(lambda match: match[1]+new_target, block)
+                if count != 1:
+                    raise ValueError(f'{name}: unsupported build target layout')
+            if existing:
+                raise ValueError(f'{name}: same-job publication must use its own test receipt')
+        elif existing:
             if len(existing) != 1 or existing[0].get('uses') != DOWNLOAD_ARTIFACT or existing[0].get('with') != expected:
                 raise ValueError(f'{name}: existing Test evidence download differs from the reviewed contract')
         else:
@@ -87,6 +121,8 @@ def wire_test_evidence(text):
                 raise ValueError(f'{name}: publisher declares a different Test job')
             if not option:
                 lines[line_index] = line.rstrip('\n')+f' --test-job {test_job}\n'
+            if same_job and '--test-evidence-directory' not in lines[line_index]:
+                lines[line_index] = lines[line_index].rstrip('\n')+' --test-evidence-directory .artifacts/contract\n'
         updates.append((match.start(), end, ''.join(lines)))
     for start, end, block in reversed(updates):
         text = text[:start]+block+text[end:]

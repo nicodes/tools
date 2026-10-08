@@ -78,6 +78,36 @@ class PublicationEvidence(unittest.TestCase):
         text = 'jobs:\n  deploy:\n    steps:\n      - run: make deploy\n'
         self.assertEqual(fanout.wire_test_evidence(text), text)
 
+    def test_head_preview_runs_actual_head_tests_and_uses_its_own_receipt(self):
+        text = f'''jobs:
+  build:
+    steps:
+      - uses: nicodes/tools/make@{OLD}
+        with:
+          target: install build artifact-check e2e
+      - run: python3 "$CICD_ENGINEERING"/helpers/release.py publish --revision "$HEAD_SHA"
+'''
+        wired = fanout.wire_test_evidence(text)
+        self.assertIn('target: install test build artifact-check e2e', wired)
+        self.assertIn('--test-job build --test-evidence-directory .artifacts/contract', wired)
+        self.assertNotIn('Download same-run', wired)
+        self.assertEqual(fanout.wire_test_evidence(wired), wired)
+
+    def test_service_composite_retains_same_run_test_download(self):
+        text = '''name: Publish
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: python3 "$CICD_ENGINEERING"/helpers/release.py publish --revision "$RELEASE_COMMIT"
+'''
+        wired = fanout.wire_test_evidence(text)
+        self.assertIn('pattern: engineering-test-*', wired)
+        self.assertIn('--test-job test', wired)
+        self.assertEqual(fanout.wire_test_evidence(wired), wired)
+        with self.assertRaises(ValueError):
+            fanout.wire_test_evidence(wired.replace('engineering-test-*', 'engineering-build-*'))
+
 
 class MiseEntry(unittest.TestCase):
     def test_version_and_checksum_move_together(self):
