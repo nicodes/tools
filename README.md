@@ -628,3 +628,10 @@ binding during adoption, and rejects absent or ambiguous test prerequisites.
 Local publishers use the receipt from `make test` or `make check`
 in `.artifacts/contract`. Build and test input digests are recorded separately;
 a different PR merge checkout cannot certify a head artifact.
+
+PR-head publication retains the workflow's merge identity separately. The head
+must match the runner's pull-request event, and successful tests must actually
+run on that head. The adoption helper adds those tests to a preview-producing
+Build job and uses its own receipt; the existing merge Test job remains intact.
+This adds test execution for the second source rather than claiming a merge
+test certified an independently built head image.

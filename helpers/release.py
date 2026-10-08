@@ -92,8 +92,11 @@ def build_provenance(revision):
 
 
 def validate_provenance(manifest, revision):
-    if os.environ.get('GITHUB_SHA') and os.environ['GITHUB_SHA'] != revision:
-        raise ValueError('publisher workflow commit differs from the release source')
+    relationship = source_relationship(revision)
+    workflow = os.environ.get('GITHUB_SHA')
+    if workflow and workflow != revision:
+        if os.environ.get('GITHUB_EVENT_NAME') != 'pull_request' or relationship['pull_request_head'] != revision:
+            raise ValueError('publisher source is neither its workflow commit nor its authenticated PR head')
     proof = manifest.get('provenance')
     if not isinstance(proof, dict) or type(proof.get('version')) is not int or proof['version'] != 1 or proof.get('source_commit') != revision:
         raise ValueError('release has no matching build source provenance; rebuild with this engineering baseline')
@@ -109,9 +112,11 @@ def validate_provenance(manifest, revision):
         raise ValueError('invalid build execution context')
     # A failed publish can be retried using the prior successful Build artifact
     # in the same run. Different runs/repositories are never interchangeable.
-    for key in ('GITHUB_SERVER_URL', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID'):
+    for key in ('GITHUB_SERVER_URL', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_SHA'):
         if context.get(key) != (os.environ.get(key) or None):
             raise ValueError('release artifact belongs to another workflow execution')
+    if proof.get('source_relationship') != relationship:
+        raise ValueError('build and publisher disagree about the PR source relationship')
     built, current = context.get('GITHUB_RUN_ATTEMPT'), os.environ.get('GITHUB_RUN_ATTEMPT')
     if built or current:
         if not built or not current or not built.isdecimal() or not current.isdecimal() or not 1 <= int(built) <= int(current):
@@ -155,7 +160,7 @@ def validate_test_evidence(directory, revision, expected_job):
             if context.get(key) != (os.environ.get(key) or None):
                 raise ValueError('tests belong to another workflow execution')
         if os.environ.get('GITHUB_RUN_ID'):
-            if context.get('GITHUB_JOB') != expected_job or context.get('GITHUB_SHA') != revision:
+            if context.get('GITHUB_JOB') != expected_job or context.get('GITHUB_SHA') != os.environ.get('GITHUB_SHA'):
                 raise ValueError('tests were not produced by the declared test job at the release commit')
             tested, current = context.get('GITHUB_RUN_ATTEMPT'), os.environ.get('GITHUB_RUN_ATTEMPT')
             if not isinstance(tested, str) or not isinstance(current, str) or not tested.isdecimal() or not current.isdecimal() or not 1 <= int(tested) <= int(current):
