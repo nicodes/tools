@@ -16,6 +16,7 @@ import hashlib
 import tarfile
 import difflib
 import yaml
+import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -196,6 +197,18 @@ def release_facts(version):
         if source.get('revision') != commit.stdout.strip():
             raise ValueError('release source manifest revision differs from tag')
         source_digest = hashlib.sha256(source_bytes).hexdigest()
+        if tuple(map(int, version.split('.'))) >= (0, 15, 0):
+            subprocess.run(['gh', 'release', 'download', tag, '-R', 'nicodes/tools',
+                            '-p', 'consumer-check.json', '-D', directory], check=True, timeout=60)
+            proof = json.loads((Path(directory)/'consumer-check.json').read_text())
+            expected = {'bootstrap', 'publication', 'backup-transport', 'recovery', 'postgres-restore'}
+            if (proof.get('version') != 1 or proof.get('success') is not True
+                    or proof.get('revision') != commit.stdout.strip()
+                    or proof.get('archive_sha256') != checksum or proof.get('source_sha256') != source_digest
+                    or set(proof.get('scenarios', {})) != expected
+                    or any(value.get('success') is not True or value.get('tests', 0) < 1 or value.get('skipped') != 0
+                           for value in proof['scenarios'].values())):
+                raise ValueError('release lacks matching installed-consumer acceptance')
     return commit.stdout.strip(), checksum, source_digest
 
 
@@ -341,12 +354,22 @@ if __name__ == '__main__':
     parser.add_argument('--manifest', type=Path, required=True, help='write machine-readable adoption outcomes')
     parser.add_argument('--only', action='append', default=[], metavar='REPO',
                         help='limit to these products; repeat for several')
+    parser.add_argument('--rollout-policy', type=Path, help='caller-owned ordered cohorts and acceptance requirements')
+    parser.add_argument('--cohort', type=int, help='zero-based reviewed cohort; required when pushing')
     args = parser.parse_args()
+    if args.push and (args.rollout_policy is None or args.cohort is None):
+        parser.error('--push requires --rollout-policy and --cohort; earlier cohorts must pass live acceptance')
     if not re.fullmatch(r'\d+\.\d+\.\d+', args.version):
         raise SystemExit('version must be X.Y.Z, without the leading v')
     commit, checksum, source_digest = release_facts(args.version)
     fleet = json.loads(args.fleet.read_text())
     repos = args.only or sorted(fleet['products'])
+    acceptance = None
+    if args.rollout_policy is not None:
+        spec = importlib.util.spec_from_file_location('rollout_gate', ROOT/'scripts/rollout_gate.py')
+        rollout = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rollout)
+        acceptance = rollout.gate(args.rollout_policy, args.cohort, repos, 'tools', args.version, commit, checksum)
     print(f'v{args.version} = {commit}  sha256:{checksum[:12]}', file=sys.stderr)
     failures = 0
     outcomes = []
@@ -365,5 +388,5 @@ if __name__ == '__main__':
     args.manifest.write_text(json.dumps({'version': args.version, 'revision': commit,
         'archive_sha256': checksum, 'source_sha256': source_digest, 'push': args.push,
         'policy_sha256': hashlib.sha256(args.policy.read_bytes()).hexdigest() if args.policy else None,
-        'outcomes': outcomes}, indent=2)+'\n')
+        'acceptance': acceptance, 'outcomes': outcomes}, indent=2)+'\n')
     sys.exit(1 if failures else 0)
