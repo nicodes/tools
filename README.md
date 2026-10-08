@@ -1,6 +1,22 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 2f963435af14704a84d3480ecaae3c9f98b20af57ad7723c752897253cfd7a2f -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 368ee9c345145d336d9a308aea48f53d05b40e1a6ac682c94f0b720b7ada2f98 -->
 
 # Reusable engineering tools
+
+## Installed release acceptance
+
+Before publishing an engineering release, CI and the release gate execute the
+checksum-bound archive from an isolated installation. Required checks cover
+bootstrap, publication handoffs, encrypted backup transport, recovery boundaries,
+and real disposable PostgreSQL restoration. Skipped or empty required suites fail.
+The published `consumer-check.json` names the exact source, archive and manifest.
+Registry and object-storage checks use fixture transports; this evidence does not
+establish a production backup or restore.
+
+Tools and deployment-action adoption pushes require a caller-owned
+`--rollout-policy` and zero-based `--cohort`. Earlier cohorts must have adopted the
+target immutable release and passed their declared fresh workflow acceptance.
+The selected repositories must equal the reviewed cohort. Missing, stale, failed,
+pending or inaccessible acceptance stops expansion before repository edits.
 
 Source-only helpers, GitHub Actions and templates for caller-owned projects.
 Applications keep their business logic, identities, domains, credentials,
@@ -615,23 +631,3 @@ Use the checked release archive without rebuilding. Do not copy a generic
 privileged deploy workflow.
 
 Select the template matching the caller's build and deployment layout.
-
-
-Container publication requires the actual test receipt for the exact source.
-The shared `make` action retains `test.json` with its engineering job artifacts.
-Download the current run's test-job artifacts into `.artifacts/test-evidence`
-before publishing. The default test job ID is `Test`; callers with another ID
-pass `--test-job` (for example `--test-job test` for the shipped templates).
-Artifact selection uses `engineering-<job-id>-*`, rather than the display name.
-For tools v0.14 and later, `scripts/fanout.py` adds this download and explicit job
-binding during adoption, and rejects absent or ambiguous test prerequisites.
-Local publishers use the receipt from `make test` or `make check`
-in `.artifacts/contract`. Build and test input digests are recorded separately;
-a different PR merge checkout cannot certify a head artifact.
-
-PR-head publication retains the workflow's merge identity separately. The head
-must match the runner's pull-request event, and successful tests must actually
-run on that head. The adoption helper adds those tests to a preview-producing
-Build job and uses its own receipt; the existing merge Test job remains intact.
-This adds test execution for the second source rather than claiming a merge
-test certified an independently built head image.
