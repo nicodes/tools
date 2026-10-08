@@ -77,6 +77,23 @@ def probe_endpoint(docker_run, watched, url, timeout=175):
     raise TimeoutError('restored service did not become healthy before its deadline')
 
 
+def restored_blob_mounts(payload, config, uid):
+    """Expose authenticated restored files, never an empty replacement volume."""
+    files = payload/'files'
+    if not config.get('blobs'):
+        if files.exists() and any(files.rglob('*')):
+            raise ValueError('snapshot files require an explicit application blob mount')
+        return []
+    files.mkdir(mode=0o700, exist_ok=True)
+    paths = [files, *files.rglob('*')]
+    if any(path.is_symlink() or not (path.is_file() or path.is_dir()) for path in paths):
+        raise ValueError('restored blob mount must contain only authenticated regular files')
+    if os.getuid() == 0:
+        for path in paths:
+            os.chown(path, uid, uid)
+    return ['--mount', f'type=bind,src={files},dst={config["blobs"]},readonly']
+
+
 def postgres_drill(project, export, key, pull=False, *, config):
     """Restore an authenticated snapshot into PostgreSQL and boot the product on it.
 
@@ -166,11 +183,7 @@ def postgres_drill(project, export, key, pull=False, *, config):
                 environment.chmod(0o600)
                 api = prefix+'-api'
                 containers.append(api)
-                # A blob volume only for a product that keeps files outside
-                # the database. The API stats that directory rather than
-                # creating it, so it has to be a mount, not a path in /tmp.
-                blobs = ['--tmpfs', f'{config["blobs"]}:rw,noexec,nosuid,uid={uid},gid={uid},mode=0700,size=32m'] \
-                    if config.get('blobs') else []
+                blobs = restored_blob_mounts(payload, config, uid)
                 docker('run', '-d', '--name', api, *netns, *common, '--memory=192m', *blobs,
                        '--mount', f'type=bind,src={dsn},dst={config["dsn_file"]},readonly',
                        '--env-file', str(environment), images[api_component])
@@ -190,6 +203,7 @@ def postgres_drill(project, export, key, pull=False, *, config):
                                'database_integrity': 'ok', 'database_restore': restored['database_restore'],
                                'database_boot': 'passed', 'backup_verified_at': evidence['verified_at'],
                                'ciphertext_sha256': snapshot.sha256(root/'encrypted'/'snapshot.cms'),
+                               'files_restored': sum(name.startswith('files/') for name in manifest['files']),
                                'api_boot': 'passed', 'frontend_artifact': 'passed'})
         finally:
             failed = []
