@@ -620,7 +620,11 @@ Select the template matching the caller's build and deployment layout.
 Container publication requires the actual test receipt for the exact source.
 The shared `make` action retains `test.json` with its engineering job artifacts.
 Download the current run's test-job artifacts into `.artifacts/test-evidence`
-before publishing. The default test job is `Test`; callers with another label
-pass `--test-job`. Local publishers use the receipt from `make test` or `make check`
+before publishing. The default test job ID is `Test`; callers with another ID
+pass `--test-job` (for example `--test-job test` for the shipped templates).
+Artifact selection uses `engineering-<job-id>-*`, rather than the display name.
+For tools v0.14 and later, `scripts/fanout.py` adds this download and explicit job
+binding during adoption, and rejects absent or ambiguous test prerequisites.
+Local publishers use the receipt from `make test` or `make check`
 in `.artifacts/contract`. Build and test input digests are recorded separately;
 a different PR merge checkout cannot certify a head artifact.
