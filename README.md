@@ -615,3 +615,12 @@ Use the checked release archive without rebuilding. Do not copy a generic
 privileged deploy workflow.
 
 Select the template matching the caller's build and deployment layout.
+
+
+Container publication requires the actual test receipt for the exact source.
+The shared `make` action retains `test.json` with its engineering job artifacts.
+Download the current run's test-job artifacts into `.artifacts/test-evidence`
+before publishing. The default test job is `Test`; callers with another label
+pass `--test-job`. Local publishers use the receipt from `make test` or `make check`
+in `.artifacts/contract`. Build and test input digests are recorded separately;
+a different PR merge checkout cannot certify a head artifact.
