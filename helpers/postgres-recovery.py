@@ -28,6 +28,7 @@ MAX_FILES = 100000
 MAX_BYTES = 16 * 1024**3
 HEX_REVISION = re.compile(r'[a-f0-9]{40}')
 DOCKER_TAG = re.compile(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}')
+OFFICIAL_ENGINE = re.compile(r'(?:postgres|docker\.io/library/postgres|mirror\.gcr\.io/library/postgres|public\.ecr\.aws/docker/library/postgres)@sha256:[a-f0-9]{64}')
 HOST_LOCAL_REVISION = re.compile(r'host-local:([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127})')
 
 
@@ -70,7 +71,7 @@ def validate_manifest(value, expected_project=None, expected_revision=None):
     engine = value['engine']
     if not isinstance(engine, dict) or set(engine) != {'reference', 'image_id', 'major'}:
         raise ValueError('invalid PostgreSQL engine declaration')
-    if not isinstance(engine['reference'], str) or not re.fullmatch(r'(?:docker\.io/library/)?postgres@sha256:[a-f0-9]{64}', engine['reference']):
+    if not isinstance(engine['reference'], str) or not OFFICIAL_ENGINE.fullmatch(engine['reference']):
         raise ValueError('PostgreSQL recovery requires an immutable official engine reference')
     if not isinstance(engine['image_id'], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', engine['image_id']):
         raise ValueError('invalid PostgreSQL engine image identity')
