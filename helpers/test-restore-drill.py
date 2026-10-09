@@ -48,7 +48,7 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
     """
     if not isinstance(engine_reference, str) or not recovery.OFFICIAL_ENGINE.fullmatch(engine_reference):
         raise ValueError('the fixture engine must be an immutable official postgres digest')
-    engine = json.loads(restore.docker('image', 'inspect', engine_reference))[0]
+    runtime_reference, engine = recovery.resolve_engine(engine_reference, pull=True)
     # The image states its own major; deriving it keeps the fixture honest
     # when the pinned digest moves, rather than asserting a number here that
     # package_capture would then reject against the capture report.
@@ -82,7 +82,7 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
                        '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m',
                        '--tmpfs', f'/var/run/postgresql:rw,noexec,nosuid,uid={uid},gid={uid},mode=0770,size=8m',
                        '--mount', f'type=bind,src={data},dst=/var/lib/postgresql/data',
-                       '--env-file', str(environment), engine_reference,
+                       '--env-file', str(environment), runtime_reference,
                        'postgres', '-c', 'listen_addresses=127.0.0.1')
         deadline = time.monotonic()+90
         while True:

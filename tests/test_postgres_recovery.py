@@ -55,6 +55,31 @@ def archive_payload(source, archive):
 
 
 class PostgreSQLArchiveBoundaries(unittest.TestCase):
+    def test_registry_fallback_keeps_digest_and_no_pull_stays_offline(self):
+        calls = []
+        digest = ENGINE.split('@', 1)[1]
+        mirror = 'mirror.gcr.io/library/postgres@' + digest
+        def docker(*args, **kwargs):
+            calls.append((args, kwargs))
+            if args[:2] == ('image', 'inspect'):
+                if any(call[0][:2] == ('pull', '--quiet') for call in calls):
+                    return json.dumps([{'Id': 'sha256:' + 'b' * 64}])
+                raise RuntimeError('not cached')
+            if args[:2] == ('pull', '--quiet') and args[2] == mirror:
+                return ''
+            raise RuntimeError('unavailable')
+        with patch.object(pg, 'docker', docker):
+            with self.assertRaises(RuntimeError):
+                pg.resolve_engine(ENGINE, pull=False)
+            self.assertFalse(any(call[0][0] == 'pull' for call in calls))
+            candidate, inspected = pg.resolve_engine(ENGINE, pull=True)
+            self.assertEqual(candidate, mirror)
+            self.assertEqual(inspected['Id'], 'sha256:' + 'b' * 64)
+        pulls = [call for call in calls if call[0][0] == 'pull']
+        self.assertTrue(pulls)
+        self.assertTrue(all(call[0][2].endswith('@' + digest) for call in pulls))
+        self.assertTrue(all(call[1]['timeout'] == 300 for call in pulls))
+
     def test_only_exact_official_digest_references_are_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = payload(Path(directory)/'payload')
@@ -325,8 +350,8 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CICD_TEST_POSTGRES') == '1', 'make check requires the real isolated PostgreSQL control')
 class PostgreSQLRestoreIntegration(unittest.TestCase):
     def test_real_custom_dump_restores_rows_and_acl_and_cleans_up(self):
-        pg.docker('pull', '--quiet', ENGINE, timeout=180)
-        image = json.loads(pg.docker('image', 'inspect', ENGINE))[0]['Id']
+        _, inspected = pg.resolve_engine(ENGINE, pull=True)
+        image = inspected['Id']
         name = 'cicd-pg-source-'+os.urandom(8).hex()
         uid = os.getuid() or 65534
         source_id = pg.docker('run', '-d', '--name', name, '--network=none', '--read-only', '--user', f'{uid}:{uid}',
