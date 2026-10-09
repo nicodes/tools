@@ -260,6 +260,35 @@ def package_capture(capture, destination, metadata):
         if not complete: shutil.rmtree(target)
 
 
+def resolve_engine(reference, pull=False):
+    """Find or fetch the same immutable index through fixed official sources."""
+    if not isinstance(reference, str) or not OFFICIAL_ENGINE.fullmatch(reference):
+        raise ValueError('PostgreSQL engine must be a digest-pinned official reference')
+    digest = reference.split('@', 1)[1]
+    candidates = list(dict.fromkeys([reference, 'mirror.gcr.io/library/postgres@' + digest,
+                                    'public.ecr.aws/docker/library/postgres@' + digest,
+                                    'postgres@' + digest]))
+    for candidate in candidates:
+        try:
+            inspected = json.loads(docker('image', 'inspect', candidate))
+        except RuntimeError:
+            continue
+        if len(inspected) != 1:
+            raise ValueError('PostgreSQL engine inspection is ambiguous')
+        return candidate, inspected[0]
+    if pull:
+        for candidate in candidates[1:] + candidates[:1]:
+            try:
+                docker('pull', '--quiet', candidate, timeout=300)
+                inspected = json.loads(docker('image', 'inspect', candidate))
+            except (RuntimeError, subprocess.TimeoutExpired):
+                continue
+            if len(inspected) != 1:
+                raise ValueError('PostgreSQL engine inspection is ambiguous')
+            return candidate, inspected[0]
+    raise RuntimeError('no pinned official PostgreSQL source is available')
+
+
 @contextmanager
 def restored_database(payload, project, revision, pull=False, timeout=300):
     """Restore into a newly owned local container, yielding only after SQL restore.
@@ -271,10 +300,8 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
         raise ValueError('restore timeout must be positive')
     manifest = validate_payload(payload, expected_project=project, expected_revision=revision)
     engine = manifest['engine']
-    if pull:
-        docker('pull', '--quiet', engine['reference'], timeout=180)
-    inspected = json.loads(docker('image', 'inspect', engine['reference']))
-    if len(inspected) != 1 or inspected[0]['Id'] != engine['image_id']:
+    _, inspected = resolve_engine(engine['reference'], pull=pull)
+    if inspected['Id'] != engine['image_id']:
         raise ValueError('restored PostgreSQL engine differs from authenticated metadata')
     uid = os.getuid() or 65534
     name = project + '-pg-restore-' + secrets.token_hex(8)
