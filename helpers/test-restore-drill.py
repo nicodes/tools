@@ -46,7 +46,7 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
     deployment, and the drill that consumes it restores into its own isolated
     container.
     """
-    if not re.fullmatch(r'(?:docker\.io/library/)?postgres@sha256:[a-f0-9]{64}', engine_reference):
+    if not isinstance(engine_reference, str) or not recovery.OFFICIAL_ENGINE.fullmatch(engine_reference):
         raise ValueError('the fixture engine must be an immutable official postgres digest')
     engine = json.loads(restore.docker('image', 'inspect', engine_reference))[0]
     # The image states its own major; deriving it keeps the fixture honest

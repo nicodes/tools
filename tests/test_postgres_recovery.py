@@ -55,6 +55,25 @@ def archive_payload(source, archive):
 
 
 class PostgreSQLArchiveBoundaries(unittest.TestCase):
+    def test_only_exact_official_digest_references_are_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = payload(Path(directory)/'payload')
+            digest = ENGINE.split('@', 1)[1]
+            for registry in ['postgres', 'docker.io/library/postgres', 'mirror.gcr.io/library/postgres',
+                             'public.ecr.aws/docker/library/postgres']:
+                value = copy.deepcopy(manifest)
+                value['engine']['reference'] = registry + '@' + digest
+                pg.validate_manifest(value)
+            for reference in ['mirror.gcr.io/attacker/postgres@' + digest,
+                              'public.ecr.aws/attacker/library/postgres@' + digest,
+                              'mirror.gcr.io/library/postgres:latest',
+                              'mirror.gcr.io.attacker/library/postgres@' + digest,
+                              'public.ecr.aws/docker/library/postgres@sha256:' + 'A' * 64]:
+                value = copy.deepcopy(manifest)
+                value['engine']['reference'] = reference
+                with self.assertRaises(ValueError):
+                    pg.validate_manifest(value)
+
     def test_completed_capture_packages_without_modifying_source_or_claiming_restore(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); capture = root/'capture'
