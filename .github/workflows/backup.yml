@@ -74,7 +74,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: nicodes/tools
-          ref: 9048c13d8ade9c0005233b939749afbb7b059ff2 # v0.11.1 source
+          ref: c26ce0cc8db32d412ca553b6e52a40e76db6e560 # v0.11.1 source
           path: .cicd
           sparse-checkout: helpers
           persist-credentials: false
@@ -145,7 +145,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: nicodes/tools
-          ref: 9048c13d8ade9c0005233b939749afbb7b059ff2 # v0.11.1 source
+          ref: c26ce0cc8db32d412ca553b6e52a40e76db6e560 # v0.11.1 source
           path: .cicd
           sparse-checkout: helpers
           persist-credentials: false
