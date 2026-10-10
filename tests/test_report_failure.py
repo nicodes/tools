@@ -1,4 +1,4 @@
-"""report-failure.py files the owned failure issue only in the portfolio orgs."""
+"""report-failure.py files an owned failure issue in the caller's repository."""
 import importlib.util
 import os
 from pathlib import Path

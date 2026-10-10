@@ -93,7 +93,7 @@ bun = "1.4.1"
                 watch.updates(root, {'python': bad}, {'python': item('3.12.8')})
 
     def test_floating_pin_skips_environment_divergent_upstream_visibly(self):
-        # Runner shape (fleet: samplegame tools dispatch 35552447413): on a
+        # Runner shape: on a
         # fresh mise-action environment a floating pin's upstream latest/bump
         # is not x.y.z, while a workstation answers e.g. 3.12.14. That is
         # undetermined drift — skip with a visible note, never crash, and

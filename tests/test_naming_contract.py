@@ -1,20 +1,4 @@
-"""One name per concept, and the check that keeps it that way.
-
-Three settings had four spellings each: the API base was
-EXPO_PUBLIC_<PRODUCT>_API_URL or _API_BASE, the browser origins were
-<PRODUCT>_ALLOWED_ORIGINS or <PRODUCT>_WEB_ORIGINS or CORS_ALLOWED_ORIGINS,
-and the serving DSN was <PRODUCT>_DATABASE_URL in one product and
-RUNTIME_DATABASE_URL in the rest.
-
-None of that was wrong in a single repository. It cost on every fleet-wide
-change, and twice it was worse than slow: a deploy wrote the serving DSN into
-the right file under a name nothing read, and a preview refused to boot with
-the fleet's variable present beside the one it wanted.
-
-Unifying them was a one-off. This is what stops it decaying into a fifth
-spelling.
-"""
-
+"""Check caller-owned naming definitions while ignoring prose and unrelated roles."""
 import json
 import subprocess
 import tempfile

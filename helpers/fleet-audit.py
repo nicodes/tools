@@ -1,31 +1,9 @@
 #!/usr/bin/env python3
-"""Refuse when the products sharing this repository's engineering snapshot disagree.
+"""Compare caller-selected repositories without embedding a product inventory.
 
-pins.mjs makes ONE product internally consistent: its lockfiles, its Go
-version, its image digests and its recorded-action pins all have to agree with
-each other. Nothing has ever checked that products agree with EACH OTHER, and
-the cost of that gap was not theoretical -- an audit in September 2026 found
-five different snapshot revisions live at once, the vendored tree present in
-five different sizes, and the recorded-action pin gate in four incompatible
-states across nine products, including one that carried a second pin record in
-its own format at its own path that nothing read.
-
-None of that was anybody's mistake. It is what happens when the only feedback
-is per-repository: every product was individually green.
-
-WHAT THIS ASSERTS IS AGREEMENT, NOT A CONSTANT. There is no table here saying
-which caddy digest is correct. The rule is that every product using caddy uses
-the SAME one, so dependabot bumping the first product turns this red and the
-answer is to bump the rest. A table of expected values would need editing on
-every bump and would be wrong between the edit and the bump.
-
-The exception is the small set of absolute rules -- a product that uses
-recorded-actions must carry the record where pins.mjs looks for it, and must
-actually run pins.mjs -- because those are not matters of agreement. A fleet
-that unanimously fails to check something is still not checking it.
-
-Facts come in from the GitHub API; the judgement is a pure function over them,
-so the tests exercise it without a network.
+Shared tool, image and action pins must agree within the caller-selected profiles.
+Installed and vendored helper revisions are compared by their source commit.
+Facts come from the GitHub API; the comparison is pure and tested offline.
 """
 import argparse
 import json
@@ -160,12 +138,8 @@ def audit(facts, fleet):
 
     # --- base images ------------------------------------------------------
     # Keyed on the image name AND tag, so caddy:2-alpine is compared with
-    # caddy:2-alpine. The name alone was wrong: sample-service builds its Go API on
-    # golang:1.27.1-bookworm because it needs a C toolchain for cgo and the
-    # Swiss Ephemeris, and everyone else builds on golang:1.27.1-alpine. Those
-    # digests can never match, so the name-keyed check reported a permanent
-    # disagreement about a deliberate, documented difference -- the kind of
-    # finding that teaches people to stop reading the report. A product that
+    # caddy:2-alpine. Different image tags can intentionally have different
+    # digests, so compare only identical image names and tags. A caller that
     # does not use an image is not asked about it.
     for image in sorted({i for p in products for i in facts[p]['images']}):
         found = disagreement('images', image,

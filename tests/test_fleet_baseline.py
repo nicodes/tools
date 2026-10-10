@@ -1,18 +1,4 @@
-"""The per-product half of the fleet check.
-
-The obvious design was a job in cicd that reads all nine products. It needs a
-credential -- cicd is public, every product is private, across three
-organisations, and a workflow's GITHUB_TOKEN reaches only its own repository
--- and it inverts the relationship: cicd is a library products call, not a
-service that reaches into them.
-
-So the check runs in the product against a baseline the library publishes.
-Agreement with one baseline is agreement with each other, which is the whole
-trick: no product reads another, nothing needs a secret, and it runs per pull
-request instead of weekly.
-
-compare() is pure, so these run the real shapes without a network.
-"""
+"""Check caller-owned baseline comparisons through synthetic, offline fixtures."""
 import json
 import subprocess
 import tempfile
