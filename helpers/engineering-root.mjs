@@ -32,7 +32,7 @@ export function engineeringRoot(root = process.cwd()) {
 }
 
 /**
- * Where this product's own sample-host-action pin record lives.
+ * Where the caller's action pin record lives.
  *
  * It is product-owned and it is NOT part of the snapshot, so once the
  * snapshot is installed rather than copied there is no product directory

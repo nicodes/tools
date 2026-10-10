@@ -83,7 +83,7 @@ jobs:
       group: preview-${{ github.event.pull_request.number || github.event.issue.number }}
       cancel-in-progress: true
     env:
-      APP: <product-slug>   # product-owned: the sample-host app slug
+      APP: <product-slug>   # caller-owned host application slug
       COMPONENTS: app       # product-owned: space-separated image components
       PR_NUMBER: ${{ needs.request.outputs.pr }}
       HEAD_SHA: ${{ needs.request.outputs.sha }}

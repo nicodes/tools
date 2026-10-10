@@ -1,9 +1,7 @@
 // LOCAL_AUTH_ONLY: never part of a release image or a public bundle.
 //
 // A loopback issuer that mints Clerk-shaped tokens, so local development
-// needs no Clerk tenant at all. Promoted from sample-console, which had the only
-// working version in the fleet; everything product-specific about it is now
-// an argument.
+// needs no Clerk tenant. The caller supplies its origins and header name.
 //
 // The point is not to fake authentication. The product's unchanged Clerk SDK
 // still verifies the signature, the expiry and the authorized party -- it

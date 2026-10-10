@@ -35,23 +35,10 @@ def verify_repair(app, repair):
 
 
 def verify_accepted(accepted):
-    """An advisory a product has looked at and decided does not apply to it.
+    """Accept only caller-reviewed findings with explicit ownership and expiry.
 
-    The gap this fills: bun audit knows a version is in the tree and nothing
-    else. It cannot say whether the code is reachable, and for these products
-    the answer is usually no -- NOTHING in production runs JavaScript. Every
-    deployed container is Go, Caddy, Postgres or Redis; the JS is a static
-    bundle served to browsers, and a build-time dependency of eslint or a
-    config plugin has no process to be attacked in.
-
-    Treating every finding as fatal therefore stopped nine products from
-    deploying over a recursion DoS in a linter's glob matcher, with no way to
-    say so except editing this file.
-
-    THE EXPIRY IS THE WHOLE POINT. An acceptance with no end date is a
-    permanent hole nobody revisits, which is worse than the strictness it
-    replaces. review_date is already how a repair is kept honest; the same
-    rule applies here, and an overdue entry fails the build.
+    Installed versions alone do not establish production reachability. The caller
+    must record its rationale; verified local repairs remain a separate path.
     """
     for field in ('owner', 'rationale', 'package', 'advisories', 'review_date'):
         if not accepted.get(field):
