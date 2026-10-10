@@ -11,6 +11,8 @@ from godot_web_release import pack_paths, prepare
 import gzip
 import json
 import hashlib
+import re
+from urllib.parse import urljoin
 
 
 class ArtifactTests(unittest.TestCase):
@@ -41,6 +43,22 @@ class ArtifactTests(unittest.TestCase):
             root=Path(directory);self.export(root)
             (root/'index.wasm').unlink();(root/'index.wasm').symlink_to('/etc/passwd')
             with self.assertRaisesRegex(ValueError,'symlinks'): prepare(root,'a'*40)
+
+    def test_relative_payload_urls_preserve_shell_directory_and_repack_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);self.export(root)
+            prepare(root,'a'*40,relative_urls=True)
+            manifest=json.loads((root/'release-manifest.json').read_text())
+            html=(root/'index.html').read_text()
+            config=json.loads(re.search(r'const GODOT_CONFIG = (\{[^\n]+\});',html)[1])
+            urls=[config['executable'],*config['fileSizes'],re.search(r'src="([^"]+)"',html)[1]]
+            for base in ('https://game.example/','https://game.example/74/'):
+                for url in urls:
+                    self.assertTrue(urljoin(base,url).startswith(base+'releases/'+manifest['release_id']+'/'))
+            self.assertEqual(gzip.decompress((root/'index.html.gz').read_bytes()),html.encode())
+            prepare(root,'a'*40,relative_urls=True)
+            self.assertEqual((root/'index.html').read_text(),html)
+            self.assertEqual(json.loads((root/'release-manifest.json').read_text())['release_id'],manifest['release_id'])
 
     @staticmethod
     def pack(names, flags=0, version=2):

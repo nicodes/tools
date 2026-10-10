@@ -23,13 +23,13 @@ window.godotLoadFailure = function () {
 </script>'''
 
 
-def stage_version(root, files):
+def stage_version(root, files, relative_urls=False):
     root = Path(root)
     payload = {name: info['sha256'] for name, info in files.items() if name != 'index.html'}
     release_id = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-    prefix = f'/releases/{release_id}/'
+    prefix = f'{"" if relative_urls else "/"}releases/{release_id}/'
     html = (root / 'index.html').read_text()
-    html = re.sub(r'/releases/[0-9a-f]{64}/', '', html)
+    html = re.sub(r'/?releases/[0-9a-f]{64}/', '', html)
     match = re.search(r'const GODOT_CONFIG = (\{[^\n]+\});', html)
     if not match:
         raise ValueError('Expected the reviewed Godot shell configuration')

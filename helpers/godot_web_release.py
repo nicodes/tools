@@ -58,7 +58,7 @@ def pack_paths(path):
         return paths
 
 
-def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, use_brotli=False):
+def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, use_brotli=False, relative_urls=False):
     root = Path(root)
     if root.is_symlink() or not root.is_dir() or any(path.is_symlink() for path in root.rglob('*')):
         raise ValueError('Release input may not contain symlinks')
@@ -98,7 +98,7 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
         if path.suffix != '.png':
             files[path.name]['gzip_bytes'] = len(compressed)
             files[path.name]['transfer_encoding'] = 'br' if use_brotli else 'gzip'
-    release_id = stage_version(root, files)
+    release_id = stage_version(root, files, relative_urls=relative_urls)
     html = (root / 'index.html').read_bytes()
     compressed_html = gzip.compress(html, compresslevel=6, mtime=0)
     (root / 'index.html.gz').write_bytes(compressed_html)
@@ -126,5 +126,6 @@ if __name__ == "__main__":
     parser.add_argument('--max-wasm-bytes', type=int, default=0)
     parser.add_argument('--max-transfer-bytes', type=int, default=0)
     parser.add_argument('--brotli', action='store_true')
+    parser.add_argument('--relative-urls', action='store_true', help='Keep payload URLs under the shell directory, including path previews')
     args = parser.parse_args()
-    prepare(args.root, args.source_commit, args.max_wasm_bytes, args.max_transfer_bytes, args.brotli)
+    prepare(args.root, args.source_commit, args.max_wasm_bytes, args.max_transfer_bytes, args.brotli, args.relative_urls)
