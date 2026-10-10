@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: eb6b127382b5aad0e6efbd982a76862423da9cd4ef092d929a2a08fa64beee97 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: dc89edb85309748ca8da53ff00219c31af83e6fd4271a6834dfeb6ce63bf2d8d -->
 
 # Reusable engineering tools
 
@@ -512,7 +512,7 @@ Adopting it:
   whose refs the preview deploys, named
   `ghcr.io/<owner>/<project>-<component>:<head-sha>`). Do not repin the
   composites on copy: the template already ships the real
-  v0.0.33 pin (`398fe9d90aa68daadf6569cb7679df4478218a37`, the release's
+  v0.0.35 pin (`ce22ac68bc6a6986ae11b36f5a8c751ff4636f7e`, the release's
   peeled commit SHA, never the annotated tag object) for `preview-request`
   and `preview` alike. Future composite updates move through the product's
   fleet pin record, `ACTION-PINS.json` at the repository root, as usual.
