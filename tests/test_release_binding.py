@@ -1,5 +1,6 @@
 """Exercise release source/artifact/publisher binding through the real CLI."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -146,6 +147,44 @@ assert len(proof['input_identity']) == 64
         self.assert_no_publication()
         path.write_text(json.dumps(declaration | {'data_revision': 'modified-v2'}))
         self.run_cli('record', False, extra=extra)
+
+    def test_stateful_migration_paths_bind_actual_source_bytes_and_never_reach_host(self):
+        migration = self.root/'schema.sql'
+        migration.write_text('CREATE TABLE records(id INTEGER PRIMARY KEY);\n')
+        declaration = {'version': 1, 'schema': {'minimum': 1, 'maximum': 1, 'write': 1},
+            'data_revision': 'records-v1', 'credential_revision': 'restricted-runtime-v1',
+            'migrations': [{'identity': 'schema.sql', 'source_path': 'schema.sql',
+                           'sha256': hashlib.sha256(migration.read_bytes()).hexdigest()}],
+            'recovery_action': 'forward_only'}
+        path = self.root/'stateful.json'
+        path.write_text(json.dumps(declaration))
+        self.git('add', 'schema.sql', 'stateful.json')
+        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'bound migration')
+        self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
+        self.context['GITHUB_SHA'] = self.sha
+        self.produce_tests()
+        extra = ('--stateful-contract', 'stateful.json')
+        self.run_cli('record', extra=extra)
+        contract = self.manifest()['stateful_contract']
+        self.assertEqual(contract['migrations'], [{'identity': 'schema.sql', 'sha256': declaration['migrations'][0]['sha256']}])
+        self.run_cli('publish', extra=extra)
+        self.calls.write_text('')
+        migration.write_text('DROP TABLE records;\n')
+        result = self.run_cli('record', False, extra=extra)
+        self.assertIn('checksum differs from source', result.stderr)
+        declaration['migrations'][0]['sha256'] = hashlib.sha256(migration.read_bytes()).hexdigest()
+        path.write_text(json.dumps(declaration))
+        result = self.run_cli('record', False, extra=extra)
+        self.assertIn('immutable checked-out Git blob', result.stderr)
+        for escaping in ('../schema.sql', '/schema.sql', 'api/../schema.sql'):
+            declaration['migrations'][0]['source_path'] = escaping
+            path.write_text(json.dumps(declaration))
+            self.run_cli('record', False, extra=extra)
+        declaration['migrations'][0]['source_path'] = 'linked.sql'
+        (self.root/'linked.sql').symlink_to(migration)
+        path.write_text(json.dumps(declaration))
+        self.run_cli('record', False, extra=extra)
+        self.assertEqual(self.calls.read_text(), '')
 
     def test_authenticated_pr_head_needs_actual_head_tests_in_the_same_context(self):
         event = self.root / '.artifacts/event.json'
