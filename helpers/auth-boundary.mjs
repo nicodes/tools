@@ -8,15 +8,9 @@ import path from 'node:path';
  *   preview     the Clerk DEVELOPMENT instance, per-PR origin
  *   production  the Clerk PRODUCTION instance
  *
- * Every product already intends this. What was missing is anything that
- * notices when one of them stops doing it, which is how the fleet ended up
- * with the local half in one product and the preview half in another.
- *
- * WHAT THIS DOES NOT DO: it does not supply a shared auth implementation.
- * The products verify tokens differently because they are different
- * programs; the thing worth sharing is the contract and the check, not the
- * code. That is also why every rule below reads the product's own tree
- * rather than requiring a particular library.
+ * Callers declare their provider and API shape in a reviewed policy. The
+ * checks inspect each caller's own tree rather than requiring a shared auth
+ * implementation or reading another application.
  *
  * The rules are ordered by what they protect, strongest first.
  */
@@ -206,7 +200,7 @@ function keysDoNotCross(root) {
  * The jobs of a workflow, as [name, body] pairs.
  *
  * Split textually rather than parsed: this file has no YAML dependency and
- * runs against nine products' workflows, so it reads what is written rather
+ * runs against caller-owned workflows, so it reads what is written rather
  * than what a parser would normalise. A job key is two spaces deep under
  * `jobs:`; its body runs to the next one.
  */
@@ -229,15 +223,14 @@ function jobsOf(text) {
  * The rule is structural, not a name match. A product may spell the azp
  * allowlist `CLERK_AUTHORIZED_PARTIES`, or it may parse one origin policy
  * and hand the same value to both CORS and Clerk's authorized-party
- * handler -- sample-service does the latter, and an earlier version of this check
- * failed it for using a different, equally correct name. So: find the
+ * handler. Accept either structure: find the
  * variables the preview workflow writes a computed per-PR origin into, and
  * require the server to route one of them into its azp decision.
  */
 /**
  * Clerk in the browser, no server of its own.
  *
- * Exactly one shape in the fleet declares `provider: clerk, api: false`:
+ * A caller may declare `provider: clerk, api: false`:
  * the app signs people in with Clerk's hosted flow and there is no API
  * behind it. Nothing in the repository verifies a token, so the checks
  * below do not apply as written, and demanding them produced a failure a

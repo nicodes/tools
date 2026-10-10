@@ -51,10 +51,7 @@ jobs:
           persist-credentials: false
         timeout-minutes: 3
       - name: Connect for the verified snapshot
-        # v0.0.11 is the fleet-proven pin (every per-product backup and both
-        # green reusable callers run it); its connect/ tree is byte-identical
-        # to v0.0.10's, so this bump changes no behavior and removes the
-        # stale-pin suspect from incident matrices.
+        # Pin the transport action independently of the helper source.
         uses: nicodes/komizo-actions/connect@b032fc88f82233f1c060e238bc60b2888a913490 # v0.0.11
         env:
           KOMIZO_SERVER_URL: "${{ inputs.server }}"
@@ -63,13 +60,8 @@ jobs:
         with:
           user: "${{ inputs.user }}"
         timeout-minutes: 3
-      # The product's export script sources scripts/engineering-env.sh, which
-      # since the 2026-10-01 fleet change resolves the helpers through mise
-      # rather than a vendored copy. CD got this step in the same change; this
-      # workflow did not, so every nightly backup since has died on
-      # "mise: command not found" -- five products, three days, no snapshot.
-      # The scheduled run is the only caller, so no pull request could have
-      # caught it.
+      # Install the caller-pinned helpers before invoking its backup exporter.
+      # Scheduled jobs need the same bootstrap as deployment jobs.
       - name: Install and locate the engineering snapshot
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:

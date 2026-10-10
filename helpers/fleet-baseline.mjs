@@ -1,27 +1,10 @@
 #!/usr/bin/env bun
-/** Check THIS product against the fleet baseline published by nicodes/cicd.
-
-WHY IT RUNS HERE AND NOT THERE. The obvious shape is a job in cicd that reads
-all nine products and compares them. It needs a credential: cicd is public and
-every product is private, across three organisations, and a workflow's own
-GITHUB_TOKEN reaches only its own repository. It also inverts the
-relationship -- cicd is a library products call, not a service that reaches
-into them.
-
-So the check runs in the product, against a baseline the library publishes.
-Agreement with one baseline IS agreement with each other, so no product ever
-reads another, nothing needs a secret, and it runs on every pull request
-instead of once a week.
-
-The read is an unauthenticated HTTPS GET of a public file. pins.mjs stays
-offline and deterministic; this is the online one, like action-pins.mjs.
-
-WHAT IT DELIBERATELY DOES NOT CHECK: base image digests. Dependabot bumps
-those constantly and opens the same bump in every product at once, so a table
-in the baseline would be wrong between the bump landing in one product and
-somebody editing cicd. Digest agreement is helpers/fleet-audit.py, run by an
-operator.
-*/
+/** Check a caller against its explicitly selected, checksum-bound policy.
+ *
+ * The caller supplies the policy file or URL; this library contains no product
+ * inventory. Local checks stay offline, while the optional URL fetch is explicit.
+ * Image digest agreement is handled by the operator-driven fleet-audit helper.
+ */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -59,8 +42,7 @@ export function compare(product, fleet, facts) {
   const problems = [];
   const entry = fleet.products[product];
   if (!entry) {
-    // A product nothing declares is a product nothing audits, which is how
-    // five snapshot revisions came to be running at once.
+    // An undeclared caller has no reviewed baseline.
     return [`${product} is not listed in the caller-selected fleet policy, so no baseline applies to it. ` +
             `Add it there (with a profile) before relying on this check.`];
   }
@@ -153,34 +135,8 @@ export function gather(root) {
 
 // --- One name per concept --------------------------------------------------
 //
-// Three settings used to have four spellings each: the API base was
-// EXPO_PUBLIC_<PRODUCT>_API_URL or _API_BASE, the browser origins were
-// <PRODUCT>_ALLOWED_ORIGINS or <PRODUCT>_WEB_ORIGINS or CORS_ALLOWED_ORIGINS,
-// and the serving DSN was <PRODUCT>_DATABASE_URL in one product and
-// RUNTIME_DATABASE_URL in the rest.
-//
-// None of that was wrong in a single repository. The cost landed on every
-// fleet-wide change, where one edit became one translation per product -- and
-// twice it was worse than slow: a deploy wrote the serving DSN into the right
-// file under a name nothing read, and a preview refused to boot with the
-// fleet's variable present and populated beside the one it wanted.
-//
-// Unifying them was a one-off. This is what stops it being a one-off that
-// decays: the next product that invents a fifth spelling fails here instead
-// of being discovered by an outage.
-//
-// DEFINITIONS ONLY, never mentions. A comment explaining the history --
-// several of which were written deliberately during the rename -- is prose,
-// and matching prose is how a check starts lying.
-// The divergence was always the PRODUCT'S OWN NAME used as a prefix:
-// sample-app_DATABASE_URL, EXAMPLE_ALLOWED_ORIGINS, EXPO_PUBLIC_sample-service_API_URL. So
-// that is what this matches, rather than a list of role words to keep
-// topped up.
-//
-// The first attempt flagged MIGRATOR_DATABASE_URL, OWNER_DATABASE_URL and
-// KOMIZO_SECRET_RUNTIME_DATABASE_URL -- two operator roles a product is
-// entitled to define, and the fleet's own name wearing sample-host's delivery
-// prefix. A rule that needs a growing exception list is the wrong rule.
+// Check setting definitions against the caller-owned naming contract.
+// Ignore comments, unrelated product prefixes and role-specific database DSNs.
 const NAMING = [
   {
     concept: 'the API base the bundle is built with',
@@ -314,7 +270,6 @@ if (import.meta.main) {
   console.error(`${product} disagrees with the fleet baseline:`);
   for (const problem of problems) console.error(`  - ${problem}`);
   console.error(`\nThe baseline is the policy at FLEET_BASELINE_URL. If this product is meant to ` +
-    `differ, change it there rather than here -- a local exception nothing records is how ` +
-    `the fleet came to have five snapshot revisions at once.`);
+    `differ, record that difference in the caller-owned policy rather than adding an unrecorded local exception.`);
   process.exit(1);
 }

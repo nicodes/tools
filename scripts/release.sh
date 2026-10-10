@@ -1,63 +1,8 @@
 #!/bin/sh
-# scripts/release.sh - cut a cicd release with the helper checkouts pinned.
-#
-#   sh scripts/release.sh prepare v0.1.0 <full-current-main-sha>
-#   sh scripts/release.sh prepare v0.1.0 <sha> --push
-#
-# Makes ONE deterministic commit on a release/vX.Y.Z branch and prints the PR
-# command. It never pushes without --push, never tags, and never touches the
-# working tree's current branch.
-#
-# --- why this exists ------------------------------------------------------
-#
-# This repository is consumed two ways at once, and until now neither had a
-# release to name.
-#
-#   1. Products call the reusable workflows:
-#        uses: nicodes/cicd/.github/workflows/backup.yml@<sha>
-#   2. Products vendor helpers/ and tests/ into scripts/engineering, recorded
-#      in SOURCE.json with a revision and a hash per file.
-#
-# And there is a third, which is the one this script is really about. Those
-# reusable workflows check out cicd AGAIN, by a SHA written inside the file:
-#
-#        repository: nicodes/cicd
-#        ref: b90d1ae8150cfb44be1e90dc251a68c80dc1bed2
-#
-# GitHub resolves the caller's ref for backup.yml ALONE. The helpers that
-# workflow then runs come from whatever ref is written in it. So a consumer
-# who carefully pinned backup.yml by SHA pinned one file and left the helpers
-# floating on a different, older commit -- the pin looked complete and was
-# not, which is worse than not pinning, because it is the difference between
-# a risk you have accepted and one you think you have closed.
-#
-# On main today those inner pins are 24 and 34 commits behind, at two
-# different revisions, while products vendor a third.
-#
-# --- why a release rather than the bump-along rule ------------------------
-#
-# The README documents the current answer: "The PR changing the helper cannot
-# name its own merge SHA; the immediately following PR bumps both ref: pins to
-# the previous merge commit." That is correct, and it is a chicken-and-egg
-# worked around by hand, every time, forever. It has already failed in
-# production once -- a stale pin ran an older portfolio identity check and
-# rejected a new adopter at the Report-failure step.
-#
-# A release breaks the cycle by making the rewrite mechanical and reviewed:
-# the candidate commit pins the helper checkouts to the SOURCE commit it was
-# cut from, which is a real, already-merged, already-tested revision. Nobody
-# has to remember a follow-up PR, and the pins cannot be 34 commits stale
-# without somebody having cut a release that says so.
-#
-# --- why an immutable tag -------------------------------------------------
-#
-# So consumers have something to name. A 40-hex SHA off main is not a
-# release: there is no changelog, no review boundary, and no way to say which
-# version a product is on -- which is how eight products ended up spread
-# across five revisions of this repository with nothing reporting it.
-#
-# Each release is its own tag and no tag ever moves. A SHA pin still works and
-# is still stronger; the tag is what makes the SHA legible.
+# Prepare an immutable release from an already tested source commit.
+# Rewrite helper checkouts coherently in an isolated worktree, then open a PR.
+# Publication is a separate workflow that verifies merge and test evidence.
+# Release tags are never moved.
 set -eu
 
 usage() {
@@ -69,7 +14,7 @@ usage: release.sh prepare <version> <source-sha> [--push]
               current tip of origin/main
   --push      push the candidate branch (default: print, push nothing)
 
-Publication is a separate, manual stage -- see https://github.com/nicodes/docs/blob/main/tools/history/import-2026-10-05/docs/releases.md.
+Publication is a separate, manual stage -- see .github/workflows/release.yml.
 USAGE
 	exit 2
 }

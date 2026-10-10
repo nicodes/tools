@@ -11,10 +11,7 @@ repo = os.environ['GITHUB_REPOSITORY']
 run = os.environ['GITHUB_RUN_ID']
 workflow = os.environ['GITHUB_WORKFLOW']
 revision = os.environ['GITHUB_SHA']
-# Failure issues may be filed only in the three portfolio orgs
-# (docs/ACTIVE-PROJECTS.md) — the same deliberate boundary merge-checked.py
-# enforces. A per-repo list would reject the next adopting portfolio repo
-# (fleet evidence: example-games/sample-game could not be reported to).
+# Validate the caller's workflow identity before constructing issue arguments.
 if not re.fullmatch(r'[\w.-]+/[\w.-]+', repo) or not run.isdigit() or not re.fullmatch(r'[a-f0-9]{40}', revision):
     raise ValueError('invalid workflow identity')
 title = f'{workflow}: required automation failed'

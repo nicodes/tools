@@ -46,12 +46,8 @@ for (const [name, entry] of Object.entries(config.tools)) {
 }
 const tracked = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' }).split('\0').filter(Boolean);
 const applications = tracked.filter(file => /^[^/]+\/package\.json$/.test(file)).map(file => path.dirname(file));
-// Every tracked top-level manifest directory is an application: `app/` is the
-// convention, not a requirement (example-games/sample-game's Bun application
-// is `playwright/`), and a repo with no Bun application at all — a pure
-// Godot/game repo — has nothing to check here; the mise exact-version and
-// workflow/action-pins checks below still apply. Same scan as
-// helpers/update-bun.py.
+// Discover caller-owned top-level package directories rather than assuming app/.
+// Projects without a Bun application still receive tool and workflow checks.
 for (const directory of applications) {
   const app = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8'));
   assert.equal(app.packageManager, `bun@${config.tools.bun}`, `${directory}: Bun pin differs`);
@@ -78,14 +74,8 @@ const recordedActions = selectedActionRepository?.slice('https://github.com/'.le
 const recordedUses = [];
 const cicdUses = [];
 
-// Misspelling guard, additive and network-free. A one-byte typo in a pinned
-// reference still satisfies the full-SHA rule but resolves to no repository,
-// surfacing only as a startup_failure at dispatch time that CI never sees —
-// sample-host-be fd23b9c9 carried `nicodes/komozo-actions/publish@<sha>` (0x6f for
-// 0x69), invisible until every CD run failed at action resolution. Any org
-// within two edits of a portfolio org (docs/ACTIVE-PROJECTS.md) but not equal
-// to one, and any reference under a portfolio org within two edits of a known
-// fleet uses-target but not equal to it, is a hard error naming the correction.
+// Reject likely misspellings of caller-approved action owners and repositories
+// before GitHub attempts to fetch a nonexistent action.
 const actionPolicy = JSON.parse(process.env.ACTION_PIN_POLICY ?? '{}');
 assert.ok(actionPolicy && typeof actionPolicy === 'object' && !Array.isArray(actionPolicy));
 const portfolioOrgs = actionPolicy.owners ?? ['nicodes'];
@@ -145,28 +135,9 @@ for (const file of workflows) {
   }
   inspect(document);
 }
-// Shared recorded-actions references follow one fleet-wide pin record so two
-// products can never run different revisions of the same shared action. The
-// record is copied verbatim across products; only peeled commit SHAs are
-// recorded (never annotated tag-object SHAs, which also match the 40-hex rule).
-// This product consumes nicodes/cicd TWICE, and the two must name the same
-// commit.
-//
-//   1. helpers/ and tests/ are vendored into scripts/engineering, recorded in
-//      SOURCE.json with a revision and a hash per file.
-//   2. its reusable workflows are called: nicodes/cicd/.github/workflows/
-//      backup.yml@<sha>
-//
-// Nothing tied those together, and they drifted apart in most of the
-// portfolio: products ran helper code from one revision of that repository
-// while their backup and vulnerability workflows came from another, in one
-// case from three at once. Neither half is wrong on its own, which is
-// exactly why it went unnoticed -- "which revision of cicd is this product
-// on" simply had no answer.
-//
-// Bump both together. Re-vendor at the release you are moving to (see
-// nicodes/cicd docs/releases.md) and update every workflow pin to the same
-// commit in the same pull request.
+// Compare workflow references with the installed or vendored helper revision.
+// Pin records contain peeled commit SHAs, never annotated tag-object SHAs.
+// Update the package and its workflow references together.
 for (const { file, uses } of cicdUses) {
   const [, sha] = /^nicodes\/(?:cicd|tools)\/[^@]+@([^\s]+)$/.exec(uses) ?? [];
   assert.ok(sha, `${file}: could not read a ref from '${uses}'`);
@@ -240,10 +211,8 @@ for (const file of tracked.filter(file => /(^|\/)go\.mod$/.test(file))) {
   // A repository can hold a go.mod that is not its own to change: vendored
   // upstream source kept at a pinned revision, or a fixture whose whole
   // purpose is to declare an old language version. Holding those to this
-  // product's toolchain means editing somebody else's module file, and
-  // sample-game vendors github.com/tianon/gosu at go 1.20 for exactly that
-  // reason -- the rule refused the product for carrying upstream code
-  // faithfully.
+  // caller's toolchain would alter its upstream identity. Preserve the
+  // upstream module identity and authored language version.
   //
   // The exemption lives IN the file it exempts, with its reason, the way a
   // `# shellcheck disable=` does. A list kept somewhere else drifts away
