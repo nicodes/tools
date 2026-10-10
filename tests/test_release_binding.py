@@ -63,14 +63,14 @@ assert len(proof['input_identity']) == 64
     def git(self, *args):
         return subprocess.run(['git', '-C', str(self.root), *args], check=True, text=True, capture_output=True)
 
-    def run_cli(self, operation, success=True, overrides=None):
+    def run_cli(self, operation, success=True, overrides=None, extra=()):
         env = {key: value for key, value in os.environ.items() if not key.startswith('GITHUB_')}
         env.update(self.context)
         env.update(overrides or {})
         env.update(PATH=str(self.bin)+os.pathsep+env['PATH'], DOCKER_CALLS=str(self.calls))
         result = subprocess.run([os.sys.executable, str(HELPER), operation, '--project', 'demo',
                                  '--image-base', 'ghcr.io/org/demo', '--revision', self.sha,
-                                 '--components', 'api', '--test-evidence-directory', '.artifacts/contract'], cwd=self.root, env=env, text=True, capture_output=True)
+                                 '--components', 'api', '--test-evidence-directory', '.artifacts/contract', *extra], cwd=self.root, env=env, text=True, capture_output=True)
         self.assertEqual(result.returncode == 0, success, result.stderr)
         return result
 
@@ -118,6 +118,34 @@ assert len(proof['input_identity']) == 64
         self.assertEqual(set(receipt['test_provenance']['test_receipts']), {'unit', 'integration'})
         self.assertEqual(receipt['images'], data['images'])
         self.assertEqual(receipt['publisher_context']['GITHUB_RUN_ID'], '123')
+
+    def test_stateful_contract_requires_clean_exact_source_and_survives_publication(self):
+        declaration = {'version': 1, 'schema': {'minimum': 1, 'maximum': 1, 'write': 1},
+                       'data_revision': 'records-v1', 'credential_revision': 'restricted-runtime-v1',
+                       'migrations': [{'identity': '001.sql', 'sha256': 'd'*64}], 'recovery_action': 'forward_only'}
+        path = self.root/'stateful.json'
+        path.write_text(json.dumps(declaration))
+        self.git('add', 'stateful.json')
+        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'stateful declaration')
+        self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
+        self.context['GITHUB_SHA'] = self.sha
+        self.produce_tests()
+        extra = ('--stateful-contract', 'stateful.json')
+        self.run_cli('record', extra=extra)
+        expected = declaration | {'source_revision': self.sha}
+        self.assertEqual(self.manifest()['stateful_contract'], expected)
+        self.run_cli('publish', extra=extra)
+        self.assertEqual(json.loads((self.release/'publication.json').read_text())['stateful_contract'], expected)
+        self.calls.write_text('')
+        self.change_manifest(lambda data: data['stateful_contract'].update(credential_revision='changed-runtime-v2'))
+        self.run_cli('publish', False, extra=extra)
+        self.assert_no_publication()
+        self.run_cli('record', extra=extra)
+        self.calls.write_text('')
+        self.run_cli('publish', False)  # Old publishers cannot silently drop the contract.
+        self.assert_no_publication()
+        path.write_text(json.dumps(declaration | {'data_revision': 'modified-v2'}))
+        self.run_cli('record', False, extra=extra)
 
     def test_authenticated_pr_head_needs_actual_head_tests_in_the_same_context(self):
         event = self.root / '.artifacts/event.json'
