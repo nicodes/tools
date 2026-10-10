@@ -20,7 +20,7 @@ def updates(root, installed, outdated):
         entry = installed[name]
         latest = item.get('bump') or item.get('latest')
         if isinstance(entry, dict):
-            # Table form (e.g. the mise github: backend pins in example-games/sample-game's
+            # Table form (for example, a caller's mise github: backend pins in
             # .mise.toml): the pin is the entry's version field, decorated the way
             # upstream tags it — `v0.0.8`, `cli-v0.0.5`, `4.4.1-stable`.
             current = entry.get('version')
@@ -43,9 +43,8 @@ def updates(root, installed, outdated):
                     # A floating pin's upstream answer depends on the mise
                     # environment: a fresh mise-action install can answer a
                     # non-x.y.z latest/bump for python = "3.12" where a warm
-                    # workstation answers 3.12.14 (fleet: sample-game tools
-                    # dispatch 35552447413). Undetermined is neither drift nor
-                    # an error — skip the tool, visibly, in the step log.
+                    # workstation resolves a concrete version. Skip undetermined
+                    # upstream versions visibly instead of declaring false drift.
                     print(f'{name}: upstream latest {latest!r} is not an x.y.z '
                           f'version; floating pin {current} cannot be compared '
                           '(skipping as undetermined)')

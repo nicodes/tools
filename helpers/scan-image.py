@@ -113,14 +113,8 @@ def scan(image, expected_go=None, upstream=(), forbidden=()):
     that arrived in somebody else's base image. They are still scanned and
     still reported, and they do not fail the run.
 
-    That exemption exists because the alternative in practice is worse. The
-    gate images used to compile Caddy themselves, from a reviewed go.mod, with
-    a source overlay patching two lines of upstream to accommodate a CEL
-    release Caddy had not caught up to. It worked, and it meant every new
-    advisory against any Caddy dependency broke four repositories at once
-    until somebody re-resolved the lock by hand. Accepting the official
-    image's binary is a smaller, more honest position than maintaining a
-    private fork of a web server.
+    Caller-declared upstream binaries remain scanned and reported. The
+    classification is per path; it does not exempt caller-built artifacts.
 
     It is narrow on purpose: one path at a time, named by the caller, on the
     caller's own line. Nothing here exempts a binary this organisation

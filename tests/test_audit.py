@@ -53,17 +53,10 @@ if __name__ == '__main__':
 
 
 class AcceptedFindings(unittest.TestCase):
-    """An advisory a product has examined and decided does not apply.
+    """Accept only caller-reviewed findings with explicit ownership and expiry.
 
-    bun audit knows a version is in the tree and nothing else -- no
-    reachability, unlike govulncheck on the Go side. For these products the
-    answer is usually that it cannot reach production at all: every deployed
-    container is Go, Caddy, Postgres or Redis, and the JavaScript is a static
-    bundle served to browsers. A build-time dependency of eslint has no
-    process to be attacked in.
-
-    Treating every finding as fatal stopped nine products deploying over a
-    recursion DoS in a linter's glob matcher.
+    Installed versions alone do not establish production reachability. The caller
+    must record its rationale; verified local repairs remain a separate path.
     """
 
     def accepted(self, **over):

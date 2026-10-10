@@ -52,7 +52,6 @@ def prepare(root):
     tracked = set(run(['git', 'ls-files', '-z'], cwd=root).split('\0'))
     # Discover the product's own top-level package directories instead of
     # assuming `app/` — the same `*/package.json` scan pins.mjs uses.
-    # example-games/sample-game's Bun application lives at `playwright/`.
     applications = sorted({str(Path(name).parent) for name in tracked
                            if name.endswith('/package.json') and name.count('/') == 1})
     if not applications:
