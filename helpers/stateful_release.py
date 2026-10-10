@@ -7,6 +7,7 @@ binaries, the observed schema and unchanged data/credential contracts.
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 
 SHA = re.compile(r'[a-f0-9]{64}')
@@ -24,12 +25,42 @@ def _unique(pairs):
 
 
 def materialize(path, revision):
+    if not isinstance(revision, str) or not REVISION.fullmatch(revision):
+        raise ValueError('migration source needs an exact commit revision')
     path = Path(path)
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents) or not path.is_file() or path.stat().st_size > 32768:
         raise ValueError('stateful declaration must be a bounded regular caller-owned file')
     value = json.loads(path.read_bytes(), object_pairs_hook=_unique)
     if not isinstance(value, dict) or 'source_revision' in value:
         raise ValueError('the producer supplies the exact checked-out source revision')
+    # Caller-owned source paths are producer inputs, never host execution
+    # instructions. When supplied, verify both the migration bytes and their
+    # immutable Git blob, then omit the path from the transport contract.
+    migrations = value.get('migrations')
+    if isinstance(migrations, list):
+        normalized = []
+        for entry in migrations:
+            if isinstance(entry, dict) and 'source_path' in entry:
+                if set(entry) != {'identity', 'sha256', 'source_path'}:
+                    raise ValueError('invalid migration source binding')
+                relative = entry['source_path']
+                if (not isinstance(relative, str) or not re.fullmatch(r'[a-zA-Z0-9_./-]{1,256}', relative)
+                        or relative.startswith('/') or any(part in {'', '.', '..'} for part in relative.split('/'))):
+                    raise ValueError('migration source must be a clean repository-relative path')
+                source = Path.cwd()/relative
+                if (source.is_symlink() or any(parent.is_symlink() for parent in source.parents)
+                        or not source.is_file() or source.stat().st_size > 4*1024*1024):
+                    raise ValueError('migration source must be a bounded regular tracked file')
+                raw = source.read_bytes()
+                if hashlib.sha256(raw).hexdigest() != entry['sha256']:
+                    raise ValueError('migration checksum differs from source')
+                expected = subprocess.check_output(['git', 'rev-parse', revision+':'+relative], text=True, timeout=10).strip()
+                actual = hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+                if expected != actual:
+                    raise ValueError('migration source differs from the immutable checked-out Git blob')
+                entry = {key: entry[key] for key in ('identity', 'sha256')}
+            normalized.append(entry)
+        value = {**value, 'migrations': normalized}
     return validate({**value, 'source_revision': revision}, revision)
 
 
