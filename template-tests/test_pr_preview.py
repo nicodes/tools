@@ -13,8 +13,8 @@ GATE_UP = "needs.request.outputs.enabled == 'true' && needs.request.outputs.acti
 GATE_DOWN = "needs.request.outputs.enabled == 'true' && needs.request.outputs.action == 'down'"
 # Independently reviewed released dependency for this adoption template.
 # Fleet policy is caller-owned; do not infer trust from the template under test.
-KOMIZO_ACTIONS_TAG = 'v0.0.33'
-KOMIZO_ACTIONS_SHA = '398fe9d90aa68daadf6569cb7679df4478218a37'
+KOMIZO_ACTIONS_TAG = 'v0.0.35'
+KOMIZO_ACTIONS_SHA = 'ce22ac68bc6a6986ae11b36f5a8c751ff4636f7e'
 # The annotated tag object of v0.0.21, which must never appear as a pin: a
 # `uses:` resolved to a tag object instead of its peeled commit fails.
 AN_ANNOTATED_TAG_OBJECT = 'd7cb0c07895eaa19361cd5fb9063e649a616f143'
