@@ -16,6 +16,11 @@ _contract_spec = importlib.util.spec_from_file_location(
 contract = importlib.util.module_from_spec(_contract_spec)
 _contract_spec.loader.exec_module(contract)
 
+_stateful_spec = importlib.util.spec_from_file_location(
+    '_engineering_stateful_release', Path(__file__).resolve().with_name('stateful_release.py'))
+stateful_release = importlib.util.module_from_spec(_stateful_spec)
+_stateful_spec.loader.exec_module(stateful_release)
+
 
 def digest(file):
     with file.open('rb') as stream:
@@ -53,6 +58,8 @@ def validate(manifest, project, revision, components, archive, image_base):
     refs = references(project, revision, components, image_base)
     if manifest.get('revision') != revision or manifest.get('project') != project:
         raise ValueError('release belongs to another project or commit')
+    if 'stateful_contract' in manifest:
+        stateful_release.validate(manifest['stateful_contract'], revision)
     if set(manifest.get('images', {})) != set(refs):
         raise ValueError('release image set differs from the declared components')
     if not all(re.fullmatch(r'sha256:[a-f0-9]{64}', value) for value in manifest['images'].values()):
@@ -185,6 +192,7 @@ def main():
     parser.add_argument('--directory', type=Path, default=Path('.artifacts/release'))
     parser.add_argument('--test-evidence-directory', type=Path, default=None)
     parser.add_argument('--test-job', default='Test')
+    parser.add_argument('--stateful-contract', type=Path, default=None)
     args = parser.parse_args()
     if args.test_evidence_directory is None:
         args.test_evidence_directory = Path('.artifacts/test-evidence' if os.environ.get('GITHUB_RUN_ID') else '.artifacts/contract')
@@ -199,9 +207,25 @@ def main():
         raise ValueError('release revision must match the checked-out commit')
     archive = args.directory/'images.tar.gz'
     manifest_file = args.directory/'release.json'
+    data_contract = None
+    if args.stateful_contract is not None:
+        data_contract = stateful_release.materialize(args.stateful_contract, args.revision)
+        relative = args.stateful_contract.resolve().relative_to(Path.cwd().resolve()).as_posix()
+        blob = subprocess.check_output(['git', 'rev-parse', args.revision+':'+relative], text=True, timeout=10).strip()
+        raw = args.stateful_contract.read_bytes()
+        actual = hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+        if blob != actual:
+            raise ValueError('stateful declaration must match the immutable checked-out source blob')
+        # Initial adoption is deliberately forward-only. A future producer
+        # may attach exact old/new binary fixture evidence; a declaration
+        # alone must never manufacture automatic rollback authority.
+        if data_contract['recovery_action'] != 'forward_only':
+            raise ValueError('publication requires exact compatibility fixture evidence before allowing image rollback')
     if args.operation == 'record':
         manifest = {'project': args.project, 'revision': args.revision, 'images': inspect(refs),
                     'archive_sha256': digest(archive), 'provenance': build_provenance(args.revision)}
+        if data_contract is not None:
+            manifest['stateful_contract'] = data_contract
         manifest_file.write_text(json.dumps(manifest, indent=2)+'\n')
         validate(manifest, args.project, args.revision, args.components, archive, args.image_base)
     else:
@@ -209,6 +233,8 @@ def main():
         subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], check=True, timeout=30)
         manifest = json.loads(manifest_file.read_text())
         validate(manifest, args.project, args.revision, args.components, archive, args.image_base)
+        if manifest.get('stateful_contract') != data_contract:
+            raise ValueError('stateful release contract differs from the clean publisher source')
         proof = validate_provenance(manifest, args.revision)
         test_proof = validate_test_evidence(args.test_evidence_directory, args.revision, args.test_job)
         subprocess.run(['docker', 'load', '--input', str(archive)], check=True, timeout=600)
@@ -220,6 +246,8 @@ def main():
                      'images': manifest['images'], 'build_provenance': proof,
                      'tested_commit': args.revision, 'test_provenance': test_proof,
                      'publisher_context': {key: os.environ[key] for key in CONTEXT_KEYS if os.environ.get(key)}}
+        if data_contract is not None:
+            publisher['stateful_contract'] = data_contract
         (args.directory/'publication.json').write_text(json.dumps(publisher, indent=2)+'\n')
     print(f'{args.operation}: {args.project} {args.revision}: {len(refs)} validated images')
 

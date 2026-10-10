@@ -5,8 +5,13 @@ import json
 import os
 from pathlib import Path
 import re
+import importlib.util
 
-OPERATIONS = {'new_migrations', 'new_write', 'previous_read', 'previous_write', 'previous_reload_read'}
+_spec = importlib.util.spec_from_file_location('_stateful_release_contract', Path(__file__).resolve().with_name('stateful_release.py'))
+stateful_release = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(stateful_release)
+
+OPERATIONS = {'new_migrations', 'new_write', 'previous_read', 'previous_write', 'previous_reload_read', 'new_reload_read'}
 
 
 def decide(declaration, evidence, current, previous, run_id):
@@ -15,6 +20,10 @@ def decide(declaration, evidence, current, previous, run_id):
         return {**denied, 'reason': declaration.get('reason', 'release does not declare backward compatibility')}
     if evidence is None:
         return {**denied, 'reason': 'the previous-version read/write test produced no evidence'}
+    try:
+        stateful_release.check_rollback(declaration.get('stateful_contract'), declaration.get('previous_stateful_contract'), evidence, current, previous, run_id)
+    except ValueError as error:
+        return {**denied, 'reason': str(error)}
     if not all(isinstance(value, str) and re.fullmatch(r'[a-f0-9]{40}', value) for value in [current, previous]):
         return {**denied, 'reason': 'current and previous revisions are not exact commits'}
     if not run_id or evidence.get('run_id') != run_id or evidence.get('current_revision') != current or evidence.get('previous_revision') != previous:

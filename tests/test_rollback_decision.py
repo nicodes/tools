@@ -10,9 +10,16 @@ spec.loader.exec_module(rollback)
 
 class RollbackProof(unittest.TestCase):
     def test_absent_failed_or_other_revision_proof_never_authorizes(self):
-        declaration = {'automatic_image_rollback': True}
         current, previous = 'a'*40, 'b'*40
-        proof = {'run_id': '123', 'current_revision': current, 'previous_revision': previous,
+        old = {'version': 1, 'source_revision': previous, 'schema': {'minimum': 1, 'maximum': 2, 'write': 1},
+               'data_revision': 'records-v1', 'credential_revision': 'runtime-grants-v1',
+               'migrations': [{'identity': '001.sql', 'sha256': 'd'*64}], 'recovery_action': 'forward_only'}
+        new = {**old, 'source_revision': current, 'schema': {'minimum': 1, 'maximum': 2, 'write': 2}, 'recovery_action': 'image_rollback'}
+        declaration = {'automatic_image_rollback': True, 'stateful_contract': new, 'previous_stateful_contract': old}
+        proof = {'version': 2, 'run_id': '123', 'current_revision': current, 'previous_revision': previous,
+                 'current_contract_sha256': rollback.stateful_release.identity(new),
+                 'previous_contract_sha256': rollback.stateful_release.identity(old),
+                 'observed_schema': 2, 'data_revision': 'records-v1', 'credential_revision': 'runtime-grants-v1',
                  'status': 'passed', 'snapshot_sha256': 'c'*64,
                  'operations': {name: 'passed' for name in rollback.OPERATIONS}}
         def decide(d, e):
