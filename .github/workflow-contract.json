@@ -14,7 +14,8 @@
     "deployed.yml": "Deployed is main",
     "tools.yml": "Tool watch",
     "verify.yml": "Engineering verification",
-    "vuln.yml": "Vulnerability scan"
+    "vuln.yml": "Vulnerability scan",
+    "platform-proxy.yml": "Platform proxy"
   },
   "ci_gates": [
     "Test"
