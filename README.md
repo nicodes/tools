@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: dc89edb85309748ca8da53ff00219c31af83e6fd4271a6834dfeb6ce63bf2d8d -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 47e295858f99891e911bea400dceab71a92ec30d17a091c99edd636910e623fe -->
 
 # Reusable engineering tools
 
@@ -701,3 +701,15 @@ run on that head. The adoption helper adds those tests to a preview-producing
 Build job and uses its own receipt; the existing merge Test job remains intact.
 This adds test execution for the second source rather than claiming a merge
 test certified an independently built head image.
+
+## Shared serving PostgreSQL configuration
+
+Pin `github.com/nicodes/tools/pgbudget` to a reviewed exact source revision. Call `pgbudget.Configure` before creating a serving pgx pool and `pgbudget.Context` around the whole serving operation. The defaults cap connections at four, query/connect time at fifteen seconds and lock time at three seconds while preserving valid tighter settings. Unsupported or sub-millisecond timeouts refuse before changing the caller's configuration. Offline migrations have their own credential and operation policy.
+
+Products own query semantics and complete-result behavior. The library also publishes conservative collection/result/input ceilings; adopting those constants does not itself bound product queries.
+
+## Generated validation and storage capability
+
+The verified engineering package's `helpers/sync-workflow-policy.py --root <repo>` generates the three offline workflow engines and an existing `scripts/engineering-bootstrap.py`. `--check` refuses local forks or linked destinations. Consumers keep their workflow YAML and JSON catalogues; reusable engine and bootstrap logic belong to Tools. Commit generated copies and validate them from the independently verified engineering installation.
+
+`helpers/probe-backup-store.py` uses the standard `BACKUP_S3_*` configuration to test one tiny synthetic object: immutable conditioned creation, rejection of a changed duplicate and an independent read of the original bytes. It retains the unique `komizo-capability/` object as evidence, touches no real backups and exits unsuccessfully if the provider cannot establish that contract. Run it before adopting the streaming uploader on a new backend. The uploader never drops its immutable condition; a failed receipt upload can leave an orphaned ciphertext object that needs operator inspection.
