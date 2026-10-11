@@ -30,7 +30,12 @@ MISE_CHECKSUM = re.compile(r'(\bchecksum\s*=\s*"sha256:)([a-f0-9]{64})(")')
 WORKFLOW_PIN = re.compile(
     r'(nicodes/(?:cicd|tools)/(?:make|workflow-standards|godot-setup|\.github/workflows/[a-z-]+\.ya?ml))@[a-f0-9]{40}([ \t]*#[ \t]*v?[0-9.]+)?')
 TOOLS_REFERENCE = re.compile(r'uses:\s*[\"\']?(nicodes/(?:cicd|tools)/[^\s\"\']+)')
-DOWNLOAD_ARTIFACT = 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c'
+# Reviewed compatible implementations, separate from caller workflow inventory.
+DOWNLOAD_ARTIFACT = 'actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333'
+DOWNLOAD_ARTIFACT_COMPATIBLE = frozenset({
+    DOWNLOAD_ARTIFACT,
+    'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
+})
 
 
 def wire_test_evidence(text):
@@ -41,7 +46,7 @@ def wire_test_evidence(text):
     if document.get('runs', {}).get('using') == 'composite':
         if 'engineering-test-evidence' in text:
             downloads = [step for step in document['runs']['steps'] if step.get('id') == 'engineering-test-evidence']
-            if len(downloads) != 1 or downloads[0].get('uses') != DOWNLOAD_ARTIFACT or downloads[0].get('with') != {'pattern': 'engineering-test-*', 'path': '.artifacts/test-evidence'}:
+            if len(downloads) != 1 or downloads[0].get('uses') not in DOWNLOAD_ARTIFACT_COMPATIBLE or downloads[0].get('with') != {'pattern': 'engineering-test-*', 'path': '.artifacts/test-evidence'}:
                 raise ValueError('composite publication evidence differs from the reviewed contract')
             for step in document['runs']['steps']:
                 if re.search(r'helpers/release\.py[\"\']?\s+publish\b', step.get('run', '')) and not re.search(r'--test-job test(?:\s|$)', step['run']):
@@ -50,7 +55,7 @@ def wire_test_evidence(text):
         addition = ('  steps:\n'
                     '    - name: Download same-run engineering Test evidence\n'
                     '      id: engineering-test-evidence\n'
-                    f'      uses: {DOWNLOAD_ARTIFACT} # v8.0.1\n'
+                    f'      uses: {DOWNLOAD_ARTIFACT} # v8.0.2\n'
                     '      with:\n'
                     '        pattern: engineering-test-*\n'
                     '        path: .artifacts/test-evidence\n')
@@ -87,7 +92,7 @@ def wire_test_evidence(text):
         block = text[match.start():end]
         expected = {'pattern': f'engineering-{test_job}-*', 'path': '.artifacts/test-evidence'}
         existing = [step for step in steps if step.get('id') == 'engineering-test-evidence'
-                    or (step.get('uses') == DOWNLOAD_ARTIFACT and step.get('with') == expected)]
+                    or (step.get('uses') in DOWNLOAD_ARTIFACT_COMPATIBLE and step.get('with') == expected)]
         if same_job:
             target = own[0]['with']['target']
             if 'test' not in target.split() and 'check' not in target.split():
@@ -102,12 +107,12 @@ def wire_test_evidence(text):
             download_index = steps.index(existing[0])
             if any(step.get('uses', '').startswith('actions/checkout@') for step in steps[download_index+1:]):
                 raise ValueError(f'{name}: checkout would delete downloaded Test evidence')
-            if len(existing) != 1 or existing[0].get('uses') != DOWNLOAD_ARTIFACT or existing[0].get('with') != expected:
+            if len(existing) != 1 or existing[0].get('uses') not in DOWNLOAD_ARTIFACT_COMPATIBLE or existing[0].get('with') != expected:
                 raise ValueError(f'{name}: existing Test evidence download differs from the reviewed contract')
         else:
             addition = ('      - name: Download same-run engineering Test evidence\n'
                         '        id: engineering-test-evidence\n'
-                        f'        uses: {DOWNLOAD_ARTIFACT} # v8.0.1\n'
+                        f'        uses: {DOWNLOAD_ARTIFACT} # v8.0.2\n'
                         '        with:\n'
                         f'          pattern: engineering-{test_job}-*\n'
                         '          path: .artifacts/test-evidence\n')
