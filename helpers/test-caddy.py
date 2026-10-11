@@ -12,6 +12,9 @@ source = Path(__file__).resolve().parent
 # otherwise selects the user's global compiler instead of this repository's pin.
 go_root = subprocess.check_output(['go', 'env', 'GOROOT'], text=True).strip()
 compiler_environment = {**os.environ, 'PATH': str(Path(go_root)/'bin')+os.pathsep+os.environ['PATH']}
+# Scratch has no VCS checkout. Do not inherit metadata from an unrelated
+# parent directory; module checksums and selected compiler bind this fixture.
+compiler_environment['GOFLAGS'] = os.environ.get('GOFLAGS', '') + ' -buildvcs=false'
 selected_version = subprocess.check_output([str(Path(go_root)/'bin/go'), 'version'], text=True).split()[2]
 with tempfile.TemporaryDirectory(prefix='caddy-engineering-') as directory:
     root = Path(directory)

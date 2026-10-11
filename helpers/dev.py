@@ -110,7 +110,7 @@ def main():
     if state.is_symlink():
         raise RuntimeError('development state must not be a symlink')
     os.umask(0o077)
-    state.mkdir(parents=True, exist_ok=True)
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
     if state.stat().st_uid != os.getuid() or state.stat().st_mode & 0o077:
         raise RuntimeError('development state must be owned by this user and mode 0700')
     os.chdir(state)  # Relative Unix socket names also work in long checkout paths.
