@@ -40,6 +40,7 @@ class CatalogueTests(unittest.TestCase):
         policy=json.loads((ROOT/'.github/workflow-contract.json').read_text())
         for name,digest in policy['engine_sha256'].items():
             self.assertEqual((ROOT/'workflow-library'/name).read_bytes(),(ROOT/'.github'/name).read_bytes())
+            self.assertEqual((ROOT/'workflow-library'/name).read_bytes(),(ROOT/'helpers'/name).read_bytes())
             self.assertEqual(hashlib.sha256((ROOT/'.github'/name).read_bytes()).hexdigest(),digest)
 
 class RecoveryProvenanceTests(unittest.TestCase):

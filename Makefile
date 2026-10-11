@@ -17,6 +17,7 @@ unit:
 	python3 -m unittest discover -s template-tests -v
 
 lint:
+	python3 helpers/sync-workflow-policy.py --check
 	python3 helpers/workflow-standards.py
 	@for file in helpers/*.mjs helpers/*.cjs; do node --check "$$file"; done
 	actionlint
