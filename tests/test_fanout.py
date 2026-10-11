@@ -133,6 +133,22 @@ runs:
             fanout.wire_test_evidence(wired.replace('engineering-test-*', 'engineering-build-*'))
 
 
+    def test_reviewed_download_versions_preserve_complete_existing_contract(self):
+        composite = '\n'.join(('name: Publish', 'runs:', '  using: composite', '  steps:',
+            '    - run: python3 "$CICD_ENGINEERING"/helpers/release.py publish --revision "$RELEASE_COMMIT"', ''))
+        for source in (self.workflow(), composite):
+            wired = fanout.wire_test_evidence(source)
+            for ref in fanout.DOWNLOAD_ARTIFACT_COMPATIBLE:
+                with self.subTest(ref=ref, composite=source == composite):
+                    existing = wired.replace(fanout.DOWNLOAD_ARTIFACT, ref)
+                    self.assertEqual(fanout.wire_test_evidence(existing), existing)
+                    for bad in (existing.replace(ref, 'actions/download-artifact@'+'f'*40),
+                                existing.replace('.artifacts/test-evidence', '/tmp/elsewhere'),
+                                existing.replace('engineering-test-*', 'engineering-build-*')):
+                        with self.assertRaises(ValueError):
+                            fanout.wire_test_evidence(bad)
+
+
 class MiseEntry(unittest.TestCase):
     def test_version_and_checksum_move_together(self):
         text, changed = fanout.bump_mise(MISE, '0.7.0', NEW_SUM)
