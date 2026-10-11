@@ -12,6 +12,7 @@ install:
 	.artifacts/venv/bin/python -m pip install -r requirements-tools.txt
 unit:
 	cd sessionauth && go vet ./... && go test -race ./...
+	cd pgbudget && go vet ./... && go test -race ./...
 	python3 scripts/test-layer.py unit
 	python3 -m unittest discover -s workflow-library -v
 	python3 -m unittest discover -s template-tests -v
