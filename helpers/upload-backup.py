@@ -4,11 +4,15 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import http.client
 import json
 import os
 from pathlib import Path
 import re
 import stat
+import subprocess
+import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -27,6 +31,8 @@ def allowed_slugs():
 
 MAX_CMS = 17 * 1024**3
 MAX_RECEIPT = 64 * 1024
+CHUNK_BYTES = 64 * 1024
+TOTAL_SECONDS = 600
 REGION = 'us-east-1'
 SERVICE = 's3'
 TAKEN_AT = re.compile(r'[0-9]{8}T[0-9]{6}Z')
@@ -42,8 +48,84 @@ class RefuseRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def urlopen(request, timeout=600):
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirect())
+    deadline = getattr(request, 'deadline', time.monotonic()+timeout)
+    class Connection(http.client.HTTPSConnection):
+        def connect(self):
+            self.timeout = remaining(deadline)
+            super().connect()
+        def send(self, data):
+            if self.sock is None:
+                self.connect()
+            self.sock.settimeout(remaining(deadline))
+            super().send(data)
+        def getresponse(self):
+            self.sock.settimeout(remaining(deadline))
+            return super().getresponse()
+    class Transport(urllib.request.HTTPSHandler):
+        def https_open(self, req):
+            return self.do_open(Connection, req, context=self._context)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), RefuseRedirect(), Transport())
     return opener.open(request, timeout=timeout)
+
+
+def remaining(deadline):
+    seconds = deadline-time.monotonic()
+    if seconds <= 0:
+        raise TimeoutError('backup transport exceeded its total deadline')
+    return min(seconds, 10)
+
+
+class Ciphertext:
+    """One validated open inode, bounded hash/upload buffers, no whole-file copy."""
+    def __init__(self, path, deadline):
+        self.deadline = deadline
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError:
+            raise ValueError('snapshot.cms must be an accessible non-symlink regular file') from None
+        self.stream = os.fdopen(fd, 'rb')
+        self.info = os.fstat(fd)
+        if not stat.S_ISREG(self.info.st_mode) or not 0 < self.info.st_size <= MAX_CMS:
+            self.stream.close()
+            raise ValueError('snapshot.cms must be a bounded nonempty regular file')
+        self.size = self.info.st_size
+        try:
+            self.sha256 = self.hash()
+        except BaseException:
+            self.stream.close()
+            raise
+
+    def unchanged(self):
+        now = os.fstat(self.stream.fileno())
+        if any(getattr(now, key) != getattr(self.info, key) for key in
+               ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')):
+            raise ValueError('encrypted export changed during transport')
+
+    def __iter__(self):
+        self.unchanged()
+        self.stream.seek(0)
+        consumed = 0
+        while consumed < self.size:
+            remaining(self.deadline)
+            chunk = self.stream.read(min(CHUNK_BYTES, self.size-consumed))
+            if not chunk:
+                raise ValueError('encrypted export was truncated')
+            consumed += len(chunk)
+            yield chunk
+        self.unchanged()
+        remaining(self.deadline)
+
+    def hash(self):
+        digest = hashlib.sha256()
+        for chunk in self:
+            digest.update(chunk)
+        return digest.hexdigest()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.stream.close()
 
 
 def hmac_sha256(key, message):
@@ -53,21 +135,19 @@ def hmac_sha256(key, message):
 
 
 def read_regular_file(path, limit, label):
-    path = Path(path)
     try:
-        info = path.lstat()
-    except FileNotFoundError as error:
-        raise ValueError(f'{label} is missing') from error
-    if stat.S_ISLNK(info.st_mode):
-        raise ValueError(f'{label} must not be a symlink')
-    if not stat.S_ISREG(info.st_mode):
-        raise ValueError(f'{label} must be a regular file')
-    if info.st_size > limit:
-        raise ValueError(f'{label} exceeds the size bound')
-    data = path.read_bytes()
-    if len(data) > limit:
-        raise ValueError(f'{label} exceeds the size bound')
-    return data
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        raise ValueError(f'{label} must be an accessible non-symlink regular file') from None
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError(f'{label} must be a bounded regular file')
+        data = stream.read(limit+1)
+        after = os.fstat(stream.fileno())
+        if len(data) > limit or any(getattr(info,k) != getattr(after,k) for k in ('st_size','st_mtime_ns','st_ctime_ns')):
+            raise ValueError(f'{label} changed or exceeds its size bound')
+        return data
 
 
 def hostname(value):
@@ -158,21 +238,24 @@ def authorization(method, url, headers, payload_hash, access_key, secret_key):
     return f'AWS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed}, Signature={signature}'
 
 
-def put_object(url, body, content_type, access_key, secret_key, host, conditional=True):
-    payload_hash = hashlib.sha256(body).hexdigest()
+def put_object(url, body, content_type, access_key, secret_key, host, deadline=None):
+    deadline = deadline or time.monotonic()+TOTAL_SECONDS
+    payload_hash = body.sha256 if isinstance(body, Ciphertext) else hashlib.sha256(body).hexdigest()
     now = datetime.now(timezone.utc)
     headers = {
         'Host': host,
         'Content-Type': content_type,
         'x-amz-content-sha256': payload_hash,
         'x-amz-date': now.strftime('%Y%m%dT%H%M%SZ'),
+        'Content-Length': str(body.size if isinstance(body, Ciphertext) else len(body)),
+        'If-None-Match': '*',
     }
-    if conditional:
-        headers['If-None-Match'] = '*'
     headers['Authorization'] = authorization('PUT', url, headers, payload_hash, access_key, secret_key)
     request = urllib.request.Request(url, data=body, method='PUT', headers=headers)
+    request.deadline = deadline
     try:
-        with urlopen(request, timeout=600) as response:
+        with urlopen(request, timeout=remaining(deadline)) as response:
+            remaining(deadline)
             status = getattr(response, 'status', None) or response.getcode()
             if status not in {200, 201, 204}:
                 raise RuntimeError(f'backup PUT returned HTTP {status}')
@@ -180,25 +263,18 @@ def put_object(url, body, content_type, access_key, secret_key, host, conditiona
     except urllib.error.HTTPError as error:
         if error.code in {409, 412}:
             raise ValueError(f'backup object already exists{error_detail(error)}') from error
-        if error.code == 404 and conditional:
-            # Some S3-compatible gateways answer the If-None-Match: *
-            # precondition with 404 (e.g. Azure-fronted stores returning
-            # BlobNotFound) when the object is absent, instead of performing
-            # the write. Absent is exactly what the precondition asks for:
-            # treat the 404 as the probe answering "not yet PUT" and retry
-            # once without the header. A compliant store never reaches this
-            # branch (absent: 2xx, present: 412), and a genuine 404 (wrong
-            # bucket or hostname) fails the retry below with the provider's
-            # own error code in the message.
-            return put_object(url, body, content_type, access_key, secret_key, host, conditional=False)
         raise RuntimeError(f'backup PUT returned HTTP {error.code}{error_detail(error)}') from error
     except urllib.error.URLError as error:
         raise RuntimeError(f'backup PUT could not reach {host}: {error.reason}') from error
 
 
 def upload(slug, cms, receipt, taken_at):
+    with Ciphertext(cms, time.monotonic()+TOTAL_SECONDS) as body:
+        return upload_pair(slug, body, receipt, taken_at)
+
+
+def upload_pair(slug, cms_body, receipt, taken_at):
     cms_key, receipt_key = object_keys(slug, taken_at)
-    cms_body = read_regular_file(cms, MAX_CMS, 'snapshot.cms')
     receipt_body = read_regular_file(receipt, MAX_RECEIPT, 'receipt.json')
     try:
         envelope = json.loads(receipt_body.decode())
@@ -209,17 +285,18 @@ def upload(slug, cms, receipt, taken_at):
     digest = envelope.get('ciphertext_sha256')
     if not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest):
         raise ValueError('invalid export checksum')
-    if hashlib.sha256(cms_body).hexdigest() != digest:
+    if cms_body.sha256 != digest:
         raise ValueError('encrypted export transport checksum mismatch')
     secret = credentials()
     host, bucket = secret['BACKUP_S3_HOSTNAME'], secret['BACKUP_S3_BUCKET']
     cms_url = f'https://{host}/{bucket}/{cms_key}'
     receipt_url = f'https://{host}/{bucket}/{receipt_key}'
     put_object(cms_url, cms_body, 'application/octet-stream',
-               secret['BACKUP_S3_ACCESS_KEY'], secret['BACKUP_S3_SECRET_KEY'], host)
+               secret['BACKUP_S3_ACCESS_KEY'], secret['BACKUP_S3_SECRET_KEY'], host, cms_body.deadline)
+    cms_body.unchanged()
     try:
         put_object(receipt_url, receipt_body, 'application/json',
-                   secret['BACKUP_S3_ACCESS_KEY'], secret['BACKUP_S3_SECRET_KEY'], host)
+                   secret['BACKUP_S3_ACCESS_KEY'], secret['BACKUP_S3_SECRET_KEY'], host, cms_body.deadline)
     except (ValueError, RuntimeError, OSError) as error:
         raise RuntimeError(f'receipt PUT failed after {cms_key} may now exist') from error
     return {'slug': slug, 'cms_key': cms_key, 'receipt_key': receipt_key, 'hostname': host}
@@ -231,8 +308,18 @@ def main():
     parser.add_argument('--cms', type=Path, required=True)
     parser.add_argument('--receipt', type=Path, required=True)
     parser.add_argument('--taken-at', required=True)
+    parser.add_argument('--transport-worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     os.umask(0o077)
+    if not args.transport_worker:
+        # Also bound DNS resolution and any OS/library stall. This child alone
+        # owns the transport; no ambient process or production service is killed.
+        try:
+            result = subprocess.run([sys.executable, '-I', str(Path(__file__).resolve()),
+                                     *sys.argv[1:], '--transport-worker'], timeout=TOTAL_SECONDS)
+        except subprocess.TimeoutExpired:
+            raise SystemExit('backup upload interrupted at its deadline; object may exist; inspect before retry')
+        raise SystemExit(result.returncode)
     print(json.dumps(upload(args.slug, args.cms, args.receipt, args.taken_at), indent=2))
 
 
