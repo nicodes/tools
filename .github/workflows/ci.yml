@@ -32,8 +32,8 @@ jobs:
           from pathlib import Path
           import re
           import subprocess
-          
-          
+
+
           def identity(environment, git):
               head = environment['EXPECTED_HEAD']
               if not re.fullmatch('[a-f0-9]{40}', head):
@@ -53,8 +53,8 @@ jobs:
               if any(not re.fullmatch('[a-f0-9]{40}', value[key]) for key in ('head', 'base', 'commit', 'tree')):
                   raise ValueError('invalid integration identity')
               return value
-          
-          
+
+
           def main():
               git = lambda args: subprocess.check_output(['git', *args], text=True, timeout=10)
               value = identity(os.environ, git)
@@ -68,8 +68,8 @@ jobs:
               destination = Path('.artifacts/fleet-integration.json')
               destination.parent.mkdir(parents=True, exist_ok=True)
               destination.write_text(json.dumps(value, sort_keys=True)+'\n')
-          
-          
+
+
           if __name__ == '__main__':
               main()
           FLEET_IDENTITY
