@@ -50,12 +50,17 @@ class FakeHTTP:
 
     def __call__(self, request, timeout=None):
         body = request.data or b''
+        digest = hashlib.sha256()
+        length = 0
+        for chunk in ([body] if isinstance(body, bytes) else body):
+            digest.update(chunk)
+            length += len(chunk)
         self.calls.append({
             'method': request.get_method(),
             'url': request.full_url,
             'headers': {key.lower(): value for key, value in request.header_items()},
-            'sha256': hashlib.sha256(body).hexdigest(),
-            'length': len(body),
+            'sha256': digest.hexdigest(),
+            'length': length,
             'timeout': timeout,
         })
         item = self.statuses.pop(0)
@@ -169,31 +174,46 @@ class UploadBackup(unittest.TestCase):
         self.assertEqual(len(fake.calls), 1)
         self.assertTrue(fake.calls[0]['url'].endswith('.cms'))
 
-    def test_blob_not_found_on_conditional_put_retries_unconditionally(self):
-        # Azure-fronted S3-compatible gateways answer the If-None-Match: *
-        # precondition with 404 BlobNotFound for an absent object instead of
-        # performing the write; the helper must read that as "absent" and PUT.
-        fake = FakeHTTP([(404, BLOB_NOT_FOUND), 200, (404, BLOB_NOT_FOUND), 200])
+    def test_conditional_404_never_drops_no_overwrite_protection(self):
+        fake = FakeHTTP([(404, BLOB_NOT_FOUND), 200])
         with tempfile.TemporaryDirectory() as directory, self.env(), patch.object(uploader, 'urlopen', fake):
             cms, receipt = self.pair(Path(directory))
-            result = uploader.upload('sampleaddon', cms, receipt, STAMP)
-        self.assertEqual(result['cms_key'], f'sampleaddon-bk-{STAMP}.cms')
-        self.assertEqual([call['method'] for call in fake.calls], ['PUT'] * 4)
-        for attempt, retry in ((fake.calls[0], fake.calls[1]), (fake.calls[2], fake.calls[3])):
-            self.assertEqual(attempt['headers'].get('if-none-match'), '*')
-            self.assertNotIn('if-none-match', retry['headers'])
-            self.assertEqual(attempt['url'], retry['url'])
-            self.assertEqual(attempt['sha256'], retry['sha256'])
+            with self.assertRaisesRegex(RuntimeError, 'HTTP 404'):
+                uploader.upload('sampleaddon', cms, receipt, STAMP)
+        self.assertEqual(len(fake.calls),1)
+        self.assertEqual(fake.calls[0]['headers']['if-none-match'],'*')
 
     def test_persistent_404_raises_with_the_provider_error_code(self):
-        # A genuine 404 (wrong bucket or hostname) fails the unconditional
-        # retry too, and the message must name the provider's error code.
+        # A genuine 404 fails without a retry that could permit replacement.
         fake = FakeHTTP([(404, BLOB_NOT_FOUND), (404, BLOB_NOT_FOUND)])
         with tempfile.TemporaryDirectory() as directory, self.env(), patch.object(uploader, 'urlopen', fake):
             cms, receipt = self.pair(Path(directory))
             with self.assertRaisesRegex(RuntimeError, r'HTTP 404 \(BlobNotFound'):
                 uploader.upload('sampleaddon', cms, receipt, STAMP)
-        self.assertEqual(len(fake.calls), 2)
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_stream_memory_is_bounded_and_changed_inode_refuses(self):
+        import tracemalloc
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'large.cms'
+            with path.open('wb') as stream:
+                stream.truncate(64*1024*1024)
+            tracemalloc.start()
+            try:
+                with uploader.Ciphertext(path,uploader.time.monotonic()+10) as body:
+                    count=sum(len(chunk) for chunk in body)
+                    self.assertEqual(count,64*1024*1024)
+                    self.assertLess(tracemalloc.get_traced_memory()[1],1024*1024)
+                    with path.open('r+b') as out:out.write(b'changed')
+                    with self.assertRaisesRegex(ValueError,'changed'):
+                        next(iter(body))
+            finally:tracemalloc.stop()
+
+    def test_total_deadline_rejects_before_transport(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cms,_=self.pair(Path(directory))
+            with self.assertRaises(TimeoutError):
+                uploader.Ciphertext(cms,uploader.time.monotonic()-1)
 
     def test_missing_contract_env_names_the_variable_and_the_remedy(self):
         with tempfile.TemporaryDirectory() as directory:

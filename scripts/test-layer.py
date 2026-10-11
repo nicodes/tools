@@ -18,7 +18,7 @@ def cases(suite):
 
 suite = unittest.defaultTestLoader.discover('tests')
 selected = unittest.TestSuite(test for test in cases(suite)
-    if (test.__class__.__module__ in ('test_dev', 'test_fixture_proxy')) == (args.layer == 'integration'))
+    if (test.__class__.__module__ in ('test_dev', 'test_fixture_proxy', 'test_backup_transport')) == (args.layer == 'integration'))
 if not selected.countTestCases():
     raise SystemExit('required test layer selected no tests')
 raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(selected).wasSuccessful())
