@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record the actual integration commit tested by a pull-request Test job."""
+"""Record the actual PR integration or main commit checked by a Test job."""
 import hashlib
 import json
 import os
@@ -17,9 +17,15 @@ def identity(environment, git):
     # cat-file reads raw parents even with checkout's depth-one shallow clone.
     parents = [line[7:] for line in git(['cat-file', '-p', 'HEAD']).split('\n\n', 1)[0].splitlines()
                if line.startswith('parent ')]
-    if len(parents) != 2 or parents[1] != head:
+    event = environment.get('GITHUB_EVENT_NAME', 'pull_request')
+    owner = event in ('push', 'workflow_dispatch')
+    if owner:
+        if (environment.get('GITHUB_REF') != 'refs/heads/main' or environment.get('GITHUB_SHA') != head
+                or commit != head or not 1 <= len(parents) <= 2):
+            raise ValueError('main delivery identity requires the exact main checkout and raw parent identity')
+    elif event != 'pull_request' or len(parents) != 2 or parents[1] != head:
         raise ValueError('Test must check out the integration, with the PR head as its second parent')
-    value = {'version': 1, 'repository': environment['GITHUB_REPOSITORY'],
+    value = {'version': 2 if owner else 1, 'repository': environment['GITHUB_REPOSITORY'],
              'run_id': int(environment['GITHUB_RUN_ID']),
              'attempt': int(environment['GITHUB_RUN_ATTEMPT']),
              'job': environment['GITHUB_JOB'], 'head': head, 'base': parents[0],
