@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 47e295858f99891e911bea400dceab71a92ec30d17a091c99edd636910e623fe -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 80dd5ba3ed927452c90bcfe95fb0c910c2632eca9d464bf2d5173d5b89e9a0cc -->
 
 # Reusable engineering tools
 
@@ -190,6 +190,7 @@ on:
 permissions:
   contents: read
   issues: write
+  id-token: write
 concurrency:
   group: deploy-production
   queue: max
@@ -221,9 +222,20 @@ Concurrency is caller-owned. Use `deploy-production`, `queue: max` and
 must not reuse its caller's active concurrency group: that concurrency-group
 collision can queue it behind the caller waiting for it to finish.
 
-The caller supplies `scripts/export-backup.sh`; the helper handles encrypted
-transport, exact receipt checks and a reviewed slug allowlist. Never pass
-unencrypted application data to the upload job.
+The caller supplies `scripts/export-backup.sh`. The current workflow prepares
+`KOMIZO_BACKUP_PROOF_FILE` in a private runner-temporary directory before export.
+The exporter sends that frame over stdin to its fixed Root backup adapter, then
+validates the ciphertext receipt using its verified SDK. The installed host must
+explicitly authorize the immutable reusable workflow, accepted serving source
+and fixed export program. The operation grants ciphertext export only; it does
+not grant deployment or restoration. Older immutable workflow pins retain their
+older interface.
+
+Upload and failure reporting use the same caller-pinned, checksum-verified SDK;
+there is no secondary helper checkout. Upload preserves conditional creation,
+bounded streaming and a reviewed slug allowlist. The proof is never uploaded
+with the ciphertext and is removed on job completion. Never pass unencrypted
+application data or recovery keys to this job.
 <!-- ws1: reusable-backup end -->
 
 ## Dependency maintenance
