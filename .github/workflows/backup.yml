@@ -1,6 +1,6 @@
 name: Backup
 # Encrypted backup transport. Callers own concurrency, slugs and SSH targets.
-# Grant contents: read and issues: write and map the three named secrets.
+# Grant contents: read, issues: write and id-token: write; map the named secrets.
 "on":
   workflow_call:
     inputs:
@@ -45,6 +45,7 @@ jobs:
     environment: production
     permissions:
       contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,18 +68,20 @@ jobs:
         with:
           install_args: http:cicd-engineering
         timeout-minutes: 5
+      - name: Prepare bounded routine export authority
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          engineering="$(python3 scripts/engineering-bootstrap.py)"
+          printf 'CICD_BACKUP_ENGINEERING=%s\n' "$engineering" >> "$GITHUB_ENV"
+          install -d -m 700 "$RUNNER_TEMP/komizo-backup-proof"
+          proof="$RUNNER_TEMP/komizo-backup-proof/operation.frame"
+          python3 "$engineering/helpers/backup-proof.py" --output "$proof"
+          printf 'KOMIZO_BACKUP_PROOF_FILE=%s\n' "$proof" >> "$GITHUB_ENV"
       - name: Verify and encrypt the pre-deploy snapshot
         timeout-minutes: 15
         run: bash scripts/export-backup.sh
-      - name: Check out the pinned cicd helper source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: nicodes/tools
-          ref: 253beaaa4898b002fcbe5a93ebcd2f275b52e64d # v0.11.1 source
-          path: .cicd
-          sparse-checkout: helpers
-          persist-credentials: false
-        timeout-minutes: 3
       - name: Put the encrypted snapshot in object storage
         timeout-minutes: 10
         env:
@@ -120,7 +123,7 @@ jobs:
           print(stamp.strftime('%Y%m%dT%H%M%SZ'))
           PY
           )"
-          python3 .cicd/helpers/upload-backup.py --slug "${{ inputs.product }}" \
+          python3 "$CICD_BACKUP_ENGINEERING/helpers/upload-backup.py" --slug "${{ inputs.product }}" \
             --cms "$cms" --receipt "$receipt" --taken-at "$taken_at"
       - name: Store the encrypted snapshot off host
         timeout-minutes: 10
@@ -130,6 +133,11 @@ jobs:
           path: .artifacts/backup/export/
           if-no-files-found: error
           retention-days: 30
+      - name: Remove the private operation proof
+        if: always()
+        timeout-minutes: 1
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/komizo-backup-proof/operation.frame"
   report:
     name: Report failure
     needs:
@@ -141,16 +149,20 @@ jobs:
       contents: read
       issues: write
     steps:
-      - name: Check out the pinned cicd helper source
+      - name: Check out the caller's verified helper declaration
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: nicodes/tools
-          ref: 253beaaa4898b002fcbe5a93ebcd2f275b52e64d # v0.11.1 source
-          path: .cicd
-          sparse-checkout: helpers
           persist-credentials: false
         timeout-minutes: 3
-      - run: python3 .cicd/helpers/report-failure.py
+      - name: Install the caller-pinned helper release
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          install_args: http:cicd-engineering
+        timeout-minutes: 5
+      - run: |
+          set -euo pipefail
+          engineering="$(python3 scripts/engineering-bootstrap.py)"
+          python3 "$engineering/helpers/report-failure.py"
         env:
           GH_TOKEN: "${{ github.token }}"
         timeout-minutes: 2
