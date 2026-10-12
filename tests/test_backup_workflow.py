@@ -88,13 +88,14 @@ class ReusableBackupWorkflow(unittest.TestCase):
         floor = set()
         for job in self.document['jobs'].values():
             floor.update(job.get('permissions') or {})
-        self.assertEqual(floor, {'contents', 'issues'})
+        self.assertEqual(floor, {'contents', 'issues', 'id-token'})
         readme = (ROOT/'README.md').read_text()
         section = readme[readme.index('## Reusable backup workflow'):
                          readme.index('<!-- ws1: reusable-backup end -->')]
         snippet = section[section.index('permissions:'):section.index('jobs:')]
         self.assertIn('contents: read', snippet)
         self.assertIn('issues: write', snippet)
+        self.assertIn('id-token: write', snippet)
 
     def test_readme_pins_the_startup_failure_contract(self):
         readme = (ROOT/'README.md').read_text()
@@ -119,7 +120,7 @@ class ReusableBackupWorkflow(unittest.TestCase):
         self.assertEqual(job['runs-on'], '${{ inputs.runner }}')
         self.assertEqual(job['environment'], 'production')
         self.assertEqual(job['timeout-minutes'], 40)
-        self.assertEqual(job['permissions'], {'contents': 'read'})
+        self.assertEqual(job['permissions'], {'contents': 'read', 'id-token': 'write'})
         # Concurrency is caller-owned. A called job naming the caller's
         # workflow-level `deploy-production` group queues behind the
         # still-running caller, never gets a runner, and fails with zero
@@ -165,20 +166,25 @@ class ReusableBackupWorkflow(unittest.TestCase):
         })
         script = upload['run']
         self.assertIn("envelope.get('verified_at')", script)
-        self.assertIn('.cicd/helpers/upload-backup.py --slug "${{ inputs.product }}"', script)
+        self.assertIn('"$CICD_BACKUP_ENGINEERING/helpers/upload-backup.py" --slug "${{ inputs.product }}"', script)
         self.assertIn('--taken-at "$taken_at"', script)
 
-    def test_both_jobs_check_out_the_same_pinned_cicd_helper_revision(self):
-        checkouts = self.cicd_checkouts()
-        self.assertEqual(len(checkouts), 2)
-        revisions = set()
-        for configuration in checkouts:
-            self.assertRegex(configuration['ref'], PINNED_CICD_REVISION)
-            self.assertEqual(configuration['path'], '.cicd')
-            self.assertEqual(configuration['sparse-checkout'], 'helpers')
-            self.assertIs(configuration['persist-credentials'], False)
-            revisions.add(configuration['ref'])
-        self.assertEqual(len(revisions), 1)
+    def test_backup_and_report_use_the_verified_caller_sdk_without_an_old_source_checkout(self):
+        self.assertEqual(self.cicd_checkouts(), [])
+        for job in ('backup', 'report'):
+            runs = '\n'.join(step.get('run', '') for step in self.steps(job))
+            self.assertIn('python3 scripts/engineering-bootstrap.py', runs)
+            self.assertNotIn('.cicd/helpers/', runs)
+            self.assertTrue(any('mise-action@' in step.get('uses', '') and
+                                step['with'].get('install_args') == 'http:cicd-engineering'
+                                for step in self.steps(job)))
+        backup = self.steps('backup')
+        proof = next(i for i, step in enumerate(backup) if 'helpers/backup-proof.py' in step.get('run', ''))
+        export = next(i for i, step in enumerate(backup) if step.get('run') == 'bash scripts/export-backup.sh')
+        self.assertLess(proof, export)
+        self.assertEqual(backup[proof]['timeout-minutes'], 2)
+        cleanup = next(step for step in backup if step.get('name') == 'Remove the private operation proof')
+        self.assertEqual(cleanup['if'], 'always()')
 
     def test_artifact_step_is_erroring_with_thirty_day_retention(self):
         artifact = next(step for step in self.steps('backup')
@@ -196,7 +202,8 @@ class ReusableBackupWorkflow(unittest.TestCase):
         self.assertEqual(job['permissions'], {'contents': 'read', 'issues': 'write'})
         reporter = next(step for step in job['steps']
                         if 'report-failure.py' in step.get('run', ''))
-        self.assertNotIn('scripts/engineering', reporter['run'])
+        self.assertIn('python3 scripts/engineering-bootstrap.py', reporter['run'])
+        self.assertIn('"$engineering/helpers/report-failure.py"', reporter['run'])
         self.assertEqual(reporter['env'], {'GH_TOKEN': '${{ github.token }}'})
 
 
