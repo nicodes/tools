@@ -73,6 +73,7 @@ class DependabotReusableWorkflow(unittest.TestCase):
         self.doc = _parse(self.text)
         self.job = self.doc['jobs']['auto-merge']
         self.steps = {step['name']: step for step in self.job['steps']}
+        self.steps_by_id = {step['id']: step for step in self.job['steps'] if 'id' in step}
 
     def test_trigger_is_workflow_call_only(self):
         self.assertEqual(list(self.doc['on']), ['workflow_call'],
@@ -101,12 +102,14 @@ class DependabotReusableWorkflow(unittest.TestCase):
         self.assertEqual(self.job['timeout-minutes'], 100)
 
     def test_metadata_comes_from_the_sha_pinned_fetch_action(self):
-        step = self.steps['Verify bot-signed dependency metadata']
+        step = self.steps_by_id['metadata']
         self.assertIs(step['continue-on-error'], True)
         self.assertEqual(step['with'], {'github-token': '${{ github.token }}'})
 
     def test_policy_scripts_run_from_the_trusted_base_checkout(self):
-        checkout = self.steps['Checkout the trusted base policy']
+        checkout, = (step for step in self.job['steps']
+                     if step.get('uses', '').startswith('actions/checkout@')
+                     and step.get('with', {}).get('ref') == '${{ github.event.pull_request.base.sha }}')
         self.assertEqual(checkout['if'], "steps.metadata.outcome == 'success'")
         self.assertEqual(checkout['with'], {'ref': '${{ github.event.pull_request.base.sha }}',
                                             'persist-credentials': False})
