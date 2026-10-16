@@ -13,9 +13,10 @@
     "dependabot.yml": "Reusable Dependency Policy",
     "deployed.yml": "Reusable Production Verification",
     "tools.yml": "Reusable Dependency Maintenance",
-    "verify.yml": "Reusable CI",
+    "verify.yml": "Reusable Build & Test",
     "vuln.yml": "Reusable Security Scan",
-    "platform-proxy.yml": "Platform Proxy"
+    "platform-proxy.yml": "Platform Proxy",
+    "ci.yml": "Build & Test"
   },
   "ci_gates": [
     "Test"
