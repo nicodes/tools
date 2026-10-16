@@ -1,4 +1,4 @@
-name: "Reusable CI"
+name: "Reusable Build & Test"
 on:
   workflow_call:
     inputs:
