@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: f183fb988522dbd05f1119daff29bd0f61e5ce385fcee75b76bd8f34033ff421 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: d2fae54b630f3b5818e300b1708acfae8b28ac5e18a714b11707bb70e8072466 -->
 
 # Reusable engineering tools
 
@@ -55,7 +55,7 @@ Caller workflows own triggers, environments and permission grants. Grant only
 what the selected workflow requires; no shared workflow can elevate caller grants.
 Keep privileged jobs on trusted code and provide secrets by explicit names.
 
-Use explicit display names: workflow titles such as `CI`, `CD`, `Release` and
+Use explicit display names: workflow titles such as `Build & Test`, `Deploy`, `Release` and
 `Dependency Policy`; job labels such as `Test`, `Build` and `Verify production`;
 and step labels such as `Check out source` and `Set up tools`. Keep job/step IDs,
 workflow filenames and artifact names stable when changing their display labels.
