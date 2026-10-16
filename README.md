@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 80dd5ba3ed927452c90bcfe95fb0c910c2632eca9d464bf2d5173d5b89e9a0cc -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: b51b566c79f1249fb7c65d42da24f5835204f1afc6e1ec61c4a2829f304035f8 -->
 
 # Reusable engineering tools
 
@@ -45,6 +45,7 @@ filenames and `CICD_ENGINEERING` remain compatibility interfaces.
 ```yaml
 jobs:
   verify:
+    name: Test
     uses: nicodes/tools/.github/workflows/verify.yml@<full-40-hex-commit>
     permissions:
       contents: read
@@ -53,6 +54,11 @@ jobs:
 Caller workflows own triggers, environments and permission grants. Grant only
 what the selected workflow requires; no shared workflow can elevate caller grants.
 Keep privileged jobs on trusted code and provide secrets by explicit names.
+
+Use explicit display names: workflow titles such as `CI`, `CD`, `Release` and
+`Dependency Policy`; job labels such as `Test`, `Build` and `Verify production`;
+and step labels such as `Check out source` and `Set up tools`. Keep job/step IDs,
+workflow filenames and artifact names stable when changing their display labels.
 
 ## Caller-owned configuration
 
@@ -197,6 +203,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   backup:
+    name: Backup
     uses: nicodes/tools/.github/workflows/backup.yml@<full-40-hex-commit>
     with:
       product: sampleapp
@@ -241,6 +248,7 @@ application data or recovery keys to this job.
 ## Dependency maintenance
 
 ```yaml
+name: Dependency Policy
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -253,6 +261,7 @@ permissions:
   actions: write
 jobs:
   policy:
+    name: Apply dependency policy
     uses: nicodes/tools/.github/workflows/dependabot.yml@<full-40-hex-commit>
     with:
       dispatch-target: ci.yml
@@ -268,6 +277,7 @@ privileged policy job. Callers select required gates; skipped required gates fai
 ## Deployed revision comparison
 
 ```yaml
+name: Production Verification
 on:
   schedule:
     - cron: '37 * * * *'
@@ -277,6 +287,7 @@ permissions:
   contents: read
 jobs:
   deployed:
+    name: Verify production
     uses: nicodes/tools/.github/workflows/deployed.yml@<full-40-hex-commit>
     with:
       deploy-workflow: cd.yml
