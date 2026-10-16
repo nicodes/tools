@@ -11,6 +11,7 @@ permissions:
   pull-requests: read
 jobs:
   review:
+    name: "Apply dependency policy"
     if: github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-24.04
     timeout-minutes: 5

@@ -1,4 +1,4 @@
-name: Verified Godot setup
+name: "Set up Godot"
 description: Install caller-pinned Linux x86_64 Godot and optional export templates
 inputs:
   version:

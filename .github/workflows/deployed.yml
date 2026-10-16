@@ -1,4 +1,4 @@
-name: Deployed is main
+name: "Reusable Production Verification"
 # Compare caller main with its latest successful deployment.
 # Requires actions: read and contents: read, including for private repositories.
 on:
@@ -12,6 +12,7 @@ permissions:
   contents: read
 jobs:
   deployed:
+    name: "Verify production"
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
