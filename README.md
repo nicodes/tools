@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: b51b566c79f1249fb7c65d42da24f5835204f1afc6e1ec61c4a2829f304035f8 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: f183fb988522dbd05f1119daff29bd0f61e5ce385fcee75b76bd8f34033ff421 -->
 
 # Reusable engineering tools
 
@@ -259,6 +259,8 @@ permissions:
   contents: write
   pull-requests: write
   actions: write
+  checks: read
+  statuses: read
 jobs:
   policy:
     name: Apply dependency policy
