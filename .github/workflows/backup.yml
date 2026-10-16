@@ -1,4 +1,4 @@
-name: Backup
+name: "Reusable Backup"
 # Encrypted backup transport. Callers own concurrency, slugs and SSH targets.
 # Grant contents: read, issues: write and id-token: write; map the named secrets.
 "on":
@@ -47,11 +47,12 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: "Check out source"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
         timeout-minutes: 3
-      - name: Connect for the verified snapshot
+      - name: "Connect to host"
         # Pin the transport action independently of the helper source.
         uses: nicodes/komizo-actions/connect@b032fc88f82233f1c060e238bc60b2888a913490 # v0.0.11
         env:
@@ -63,7 +64,7 @@ jobs:
         timeout-minutes: 3
       # Install the caller-pinned helpers before invoking its backup exporter.
       # Scheduled jobs need the same bootstrap as deployment jobs.
-      - name: Install and locate the engineering snapshot
+      - name: "Set up tools"
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           install_args: http:cicd-engineering
@@ -125,7 +126,7 @@ jobs:
           )"
           python3 "$CICD_BACKUP_ENGINEERING/helpers/upload-backup.py" --slug "${{ inputs.product }}" \
             --cms "$cms" --receipt "$receipt" --taken-at "$taken_at"
-      - name: Store the encrypted snapshot off host
+      - name: "Upload artifacts"
         timeout-minutes: 10
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -149,17 +150,18 @@ jobs:
       contents: read
       issues: write
     steps:
-      - name: Check out the caller's verified helper declaration
+      - name: "Check out source"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
         timeout-minutes: 3
-      - name: Install the caller-pinned helper release
+      - name: "Set up tools"
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           install_args: http:cicd-engineering
         timeout-minutes: 5
-      - run: |
+      - name: "Report failure"
+        run: |
           set -euo pipefail
           engineering="$(python3 scripts/engineering-bootstrap.py)"
           python3 "$engineering/helpers/report-failure.py"

@@ -1,4 +1,4 @@
-name: Engineering stage
+name: "Run engineering stage"
 description: Run canonical Make targets through the caller-owned contract
 inputs:
   target:
@@ -52,7 +52,7 @@ runs:
         key: layers-${{ runner.os }}-${{ github.repository }}-${{ github.sha }}
         restore-keys: |
           layers-${{ runner.os }}-${{ github.repository }}-
-    - name: Prepare the cache-capable builder
+    - name: "Set up Docker Buildx"
       if: inputs.build-cache == 'true'
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
     - name: Record cache setup evidence
@@ -106,7 +106,7 @@ runs:
           python3 "$CICD_ENGINEERING/helpers/timing-summary.py" --summary "$GITHUB_STEP_SUMMARY"
         fi
       continue-on-error: true
-    - name: Retain stage and build identity evidence
+    - name: "Upload artifacts"
       if: always()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:

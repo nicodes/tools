@@ -1,4 +1,4 @@
-name: Workflow and developer standards
+name: "Validate workflow standards"
 description: Validate caller-owned profile commands and generic workflow controls
 runs:
   using: composite
