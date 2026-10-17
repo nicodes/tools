@@ -47,7 +47,8 @@ class VerificationPlanning(unittest.TestCase):
             base = subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], text=True).strip()
             (root / 'README.md').write_text('changed')
             def run(revision=base):
-                return json.loads(subprocess.check_output(['python3', HELPER, '--base', revision], cwd=root, text=True))
+                return json.loads(subprocess.check_output(
+                    ['python3', HELPER, '--base', revision, '--event', 'local'], cwd=root, text=True))
             self.assertEqual(run()['targets'], ['lint'])
             (root / 'new-code.py').write_text('code')
             self.assertEqual(run()['mode'], 'full')
