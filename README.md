@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: d2fae54b630f3b5818e300b1708acfae8b28ac5e18a714b11707bb70e8072466 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 78f725e751029c3a728eb9f7adcdf0a45682e9b0edca60eccd8a970e9227e34c -->
 
 # Reusable engineering tools
 
@@ -7,7 +7,8 @@
 Before publishing an engineering release, CI and the release gate execute the
 checksum-bound archive from an isolated installation. Required checks cover
 bootstrap, publication handoffs, encrypted backup transport, recovery boundaries,
-and real disposable PostgreSQL restoration. Skipped or empty required suites fail.
+real disposable PostgreSQL restoration and, from v0.26, verification selection and
+versioned static-package boundaries. Skipped or empty required suites fail.
 The published `consumer-check.json` names the exact source, archive and manifest.
 Registry and object-storage checks use fixture transports; this evidence does not
 establish a production backup or restore.
@@ -32,9 +33,9 @@ deployment configuration and operational inventories in their own repositories.
 - Local authentication fixtures and caller-configured synthetic browser journeys.
 - Optional adapters for public deployment and game-development tooling.
 
-See [the Make contract](#make-contract), [release integrity](https://github.com/nicodes/tools/blob/10b124c2d88d47f978b76cc4546294235d697995/.github/workflows/release.yml),
+See [the Make contract](#make-contract), [release integrity](https://github.com/nicodes/tools/blob/93d35be0b1bc37ce53f4fa0b15bbc5dcb2f91978/.github/workflows/release.yml),
 [recovery format](#postgresql-logical-recovery-contract), [credential boundaries](#caller-owned-configuration),
-[caller contracts](#reusable-backup-workflow), [workflow library](https://github.com/nicodes/tools/tree/10b124c2d88d47f978b76cc4546294235d697995/workflow-library) and [templates](#pr-preview-deployments).
+[caller contracts](#reusable-backup-workflow), [workflow library](https://github.com/nicodes/tools/tree/93d35be0b1bc37ce53f4fa0b15bbc5dcb2f91978/workflow-library) and [templates](#pr-preview-deployments).
 
 ## Use
 
@@ -130,6 +131,75 @@ Use `nicodes/tools/make@<full commit>` with `target: lint test` or
 targets; callers keep secrets, runners, deployment and application adapters.
 `verify.yml` supplies generic Test/Build jobs when no additional product setup
 is needed. The composite preserves existing required job names otherwise.
+
+## Change-aware verification
+
+From v0.26, callers can declare a conservative `engineering-plan.json`:
+
+```json
+{
+  "version": 1,
+  "full_targets": ["lint", "unit", "integration", "build", "artifact-check", "vuln", "e2e"],
+  "always": ["lint"],
+  "rules": [{"paths": ["README.md"], "targets": ["lint"]}],
+  "force_full": []
+}
+```
+
+Resolve the checksum-verified installation through the caller bootstrap, then
+request a JSON plan for an exact ancestor commit:
+
+```sh
+ENGINEERING="$(python3 scripts/engineering-bootstrap.py)"
+python3 "$ENGINEERING/helpers/verification-plan.py" --base "$BASE_SHA"
+python3 "$ENGINEERING/helpers/verification-plan.py" --base "$BASE_SHA" --run lint test build artifact-check vuln e2e
+```
+
+Unknown inputs, policy/workflow/dependency changes, unavailable bases and
+production/manual events require the complete gate. Renames cover both paths;
+local plans include dirty and untracked inputs. Keep rules narrow: a Markdown
+file can contain executable agent configuration. A caller with a legacy `test`
+target declares it directly in `full_targets`. Contract callers can select
+`unit` and `integration` individually.
+
+The Make action accepts optional `changes-base: <exact ancestor SHA>` and retains
+its selection JSON alongside engineering evidence. Required workflow jobs always
+complete with actual checks and explicit selection reasons. Callers preserve
+artifact work needed by previews and publication. Publication independently
+requires executed test receipts and exact artifact identities.
+
+The Tools checkout exposes `make plan BASE=<commit>` and
+`make verify-changed BASE=<commit>`; consumer Make adapters can expose the same
+commands. A multi-target Make invocation shares prerequisites and the contract
+runner retains exact-input build reuse.
+
+## Versioned static payload layout
+
+Godot packagers can opt into `prepare(..., versioned_only=True)`. The serving
+root retains its HTML shell and the existing content-addressed browser URLs;
+large raw/compressed payload files live once under `releases/<content hash>/`.
+Manifest file records include their canonical `path`. Optional `root_files`
+retains caller-selected health metadata at its existing root URL.
+
+Existing packagers can call `godot_version_release.compact_payloads` after their
+own auditing and version staging. It validates all duplicate bytes and sidecars
+before removal and emits regular files compatible with extractors that reject
+links. `duplicate_logical_bytes_removed` measures removed file lengths rather
+than compressed image-transfer or filesystem savings.
+
+Disposable upgrade fixtures use `restore_export_inputs` before changing and
+repacking an audited release. Source paths/hashes and absent, unlinked destinations
+are verified before any copies. Existing default packaging remains compatible.
+
+## Failure feedback
+
+Contract stage failures retain `.artifacts/contract/failure.json` with the source, stage,
+exit code and focused Make rerun command. It contains no environment values or
+adapter arguments. Timings include source and toolchain-configuration identities;
+cache reports retain explicit observed states and unavailable values. Functional
+outcomes remain authoritative when optional telemetry cannot be written.
+
+## Compiler caches
 
 Optional `build-cache: true` restores local BuildKit caches through Actions and
 sets up a cache-capable builder. Products explicitly call `docker-build.py`
@@ -372,7 +442,7 @@ python3 helpers/snapshot.py seal /private/package --recipient /private/recipient
 ```
 
 After seal, a runner may PUT the ciphertext pair with `helpers/upload-backup.py`
-as described in [off-host backup PUT](https://github.com/nicodes/tools/blob/10b124c2d88d47f978b76cc4546294235d697995/helpers/upload-backup.py); app VPS hosts never
+as described in [off-host backup PUT](https://github.com/nicodes/tools/blob/93d35be0b1bc37ce53f4fa0b15bbc5dcb2f91978/helpers/upload-backup.py); app VPS hosts never
 receive those object-storage keys.
 
 `capture.json` contains `snapshot_id`, `reclamation_fenced`, `completed_at`,
