@@ -81,6 +81,17 @@ class ArtifactTests(unittest.TestCase):
             self.assertIn('releases/' + manifest['release_id'] + '/index', html)
             self.assertEqual(gzip.decompress((root / 'index.html.gz').read_bytes()), html.encode())
 
+    def test_caller_selected_health_metadata_keeps_its_root_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.export(root)
+            (root / 'release.json').write_text('{"commit":"' + 'a' * 40 + '"}')
+            prepare(root, 'a' * 40, versioned_only=True, root_files=['release.json'])
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            self.assertEqual(manifest['files']['release.json']['path'], 'release.json')
+            self.assertTrue((root / 'release.json').is_file())
+            self.assertFalse((root / 'index.wasm').exists())
+
     @staticmethod
     def pack(names, flags=0, version=2):
         data = b"GDPC" + struct.pack("<5IQ", version, 4, 7, 2, flags, 0)

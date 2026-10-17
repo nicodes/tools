@@ -58,7 +58,7 @@ def pack_paths(path):
         return paths
 
 
-def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, use_brotli=False, relative_urls=False, versioned_only=False):
+def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, use_brotli=False, relative_urls=False, versioned_only=False, root_files=()):
     root = Path(root)
     if root.is_symlink() or not root.is_dir() or any(path.is_symlink() for path in root.rglob('*')):
         raise ValueError('Release input may not contain symlinks')
@@ -117,10 +117,13 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
         # The shell already requests content-addressed URLs. Keep the export's input
         # directory separate from this generated serving root; no links cross the
         # extraction boundary and every browser-facing versioned URL is unchanged.
+        retained = {'index.html', *root_files}
+        if not retained <= set(files):
+            raise ValueError('root metadata must name existing export files')
         for name, info in files.items():
-            info['path'] = name if name == 'index.html' else f'releases/{release_id}/{name}'
+            info['path'] = name if name in retained else f'releases/{release_id}/{name}'
         for name in files:
-            if name != 'index.html':
+            if name not in retained:
                 for suffix in ('', '.gz', '.br'):
                     (root / (name + suffix)).unlink(missing_ok=True)
         manifest['layout'] = 'versioned-payload-v1'
