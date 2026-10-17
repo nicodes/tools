@@ -16,7 +16,8 @@
     "verify.yml": "Reusable Build & Test",
     "vuln.yml": "Reusable Security Scan",
     "platform-proxy.yml": "Platform Proxy",
-    "ci.yml": "Build & Test"
+    "ci.yml": "Build & Test",
+    "dependency-merge.yml": "Reusable Dependency Policy"
   },
   "ci_gates": [
     "Test"

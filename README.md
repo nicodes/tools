@@ -1,5 +1,3 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 10cadf0c7df447f559e11343577ad5c71e024acd9779518022392c696f09e41a -->
-
 # Reusable engineering tools
 
 ## Installed release acceptance
@@ -320,14 +318,30 @@ application data or recovery keys to this job.
 
 ## Dependency maintenance
 
+Existing immutable `dependabot.yml` callers retain their original contract.
+The legacy thin caller still uses
+`uses: nicodes/tools/.github/workflows/dependabot.yml@<full-40-hex-commit>`,
+`group: dependabot-${{ github.event.pull_request.number }}`,
+`cancel-in-progress: true` and optional `dispatch-target: ci.yml`.
+Its pinned `dependency-policy.py` and `merge-checked.py` preserve their original
+single-update gate; helpers formerly lived at `scripts/engineering/helpers/`.
+
+For new installations, use the event-driven dependency workflow:
+
 ```yaml
 name: Dependency Policy
 on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
+  workflow_run:
+    workflows: ["Build & Test"]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 6 * * *'
 concurrency:
-  group: dependabot-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: dependency-policy
+  cancel-in-progress: false
 permissions:
   contents: write
   pull-requests: write
@@ -337,16 +351,47 @@ permissions:
 jobs:
   policy:
     name: Apply dependency policy
-    uses: nicodes/tools/.github/workflows/dependabot.yml@<full-40-hex-commit>
-    with:
-      dispatch-target: ci.yml
+    uses: nicodes/tools/.github/workflows/dependency-merge.yml@<full-40-hex-commit>
 ```
 
-The trusted-base `dependency-policy.py` admits only bounded updates and
-`merge-checked.py` requires successful evidence for the exact PR head before
-an atomic SHA merge. Helpers formerly vendored at `scripts/engineering/helpers/`
-can be installed from verified archives. Never execute PR-controlled code in a
-privileged policy job. Callers select required gates; skipped required gates fail.
+The caller commits `.github/dependency-policy.json`:
+
+```json
+{
+  "version": 1,
+  "mode": "auto",
+  "ci_workflow": "ci.yml",
+  "required_checks": ["Test", "Build"],
+  "integration_job": "test",
+  "dispatch_workflow": "cd.yml",
+  "max_group_size": 10,
+  "managed_dependencies": ["example/shared-tools/*"],
+  "sensitive_dependencies": ["example/database-migrations"]
+}
+```
+
+`mode: review` retains agent-reviewed shared-library updates. Routine signed
+Dependabot updates, including groups, qualify only when every member is a known
+stable minor/patch release within the caller's limits. Major, pre-1.0 minor,
+sensitive and coordinated dependencies require review. Unknown versions and
+added maintainer commits fail closed.
+
+The helper reads policy from current main and executes only immutable shared
+code. It authenticates the declared CI workflow and required jobs, checks other
+checks/statuses, verifies the current-attempt `fleet-integration` artifact
+against immutable Git objects, then atomically merges the exact head. It requires
+the resulting merge parents and tree to match the tested integration. It explicitly
+dispatches the caller's merged-main workflow because token-originated merges do
+not start ordinary push workflows. Repository-native auto-merge is not required.
+It exits promptly while CI is pending; CI completion and scheduled reconciliation
+resume decisions. The run summary and retained JSON artifact explain each outcome.
+
+Callers without an integration receipt can use `nicodes/tools/integration-identity`
+pinned to the same reviewed release, after checkout in the declared integration
+job, with `EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}`. Upload
+`.artifacts/fleet-integration.json` as
+`fleet-integration-${{ github.run_id }}-${{ github.run_attempt }}` on pull requests.
+The identity action does not run application tests or replace required gates.
 
 <!-- ws13/deployed-reusable: begin -->
 ## Deployed revision comparison
