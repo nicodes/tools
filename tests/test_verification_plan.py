@@ -101,3 +101,9 @@ class VerificationPlanning(unittest.TestCase):
             subprocess.run(['bash', '-c', step['run']], cwd=root, env=environment, check=True,
                            capture_output=True, text=True)
             self.assertEqual(result.read_text().splitlines(), ['--', 'install', 'build'])
+            legacy = {**self.value, 'full_targets': ['lint', 'test', 'build'], 'rules': self.value['rules'][:1]}
+            (root / 'engineering-plan.json').write_text(json.dumps(legacy))
+            environment['ENGINEERING_TARGET'] = 'test'
+            subprocess.run(['bash', '-c', step['run']], cwd=root, env=environment, check=True,
+                           capture_output=True, text=True)
+            self.assertEqual(result.read_text().splitlines(), ['--', 'test'])
