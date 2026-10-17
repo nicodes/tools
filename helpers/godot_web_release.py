@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import struct
 import subprocess
-from godot_version_release import stage_version
+from godot_version_release import compact_payloads, stage_version
 
 
 def brotli(data):
@@ -117,16 +117,7 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
         # The shell already requests content-addressed URLs. Keep the export's input
         # directory separate from this generated serving root; no links cross the
         # extraction boundary and every browser-facing versioned URL is unchanged.
-        retained = {'index.html', *root_files}
-        if not retained <= set(files):
-            raise ValueError('root metadata must name existing export files')
-        for name, info in files.items():
-            info['path'] = name if name in retained else f'releases/{release_id}/{name}'
-        for name in files:
-            if name not in retained:
-                for suffix in ('', '.gz', '.br'):
-                    (root / (name + suffix)).unlink(missing_ok=True)
-        manifest['layout'] = 'versioned-payload-v1'
+        manifest.update(compact_payloads(root, files, release_id, root_files))
     if source_commit is not None:
         manifest['source_commit'] = source_commit
     (root / "release-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")

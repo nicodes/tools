@@ -5,6 +5,85 @@ import json
 from pathlib import Path
 import re
 import shutil
+import stat
+
+
+def payload_path(root, name):
+    if not isinstance(name, str) or not name or Path(name).is_absolute() or '..' in Path(name).parts or Path(name).as_posix() != name:
+        raise ValueError('payload path must remain inside the serving root')
+    path = root / name
+    if any(parent.is_symlink() for parent in [path, *path.parents]):
+        raise ValueError('payload path may not contain links')
+    if not stat.S_ISREG(path.stat().st_mode):
+        raise ValueError('payload must be a regular file')
+    return path
+
+
+def digest(path):
+    with path.open('rb') as incoming:
+        return hashlib.file_digest(incoming, 'sha256').hexdigest()
+
+
+def compact_payloads(root, files, release_id, root_files=()):
+    """Remove only verified duplicate inputs; public versioned URLs stay identical."""
+    if Path(root).is_symlink():
+        raise ValueError('serving root may not be a link')
+    root = Path(root).resolve(strict=True)
+    if not re.fullmatch(r'[a-f0-9]{64}', release_id):
+        raise ValueError('exact content release required')
+    retained = {'index.html', *root_files}
+    if not retained <= set(files):
+        raise ValueError('root metadata must name existing export files')
+    removals = []
+    for name, info in files.items():
+        original = payload_path(root, name)
+        if name in retained:
+            continue
+        versioned = payload_path(root, f'releases/{release_id}/{name}')
+        if digest(original) != info['sha256'] or digest(versioned) != info['sha256']:
+            raise ValueError('versioned payload differs from its audited source')
+        removals.append(original)
+        for suffix in ('.gz', '.br'):
+            if (root / (name + suffix)).exists() or (root / (name + suffix)).is_symlink():
+                source = payload_path(root, name + suffix)
+                target = payload_path(root, f'releases/{release_id}/{name}{suffix}')
+                if digest(source) != digest(target):
+                    raise ValueError('versioned sidecar differs from its source')
+                removals.append(source)
+    # Validate the complete plan before changing any path.
+    removed = sum(path.stat().st_size for path in removals)
+    for path in removals:
+        path.unlink()
+    for name, info in files.items():
+        info['path'] = name if name in retained else f'releases/{release_id}/{name}'
+    return {'layout': 'versioned-payload-v1', 'duplicate_logical_bytes_removed': removed}
+
+
+def restore_export_inputs(root):
+    """Rehydrate audited raw inputs for a disposable cache-upgrade/repack fixture."""
+    if Path(root).is_symlink():
+        raise ValueError('serving root may not be a link')
+    root = Path(root).resolve(strict=True)
+    manifest = json.loads(payload_path(root, 'release-manifest.json').read_text())
+    release_id = manifest['release_id']
+    if not re.fullmatch(r'[a-f0-9]{64}', release_id):
+        raise ValueError('exact content release required')
+    copies = []
+    for name, info in manifest['files'].items():
+        expected = name if info.get('path', name) == name else f'releases/{release_id}/{name}'
+        if info.get('path', name) != expected:
+            raise ValueError('manifest payload path differs from its release')
+        source = payload_path(root, expected)
+        if digest(source) != info['sha256']:
+            raise ValueError('fixture input differs from the audited release')
+        destination = root / name
+        if destination != source:
+            if destination.exists() or destination.is_symlink():
+                raise ValueError('fixture input destination must be absent')
+            copies.append((source, destination))
+    for source, destination in copies:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
 
 RECOVERY = '''<script id="godot-release-recovery">
 window.godotLoadFailure = function () {
