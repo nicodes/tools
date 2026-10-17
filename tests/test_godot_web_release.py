@@ -127,6 +127,21 @@ class ArtifactTests(unittest.TestCase):
                 restore_export_inputs(root)
             self.assertFalse((root / 'index.js').exists())
 
+    def test_fixture_destination_parent_cannot_redirect_a_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'root'; root.mkdir()
+            outside = Path(directory) / 'outside'; outside.mkdir()
+            staged = root / 'releases' / ('a' * 64) / 'nested'
+            staged.mkdir(parents=True)
+            (staged / 'runtime.js').write_bytes(b'fixture')
+            (root / 'nested').symlink_to(outside, target_is_directory=True)
+            (root / 'release-manifest.json').write_text(json.dumps({'release_id': 'a' * 64, 'files': {
+                'nested/runtime.js': {'sha256': hashlib.sha256(b'fixture').hexdigest(),
+                                      'path': 'releases/' + 'a' * 64 + '/nested/runtime.js'}}}))
+            with self.assertRaisesRegex(ValueError, 'parent'):
+                restore_export_inputs(root)
+            self.assertFalse((outside / 'runtime.js').exists())
+
     @staticmethod
     def pack(names, flags=0, version=2):
         data = b"GDPC" + struct.pack("<5IQ", version, 4, 7, 2, flags, 0)

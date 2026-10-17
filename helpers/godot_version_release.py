@@ -64,7 +64,10 @@ def restore_export_inputs(root):
     if Path(root).is_symlink():
         raise ValueError('serving root may not be a link')
     root = Path(root).resolve(strict=True)
-    manifest = json.loads(payload_path(root, 'release-manifest.json').read_text())
+    manifest_path = payload_path(root, 'release-manifest.json')
+    if manifest_path.stat().st_size > 1_000_000:
+        raise ValueError('release manifest exceeds its bound')
+    manifest = json.loads(manifest_path.read_text())
     release_id = manifest['release_id']
     if not re.fullmatch(r'[a-f0-9]{64}', release_id):
         raise ValueError('exact content release required')
@@ -78,6 +81,8 @@ def restore_export_inputs(root):
             raise ValueError('fixture input differs from the audited release')
         destination = root / name
         if destination != source:
+            if any(parent.is_symlink() for parent in destination.parents):
+                raise ValueError('fixture input parent may not be a link')
             if destination.exists() or destination.is_symlink():
                 raise ValueError('fixture input destination must be absent')
             copies.append((source, destination))
