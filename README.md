@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 78f725e751029c3a728eb9f7adcdf0a45682e9b0edca60eccd8a970e9227e34c -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 10cadf0c7df447f559e11343577ad5c71e024acd9779518022392c696f09e41a -->
 
 # Reusable engineering tools
 
@@ -161,6 +161,9 @@ local plans include dirty and untracked inputs. Keep rules narrow: a Markdown
 file can contain executable agent configuration. A caller with a legacy `test`
 target declares it directly in `full_targets`. Contract callers can select
 `unit` and `integration` individually.
+
+Retain tests that read the changed document: a README installation contract can
+select `lint` plus `unit` while omitting unrelated integration work.
 
 The Make action accepts optional `changes-base: <exact ancestor SHA>` and retains
 its selection JSON alongside engineering evidence. Required workflow jobs always
