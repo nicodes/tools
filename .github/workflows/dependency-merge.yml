@@ -1,0 +1,54 @@
+name: Reusable Dependency Policy
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller
+        type: string
+        required: false
+        default: ubuntu-24.04
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  checks: read
+  statuses: read
+jobs:
+  reconcile:
+    name: Apply dependency policy
+    if: github.event_name != 'pull_request_target' || (github.event.pull_request.user.login == 'dependabot[bot]' && github.event.pull_request.draft == false)
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: nicodes/tools
+          ref: 3c67df265e64736b5f3fb8a1da5cc5495fbfb494 # v0.27.0 source
+          path: .cicd
+          sparse-checkout: |
+            helpers/
+            .github/workflow-contract-requirements.txt
+          persist-credentials: false
+        timeout-minutes: 3
+      - name: Install pinned metadata parser
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dependency-policy"
+          "$RUNNER_TEMP/dependency-policy/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r .cicd/.github/workflow-contract-requirements.txt
+        timeout-minutes: 3
+      - name: Reconcile verified dependency updates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: '"$RUNNER_TEMP/dependency-policy/bin/python" .cicd/helpers/dependency-reconcile.py --apply --output "$RUNNER_TEMP/dependency-report.json"'
+        timeout-minutes: 5
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dependency-policy-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dependency-report.json
+          if-no-files-found: error
+          retention-days: 14
+        timeout-minutes: 2
