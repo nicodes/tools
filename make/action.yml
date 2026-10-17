@@ -16,6 +16,10 @@ inputs:
     description: Restore separately bound Expo compiler caches; always rebuild and verify outputs
     required: false
     default: 'false'
+  changes-base:
+    description: Optional exact ancestor for caller-owned engineering-plan.json selection; unknown inputs require the full gate
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -73,6 +77,8 @@ runs:
       shell: bash
       env:
         ENGINEERING_TARGET: ${{ inputs.target }}
+        VERIFICATION_BASE: ${{ inputs.changes-base }}
+        VERIFICATION_SCRIPT: ${{ github.action_path }}/../helpers/verification-plan.py
         CACHE_ENABLED: ${{ inputs.build-cache }}
         WEB_CACHE_ENABLED: ${{ inputs.web-cache }}
         GO_CACHE_ENABLED: ${{ inputs.go-cache }}
@@ -96,7 +102,13 @@ runs:
         if [ "${GO_CACHE_ENABLED:-false}" = true ]; then
           export GOCACHE="$RUNNER_TEMP/fleet-go-compiler"
         fi
-        make -- "${targets[@]}"
+        if [ -n "${VERIFICATION_BASE:-}" ]; then
+          python3 "$VERIFICATION_SCRIPT" --base "$VERIFICATION_BASE" \
+            --event "${GITHUB_EVENT_NAME:-local}" --output .artifacts/contract/verification-plan.json \
+            --run "${targets[@]}"
+        else
+          make -- "${targets[@]}"
+        fi
     - name: Summarize engineering stages
       if: always()
       shell: bash
@@ -116,6 +128,8 @@ runs:
           .artifacts/contract/build.json
           .artifacts/contract/test.json
           .artifacts/contract/cache.json
+          .artifacts/contract/verification-plan.json
+          .artifacts/contract/failure.json
         if-no-files-found: ignore
         retention-days: 30
       continue-on-error: true

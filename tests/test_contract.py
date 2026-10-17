@@ -110,6 +110,12 @@ class ContractBoundaries(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 23)
         self.assertFalse((self.root/'.artifacts/contract/build.json').exists())
+        failure = json.loads((self.root/'.artifacts/contract/failure.json').read_text())
+        self.assertEqual(failure['stage'], 'unit')
+        self.assertEqual(failure['exit_code'], 23)
+        self.assertEqual(failure['rerun'], ['make', '--', 'unit'])
+        self.assertEqual(failure['source_commit'], subprocess.check_output(
+            ['git', '-C', self.root, 'rev-parse', 'HEAD'], text=True).strip())
 
     def test_legacy_build_proof_without_execution_receipts_is_not_reused(self):
         self.run_target('build')
