@@ -25,6 +25,20 @@ MISE = ('[tools]\n'
 
 
 class PublicationEvidence(unittest.TestCase):
+    def test_new_release_requires_installed_planning_and_static_acceptance(self):
+        names = {'bootstrap', 'publication', 'backup-transport', 'recovery', 'postgres-restore'}
+        proof = {'version': 1, 'success': True, 'revision': NEW, 'archive_sha256': NEW_SUM,
+                 'source_sha256': OLD_SUM, 'scenarios': {name: {'success': True, 'tests': 1, 'skipped': 0} for name in names}}
+        fanout.verify_consumer_proof(proof, '0.25.0', NEW, NEW_SUM, OLD_SUM)
+        with self.assertRaises(ValueError):
+            fanout.verify_consumer_proof(proof, '0.26.0', NEW, NEW_SUM, OLD_SUM)
+        for name in ('static-release', 'verification-planning'):
+            proof['scenarios'][name] = {'success': True, 'tests': 1, 'skipped': 0}
+        fanout.verify_consumer_proof(proof, '0.26.0', NEW, NEW_SUM, OLD_SUM)
+        proof['scenarios']['static-release']['skipped'] = 1
+        with self.assertRaises(ValueError):
+            fanout.verify_consumer_proof(proof, '0.26.0', NEW, NEW_SUM, OLD_SUM)
+
     def workflow(self, test_job='test'):
         return f'''jobs:
   {test_job}:
