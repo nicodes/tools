@@ -144,7 +144,7 @@ class ReusableBackupWorkflow(unittest.TestCase):
         step = next(step for step in self.steps('backup')
                     if 'komizo-actions/connect' in step.get('uses', ''))
         self.assertEqual(step['uses'],
-                         'nicodes/komizo-actions/connect@b032fc88f82233f1c060e238bc60b2888a913490')
+                         'nicodes/komizo-actions/connect@66e672f5786688a5c5fbd492d35ec0009867a250')
         self.assertEqual(step['env'], {
             'KOMIZO_SERVER_URL': '${{ inputs.server }}',
             'KOMIZO_DEPLOY_KEY': '${{ secrets.KOMIZO_DEPLOY_KEY }}',
