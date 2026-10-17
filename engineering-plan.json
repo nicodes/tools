@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "full_targets": ["lint", "unit", "integration"],
+  "always": ["lint"],
+  "rules": [
+    {"paths": ["README.md", "AGENTS.md"], "targets": ["lint"]}
+  ],
+  "force_full": []
+}

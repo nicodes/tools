@@ -110,6 +110,12 @@ class ContractBoundaries(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 23)
         self.assertFalse((self.root/'.artifacts/contract/build.json').exists())
+        failure = json.loads((self.root/'.artifacts/contract/failure.json').read_text())
+        self.assertEqual(failure['stage'], 'unit')
+        self.assertEqual(failure['exit_code'], 23)
+        self.assertEqual(failure['rerun'], ['make', '--', 'unit'])
+        self.assertEqual(failure['source_commit'], subprocess.check_output(
+            ['git', '-C', self.root, 'rev-parse', 'HEAD'], text=True).strip())
 
     def test_legacy_build_proof_without_execution_receipts_is_not_reused(self):
         self.run_target('build')
@@ -147,12 +153,12 @@ class MakeActionBoundary(unittest.TestCase):
             fake_make.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
             fake_make.chmod(0o755)
             for target in ("lint test vuln", "install build artifact-check e2e", "browser-install"):
-                env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"], "ENGINEERING_TARGET": target, "CACHE_ENABLED": "false"}
+                env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"], "ENGINEERING_TARGET": target, "CACHE_ENABLED": "false", "VERIFICATION_BASE": ""}
                 result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(), ["--", *target.split()])
             for target in ("build;true", "build\ne2e", "unknown", " build", "build  e2e", "build -f other"):
-                env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"], "ENGINEERING_TARGET": target, "CACHE_ENABLED": "false"}
+                env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"], "ENGINEERING_TARGET": target, "CACHE_ENABLED": "false", "VERIFICATION_BASE": ""}
                 result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, target)
                 self.assertEqual(result.stdout, "")
