@@ -35,7 +35,7 @@ def policy(path):
     full = value.get('full_targets')
     if not isinstance(full, list) or not full or len(full) != len(set(full)):
         raise ValueError('unique full verification targets required')
-    if any(not isinstance(t, str) or not TARGET.fullmatch(t) or t in GROUPS
+    if any(not isinstance(t, str) or not TARGET.fullmatch(t)
            or t in {'clean', 'dev', 'stop', 'deploy', 'publish', 'release'} for t in full):
         raise ValueError('full targets must be individual Make stages')
     always = value.get('always', [])
@@ -123,7 +123,7 @@ def main():
         for target in args.run:
             if not TARGET.fullmatch(target):
                 raise ValueError('invalid Make target')
-            requested.extend(GROUPS.get(target, [target]))
+            requested.extend([target] if target in result['full_targets'] else GROUPS.get(target, [target]))
         # Installation and policy checks outside the declared selectable gate
         # remain required. Only the caller's explicit full_targets can be omitted.
         selected = [t for t in dict.fromkeys(requested)

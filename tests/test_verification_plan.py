@@ -24,6 +24,8 @@ class VerificationPlanning(unittest.TestCase):
         self.assertEqual(planner.select(self.value, ['README.md'], 'pull_request')['targets'], ['lint'])
         self.assertEqual(planner.select(self.value, ['unit-tests/check.py'], 'local')['targets'], ['lint', 'unit'])
         self.assertEqual(planner.select(self.value, ['README.md', 'unit-tests/check.py'], 'local')['targets'], ['lint', 'unit'])
+        legacy = {**self.value, 'full_targets': ['lint', 'test', 'build']}
+        self.assertEqual(planner.select(legacy, ['runtime.py'], 'local')['targets'], ['lint', 'test', 'build'])
 
     def test_shared_unknown_deleted_renamed_or_production_inputs_require_full_gate(self):
         for names, event in [(['app/code.py'], 'pull_request'), (['engineering-plan.json'], 'pull_request'),
