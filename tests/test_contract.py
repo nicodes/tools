@@ -153,12 +153,12 @@ class MakeActionBoundary(unittest.TestCase):
             fake_make.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
             fake_make.chmod(0o755)
             for target in ("lint test vuln", "install build artifact-check e2e", "browser-install"):
-                env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"], "ENGINEERING_TARGET": target, "CACHE_ENABLED": "false"}
+                env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"], "ENGINEERING_TARGET": target, "CACHE_ENABLED": "false", "VERIFICATION_BASE": ""}
                 result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout.splitlines(), ["--", *target.split()])
             for target in ("build;true", "build\ne2e", "unknown", " build", "build  e2e", "build -f other"):
-                env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"], "ENGINEERING_TARGET": target, "CACHE_ENABLED": "false"}
+                env = {**os.environ, "PATH": directory + os.pathsep + os.environ["PATH"], "ENGINEERING_TARGET": target, "CACHE_ENABLED": "false", "VERIFICATION_BASE": ""}
                 result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, target)
                 self.assertEqual(result.stdout, "")
