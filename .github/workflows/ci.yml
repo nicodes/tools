@@ -18,6 +18,9 @@ jobs:
     steps:
       - name: "Check out source"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
       - name: Record tested integration identity
         if: github.event_name == 'pull_request'
         env:
@@ -100,7 +103,16 @@ jobs:
           restore-keys: |
             go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.mise.toml', '**/go.mod', '**/go.sum') }}-
       - name: "Run project checks"
-        run: make install check
+        env:
+          VERIFICATION_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          make install
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            python3 helpers/verification-plan.py --base "$VERIFICATION_BASE" \
+              --output .artifacts/contract/verification-plan.json --run lint unit integration
+          else
+            make check
+          fi
   caddy-security-control:
     name: Caddy security negative control
     # Build the vulnerable baseline only for this repair's PR, never on main

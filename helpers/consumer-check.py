@@ -18,6 +18,13 @@ SCENARIOS = {
     'publication': ['test_release_binding'],
     'backup-transport': ['test_snapshot', 'test_receive_backup', 'test_upload_backup'],
     'recovery': ['test_restore_drill', 'test_postgres_recovery.PostgreSQLArchiveBoundaries'],
+    'static-release': ['test_godot_web_release'],
+    'verification-planning': [
+        'test_verification_plan.VerificationPlanning.test_documentation_and_test_inputs_have_explicit_owners',
+        'test_verification_plan.VerificationPlanning.test_shared_unknown_deleted_renamed_or_production_inputs_require_full_gate',
+        'test_verification_plan.VerificationPlanning.test_real_git_diff_covers_untracked_changes_and_both_sides_of_rename',
+        'test_verification_plan.VerificationPlanning.test_invalid_policy_cannot_select_an_empty_or_injected_full_gate',
+    ],
 }
 RUNNER = '''import json, sys, unittest
 suite = unittest.defaultTestLoader.loadTestsFromNames(sys.argv[1:])

@@ -60,6 +60,27 @@ class ArtifactTests(unittest.TestCase):
             self.assertEqual((root/'index.html').read_text(),html)
             self.assertEqual(json.loads((root/'release-manifest.json').read_text())['release_id'],manifest['release_id'])
 
+    def test_versioned_layout_has_one_regular_payload_and_preserves_browser_urls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.export(root)
+            prepare(root, 'a' * 40, relative_urls=True, versioned_only=True)
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            self.assertEqual(manifest['layout'], 'versioned-payload-v1')
+            for name, info in manifest['files'].items():
+                path = root / info['path']
+                self.assertTrue(path.is_file())
+                self.assertFalse(path.is_symlink())
+                self.assertEqual(path.stat().st_nlink, 1)
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), info['sha256'])
+                if name != 'index.html':
+                    self.assertFalse((root / name).exists())
+                    self.assertFalse((root / (name + '.gz')).exists())
+                    self.assertEqual(info['path'], 'releases/' + manifest['release_id'] + '/' + name)
+            html = (root / 'index.html').read_text()
+            self.assertIn('releases/' + manifest['release_id'] + '/index', html)
+            self.assertEqual(gzip.decompress((root / 'index.html.gz').read_bytes()), html.encode())
+
     @staticmethod
     def pack(names, flags=0, version=2):
         data = b"GDPC" + struct.pack("<5IQ", version, 4, 7, 2, flags, 0)
