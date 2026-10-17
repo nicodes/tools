@@ -8,6 +8,7 @@ import unittest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"helpers"))
 from godot_web_release import pack_paths, prepare
+from godot_version_release import compact_payloads, restore_export_inputs
 import gzip
 import json
 import hashlib
@@ -59,6 +60,87 @@ class ArtifactTests(unittest.TestCase):
             prepare(root,'a'*40,relative_urls=True)
             self.assertEqual((root/'index.html').read_text(),html)
             self.assertEqual(json.loads((root/'release-manifest.json').read_text())['release_id'],manifest['release_id'])
+
+    def test_versioned_layout_has_one_regular_payload_and_preserves_browser_urls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.export(root)
+            prepare(root, 'a' * 40, relative_urls=True, versioned_only=True)
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            self.assertEqual(manifest['layout'], 'versioned-payload-v1')
+            for name, info in manifest['files'].items():
+                path = root / info['path']
+                self.assertTrue(path.is_file())
+                self.assertFalse(path.is_symlink())
+                self.assertEqual(path.stat().st_nlink, 1)
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), info['sha256'])
+                if name != 'index.html':
+                    self.assertFalse((root / name).exists())
+                    self.assertFalse((root / (name + '.gz')).exists())
+                    self.assertEqual(info['path'], 'releases/' + manifest['release_id'] + '/' + name)
+            html = (root / 'index.html').read_text()
+            self.assertIn('releases/' + manifest['release_id'] + '/index', html)
+            self.assertEqual(gzip.decompress((root / 'index.html.gz').read_bytes()), html.encode())
+
+    def test_caller_selected_health_metadata_keeps_its_root_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.export(root)
+            (root / 'release.json').write_text('{"commit":"' + 'a' * 40 + '"}')
+            prepare(root, 'a' * 40, versioned_only=True, root_files=['release.json'])
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            self.assertEqual(manifest['files']['release.json']['path'], 'release.json')
+            self.assertTrue((root / 'release.json').is_file())
+            self.assertFalse((root / 'index.wasm').exists())
+
+    def test_disposable_upgrade_fixture_rehydrates_the_same_audited_inputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            prepare(root, 'a' * 40, versioned_only=True)
+            before = json.loads((root / 'release-manifest.json').read_text())
+            restore_export_inputs(root)
+            self.assertEqual(hashlib.sha256((root / 'index.js').read_bytes()).hexdigest(), before['files']['index.js']['sha256'])
+            (root / 'index.js').write_bytes((root / 'index.js').read_bytes() + b'\n// upgrade fixture\n')
+            prepare(root, 'b' * 40, versioned_only=True)
+            after = json.loads((root / 'release-manifest.json').read_text())
+            self.assertNotEqual(before['release_id'], after['release_id'])
+            self.assertFalse((root / 'index.js').exists())
+
+    def test_compaction_validates_all_duplicates_before_removing_any(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            prepare(root, 'a' * 40)
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            (root / 'releases' / manifest['release_id'] / 'index.wasm.gz').write_bytes(b'corrupt')
+            with self.assertRaisesRegex(ValueError, 'sidecar'):
+                compact_payloads(root, manifest['files'], manifest['release_id'])
+            self.assertTrue(all((root / name).exists() for name in manifest['files']))
+
+    def test_fixture_rehydration_refuses_tampered_or_escaping_manifest_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            prepare(root, 'a' * 40, versioned_only=True)
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            manifest['files']['index.wasm']['path'] = '../outside'
+            (root / 'release-manifest.json').write_text(json.dumps(manifest))
+            with self.assertRaises(ValueError):
+                restore_export_inputs(root)
+            self.assertFalse((root / 'index.js').exists())
+
+    def test_fixture_destination_parent_cannot_redirect_a_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'root'; root.mkdir()
+            outside = Path(directory) / 'outside'; outside.mkdir()
+            staged = root / 'releases' / ('a' * 64) / 'nested'
+            staged.mkdir(parents=True)
+            (staged / 'runtime.js').write_bytes(b'fixture')
+            (root / 'nested').symlink_to(outside, target_is_directory=True)
+            (root / 'release-manifest.json').write_text(json.dumps({'release_id': 'a' * 64, 'files': {
+                'nested/runtime.js': {'sha256': hashlib.sha256(b'fixture').hexdigest(),
+                                      'path': 'releases/' + 'a' * 64 + '/nested/runtime.js'}}}))
+            with self.assertRaisesRegex(ValueError, 'parent'):
+                restore_export_inputs(root)
+            self.assertFalse((outside / 'runtime.js').exists())
 
     @staticmethod
     def pack(names, flags=0, version=2):

@@ -174,6 +174,19 @@ def bump_workflow(text, version, commit):
     return new, new != text
 
 
+def verify_consumer_proof(proof, version, revision, checksum, source_digest):
+    expected = {'bootstrap', 'publication', 'backup-transport', 'recovery', 'postgres-restore'}
+    if tuple(map(int, version.split('.'))) >= (0, 26, 0):
+        expected.update({'static-release', 'verification-planning'})
+    if (proof.get('version') != 1 or proof.get('success') is not True
+            or proof.get('revision') != revision
+            or proof.get('archive_sha256') != checksum or proof.get('source_sha256') != source_digest
+            or set(proof.get('scenarios', {})) != expected
+            or any(value.get('success') is not True or value.get('tests', 0) < 1 or value.get('skipped') != 0
+                   for value in proof['scenarios'].values())):
+        raise ValueError('release lacks matching installed-consumer acceptance')
+
+
 def release_facts(version):
     """The commit a release tag peels to, and its artifact's sha256."""
     tag = f'v{version}'
@@ -207,14 +220,7 @@ def release_facts(version):
             subprocess.run(['gh', 'release', 'download', tag, '-R', 'nicodes/tools',
                             '-p', 'consumer-check.json', '-D', directory], check=True, timeout=60)
             proof = json.loads((Path(directory)/'consumer-check.json').read_text())
-            expected = {'bootstrap', 'publication', 'backup-transport', 'recovery', 'postgres-restore'}
-            if (proof.get('version') != 1 or proof.get('success') is not True
-                    or proof.get('revision') != commit.stdout.strip()
-                    or proof.get('archive_sha256') != checksum or proof.get('source_sha256') != source_digest
-                    or set(proof.get('scenarios', {})) != expected
-                    or any(value.get('success') is not True or value.get('tests', 0) < 1 or value.get('skipped') != 0
-                           for value in proof['scenarios'].values())):
-                raise ValueError('release lacks matching installed-consumer acceptance')
+            verify_consumer_proof(proof, version, commit.stdout.strip(), checksum, source_digest)
     return commit.stdout.strip(), checksum, source_digest
 
 

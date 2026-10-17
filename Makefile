@@ -2,9 +2,17 @@
 SHELL := /bin/bash
 export PATH := $(CURDIR)/.artifacts/venv/bin:$(PATH)
 .PHONY: help install lint unit integration test build artifact-check browser-install e2e vuln check dev stop clean fleet-audit
+export BASE
+.PHONY: plan verify-changed
 help:
 	@echo 'make install  Install the pinned helper toolchain'
 	@echo 'make check    Test helper boundaries and validate workflow and JavaScript syntax'
+	@echo 'make plan BASE=<commit>  Explain checks affected by current changes as JSON'
+	@echo 'make verify-changed BASE=<commit>  Execute the explained verification gate'
+plan:
+	@python3 helpers/verification-plan.py --base "$$BASE"
+verify-changed:
+	@python3 helpers/verification-plan.py --base "$$BASE" --output .artifacts/contract/verification-plan.json --run lint unit integration
 install:
 	mise trust .mise.toml
 	mise install

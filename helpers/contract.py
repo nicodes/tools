@@ -152,11 +152,14 @@ class Runner:
         self.test_receipts = {}
         self.root = Path('.artifacts/contract')
         self.root.mkdir(parents=True, exist_ok=True)
+        self.source_commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+        (self.root/'failure.json').unlink(missing_ok=True)
 
     def timing(self, name, started, result=0, outcome='executed', adapter=None):
         """Best-effort telemetry must never replace an adapter's outcome."""
         record = {'stage': name, 'seconds': round(time.monotonic()-started, 3),
                   'exit_code': result, 'outcome': outcome,
+                  'source_commit': self.source_commit,
                   'recorded_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}
         for key in ('GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB', 'RUNNER_OS', 'RUNNER_ARCH'):
             if os.environ.get(key):
@@ -164,6 +167,7 @@ class Runner:
         if adapter is not None:
             record['adapter'] = adapter
         try:
+            record['toolchain_config_sha256'] = sha(Path('.mise.toml')) if Path('.mise.toml').is_file() else None
             self.root.mkdir(parents=True, exist_ok=True)
             with (self.root/'timings.jsonl').open('a') as stream:
                 stream.write(json.dumps(record)+'\n')
@@ -261,6 +265,17 @@ class Runner:
             self.done.add(name)
         except BaseException as error:
             result = error.returncode if isinstance(error, subprocess.CalledProcessError) else 130 if isinstance(error, KeyboardInterrupt) else 1
+            # A bounded, secret-free rerun instruction complements the retained
+            # runner log. Never serialize environment values or command arguments.
+            failure = {'version': 1, 'stage': name, 'exit_code': result,
+                       'source_commit': self.source_commit,
+                       'execution_context': execution_context(),
+                       'rerun': ['make', '--', name],
+                       'timings': '.artifacts/contract/timings.jsonl'}
+            try:
+                (self.root/'failure.json').write_text(json.dumps(failure, sort_keys=True)+'\n')
+            except OSError:
+                print('Failure summary unavailable; preserve the runner log', file=sys.stderr)
             if name == 'build':
                 (self.root/'build.json').unlink(missing_ok=True)
             raise
