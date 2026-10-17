@@ -9,6 +9,10 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+from vendored import skip_module_if_vendored
+
+skip_module_if_vendored("producer-only: privileged dependency workflow and pinned metadata parser")
+
 spec = importlib.util.spec_from_file_location('reconcile', Path(__file__).resolve().parents[1]/'helpers/dependency-reconcile.py')
 reconcile = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reconcile)
