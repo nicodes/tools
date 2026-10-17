@@ -58,7 +58,7 @@ runs:
           layers-${{ runner.os }}-${{ github.repository }}-
     - name: "Set up Docker Buildx"
       if: inputs.build-cache == 'true'
-      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
     - name: Record cache setup evidence
       if: always()
       continue-on-error: true
@@ -120,7 +120,7 @@ runs:
       continue-on-error: true
     - name: "Upload artifacts"
       if: always()
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: engineering-${{ github.job }}-${{ github.run_attempt }}-${{ github.action }}
         path: |
