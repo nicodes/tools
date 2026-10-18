@@ -74,6 +74,38 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
                 pg.package_capture(capture, root/'rejected', metadata)
             self.assertFalse((root/'rejected').exists())
 
+    def test_renamed_project_retains_only_its_explicit_role_namespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = payload(root/'capture')
+            manifest['project'] = 'newapp'
+            for name in ('api', 'gate'):
+                manifest['images'][name]['reference'] = f'ghcr.io/example/newapp-{name}:{REVISION}'
+            with self.assertRaisesRegex(ValueError, 'application roles'):
+                pg.validate_manifest(manifest)
+            manifest['role_namespace'] = 'sampleapp'
+            self.assertEqual(pg.validate_manifest(manifest, 'newapp', REVISION), manifest)
+            (root/'capture'/pg.MANIFEST).unlink()
+            report = {**manifest['capture'], 'database': manifest['database'], 'major': 18, 'files': manifest['files']}
+            (root/'capture/capture.json').write_text(json.dumps(report))
+            metadata = {key: manifest[key] for key in ('project', 'revision', 'engine', 'roles', 'images', 'role_namespace')}
+            result = pg.package_capture(root/'capture', root/'package', metadata)
+            packed = json.loads((result/'verification.json').read_text())['postgresql']
+            self.assertEqual(packed['role_namespace'], 'sampleapp')
+            self.assertEqual(packed['roles'], ['sampleapp_owner', 'sampleapp_runtime'])
+            with self.assertRaisesRegex(ValueError, 'project mismatch'):
+                pg.validate_manifest(packed, 'sampleapp', REVISION)
+            for namespace in (None, [], '../sampleapp', 'restore_owner', 'sampleapp\n'):
+                with self.subTest(namespace=namespace), self.assertRaisesRegex(ValueError, 'role namespace'):
+                    pg.validate_manifest({**packed, 'role_namespace': namespace})
+            for roles in (['otherapp_runtime'], ['restore_owner'], ['sampleapp_runtime', 'otherapp_owner']):
+                with self.subTest(roles=roles), self.assertRaisesRegex(ValueError, 'application roles'):
+                    pg.validate_manifest({**packed, 'roles': roles})
+            wrong_images = copy.deepcopy(packed)
+            wrong_images['images']['api']['reference'] = f'ghcr.io/example/sampleapp-api:{REVISION}'
+            with self.assertRaisesRegex(ValueError, 'application image'):
+                pg.validate_manifest(wrong_images)
+
     def test_complete_inventory_and_explicit_backend_without_fake_integrity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root/'payload'
@@ -306,6 +338,12 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('CICD_TEST_POSTGRES') == '1', 'make check requires the real isolated PostgreSQL control')
 class PostgreSQLRestoreIntegration(unittest.TestCase):
     def test_real_custom_dump_restores_rows_and_acl_and_cleans_up(self):
+        self.restore_roundtrip('sampleapp')
+
+    def test_renamed_project_restores_existing_database_and_roles(self):
+        self.restore_roundtrip('newapp')
+
+    def restore_roundtrip(self, project):
         pg.docker('pull', '--quiet', ENGINE, timeout=180)
         image = json.loads(pg.docker('image', 'inspect', ENGINE))[0]['Id']
         name = 'cicd-pg-source-'+os.urandom(8).hex()
@@ -338,6 +376,10 @@ GRANT EXECUTE ON FUNCTION private_count() TO sampleapp_runtime;
         pg.docker('exec', source_id, 'pg_dump', '-Fc', '-U', 'sampleapp_owner', '-d', 'sampleapp', '-f', '/tmp/database.dump')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root/'payload'; manifest = payload(source, engine_id=image)
+            if project != 'sampleapp':
+                manifest.update(project=project, role_namespace='sampleapp')
+                for component in ('api', 'gate'):
+                    manifest['images'][component]['reference'] = f'ghcr.io/example/{project}-{component}:{REVISION}'
             # Stream bytes rather than relying on Docker's archive-copy support
             # for a running read-only container with a tmpfs source file.
             with (source/'database.dump').open('wb') as output:
@@ -348,7 +390,7 @@ GRANT EXECUTE ON FUNCTION private_count() TO sampleapp_runtime;
                                                  'sha256': pg.checksum(source/'database.dump')}
             (source/pg.MANIFEST).write_text(json.dumps(manifest))
             pg.docker('exec', source_id, 'psql', '-X', '-U', 'sampleapp_owner', '-d', 'sampleapp', '-c', "UPDATE preserved SET value='after snapshot'")
-            with pg.restored_database(source, 'sampleapp', REVISION) as clone:
+            with pg.restored_database(source, project, REVISION) as clone:
                 restored_id = clone['container']
                 self.assertEqual(clone['database_restore'], 'passed')
                 self.assertNotIn('roles', clone)
@@ -370,7 +412,7 @@ GRANT EXECUTE ON FUNCTION private_count() TO sampleapp_runtime;
                 if args[0] == 'run': created.append(args[args.index('--name')+1])
                 return real_docker(*args, **kwargs)
             with patch.object(pg, 'docker', tracked), self.assertRaises(RuntimeError):
-                with pg.restored_database(source, 'sampleapp', REVISION):
+                with pg.restored_database(source, project, REVISION):
                     self.fail('corrupt custom dump yielded a restored database')
             self.assertEqual(len(created), 1)
             with self.assertRaises(RuntimeError): real_docker('inspect', created[0])
