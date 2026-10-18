@@ -54,7 +54,7 @@ def safe_path(name):
 
 def validate_manifest(value, expected_project=None, expected_revision=None):
     required = {'format', 'project', 'revision', 'database', 'engine', 'roles', 'images', 'capture', 'files'}
-    if not isinstance(value, dict) or set(value) != required or value['format'] != FORMAT:
+    if not isinstance(value, dict) or set(value) not in (required, required | {'role_namespace'}) or value['format'] != FORMAT:
         raise ValueError('unknown or incomplete PostgreSQL recovery manifest')
     project, revision = value['project'], value['revision']
     host_local = HOST_LOCAL_REVISION.fullmatch(revision) if isinstance(revision, str) else None
@@ -76,9 +76,16 @@ def validate_manifest(value, expected_project=None, expected_revision=None):
         raise ValueError('invalid PostgreSQL engine image identity')
     if type(engine['major']) is not int or engine['major'] != 18:
         raise ValueError('unsupported PostgreSQL recovery major version')
+    # A renamed application may retain its database roles. The authenticated
+    # manifest declares that namespace explicitly; omission preserves the
+    # original project-scoped contract. Images remain bound to project.
+    role_namespace = value.get('role_namespace', project)
+    if (not isinstance(role_namespace, str)
+            or not re.fullmatch(r'[a-z][a-z0-9-]*', role_namespace)):
+        raise ValueError('invalid PostgreSQL role namespace')
     roles = value['roles']
     if not isinstance(roles, list) or not 1 <= len(roles) <= 8 or any(
-            not isinstance(role, str) or not re.fullmatch(re.escape(project) + r'(?:_[a-z][a-z0-9_]{0,40})?', role)
+            not isinstance(role, str) or not re.fullmatch(re.escape(role_namespace) + r'(?:_[a-z][a-z0-9_]{0,40})?', role)
             for role in roles) or len(set(roles)) != len(roles):
         raise ValueError('invalid PostgreSQL application roles')
     images = value['images']
@@ -206,7 +213,7 @@ def package_capture(capture, destination, metadata):
     report = json.loads(report_path.read_text(), object_pairs_hook=unique_object)
     if not isinstance(report, dict) or set(report) != {'snapshot_id', 'reclamation_fenced', 'completed_at', 'database', 'major', 'files'}:
         raise ValueError('unknown completed capture report')
-    if not isinstance(metadata, dict) or set(metadata) != {'project', 'revision', 'engine', 'roles', 'images'}:
+    if not isinstance(metadata, dict) or set(metadata) not in ({'project', 'revision', 'engine', 'roles', 'images'}, {'project', 'revision', 'engine', 'roles', 'images', 'role_namespace'}):
         raise ValueError('invalid recovery image metadata')
     manifest = validate_manifest({**metadata, 'format': FORMAT, 'database': report['database'],
                                   'capture': {key: report[key] for key in ['snapshot_id', 'reclamation_fenced', 'completed_at']},
