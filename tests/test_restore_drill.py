@@ -22,6 +22,35 @@ def fixture_config(project, postgres=False):
 
 
 class RestoreBoundaries(unittest.TestCase):
+    def test_renamed_fixture_preserves_configured_database_and_role_namespace(self):
+        spec = importlib.util.spec_from_file_location('restore_fixture', Path(__file__).parents[1]/'helpers/test-restore-drill.py')
+        fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
+        pg = fixture.load('postgres-recovery')
+        engine = 'postgres@sha256:' + 'b' * 64
+        config = {**fixture_config('newapp', postgres=True), 'database': 'oldapp',
+                  'role_namespace': 'oldapp', 'runtime_role': 'oldapp_runtime'}
+        def docker(*args, **kwargs):
+            if args[:2] == ('image', 'inspect'):
+                return json.dumps([{'Id': 'sha256:' + 'b' * 64, 'Config': {'Env': ['PG_MAJOR=18']}}])
+            return ''
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_file = root/'config.json'; config_file.write_text(json.dumps(config))
+            self.assertEqual(drill.load_config(config_file)['database'], 'oldapp')
+            with patch.object(fixture.os, 'getuid', return_value=1000), patch.object(fixture, 'docker_bytes', return_value=b'PGDMPfixture'):
+                result = fixture.postgres_fixture('newapp', 'a' * 40, engine,
+                    SimpleNamespace(docker=docker), SimpleNamespace(sha256=pg.checksum), pg, root, config=config)
+            manifest = json.loads((result/'verification.json').read_text())['postgresql']
+            self.assertEqual(manifest['project'], 'newapp')
+            self.assertEqual(manifest['database'], 'oldapp')
+            self.assertEqual(manifest['role_namespace'], 'oldapp')
+            self.assertEqual(manifest['roles'], ['oldapp_runtime'])
+            self.assertIn('/newapp-api:', manifest['images']['api']['reference'])
+            for name, invalid in [('database', 'oldapp\nPGDATA=/escape'), ('role_namespace', '../oldapp')]:
+                config_file.write_text(json.dumps({**config, name: invalid}))
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'PostgreSQL identity'):
+                    drill.load_config(config_file)
+
     def test_restored_files_are_mounted_readonly_instead_of_replaced_by_empty_tmpfs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

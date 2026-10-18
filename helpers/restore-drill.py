@@ -51,6 +51,11 @@ def load_config(file):
     backend = config.get('backend')
     if backend not in required or any(key not in config for key in required[backend]):
         raise ValueError('restore config has an unknown backend or missing application settings')
+    if backend == 'postgresql':
+        for name, pattern in (('database', r'[a-z][a-z0-9_]{0,62}'),
+                              ('role_namespace', r'[a-z][a-z0-9-]*')):
+            if name in config and (not isinstance(config[name], str) or not re.fullmatch(pattern, config[name])):
+                raise ValueError('restore config has an invalid PostgreSQL identity')
     if not isinstance(config['env'], dict) or any(not re.fullmatch(r'[A-Z][A-Z0-9_]*', name)
         or not isinstance(value, str) or '\n' in value or '\r' in value for name, value in config['env'].items()):
         raise ValueError('restore environment must contain bounded single-line values')
