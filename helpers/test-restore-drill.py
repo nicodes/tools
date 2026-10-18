@@ -56,7 +56,7 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
     if len(declared) != 1 or not declared[0].isdigit():
         raise ValueError('the engine image does not declare exactly one PG_MAJOR')
     major = int(declared[0])
-    database = project
+    database = config.get('database', project)
     capture = root/'capture'
     capture.mkdir(mode=0o700)
     password = secrets.token_hex(32)
@@ -117,6 +117,8 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
                              'image_id': json.loads(restore.docker('image', 'inspect', reference))[0]['Id']}
     metadata = {'project': project, 'revision': revision, 'roles': [config['runtime_role']], 'images': images,
                 'engine': {'reference': engine_reference, 'image_id': engine['Id'], 'major': major}}
+    if 'role_namespace' in config:
+        metadata['role_namespace'] = config['role_namespace']
     return recovery.package_capture(capture, root/'package', metadata)
 
 
