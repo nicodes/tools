@@ -92,7 +92,7 @@ jobs:
           "$RUNNER_TEMP/fleet-workflow-contract/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r .github/workflow-contract-requirements.txt
           "$RUNNER_TEMP/fleet-workflow-contract/bin/python" .github/workflow_contract.py
       - name: "Set up tools"
-        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
       - name: Cache Go compilation
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -124,7 +124,7 @@ jobs:
       - name: "Check out source"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: "Set up tools"
-        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
       - name: Scan the fixed historical baseline with the same compiler and overlay
         shell: bash
         run: |
@@ -173,7 +173,7 @@ jobs:
         with:
           persist-credentials: false
       - name: "Set up tools"
-        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
       - name: Exercise packaged helper consumers and real isolated restoration
         run: mise exec -- python3 scripts/check-consumers.py --postgres
         timeout-minutes: 15
