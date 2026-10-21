@@ -24,6 +24,23 @@ class CatalogueTests(unittest.TestCase):
             root=Path(folder);self.fixture(root);contract.validate(root)
             ci=root/'.github/workflows/ci.yml';ci.rename(ci.with_name('renamed.yml'))
             with self.assertRaises(ValueError):contract.validate(root)
+    def test_local_handoff_is_manual_and_preview_only(self):
+        for event, environment, accepted in [('workflow_dispatch', 'Preview', True),
+                ('workflow_dispatch', None, True), ('push', 'Preview', False),
+                ('workflow_dispatch', 'Production', False),
+                ('workflow_dispatch', '${{ inputs.environment }}', False)]:
+            with self.subTest(event=event, environment=environment), tempfile.TemporaryDirectory() as folder:
+                root=Path(folder);self.fixture(root)
+                path=root/'.github/workflow-contract.json'
+                policy=json.loads(path.read_text());policy['required'].append('ghenv.yml')
+                path.write_text(json.dumps(policy))
+                document={'name':'Local Environment', 'on':{event:None}, 'jobs':{'handoff':{
+                    'runs-on':'ubuntu-latest', 'steps':[{'uses':'owner/handoff@'+'a'*40}]}}}
+                if environment is not None: document['jobs']['handoff']['environment']=environment
+                (root/'.github/workflows/ghenv.yml').write_text(contract.yaml.safe_dump(document))
+                if accepted: contract.validate(root)
+                else:
+                    with self.assertRaises(ValueError): contract.validate(root)
     def test_engine_drift_fails(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder);self.fixture(root)
