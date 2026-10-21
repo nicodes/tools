@@ -16,6 +16,7 @@ CATALOGUE = {
     'production-verification.yml': 'Production Verification', 'backup.yml': 'Backup',
     'recovery.yml': 'Recovery', 'production-diagnostics.yml': 'Production Diagnostics',
     'release.yml': 'Release', 'fleet-audit.yml': 'Fleet Audit',
+    'ghenv.yml': 'Local Environment',
 }
 PR_TYPES = {'opened', 'synchronize', 'reopened', 'ready_for_review'}
 
@@ -88,6 +89,14 @@ def validate(root):
                 raise ValueError('CD requires main-only push and manual dispatch')
             group = document.get('concurrency', {})
             if group.get('cancel-in-progress') is not False: raise ValueError('deployment cancellation must remain disabled')
+        if name == 'ghenv.yml':
+            if set(events) != {'workflow_dispatch'}:
+                raise ValueError('local environment handoffs must be manual only')
+            for job in document['jobs'].values():
+                environment = job.get('environment')
+                if isinstance(environment, dict): environment = environment.get('name')
+                if environment not in (None, 'Preview'):
+                    raise ValueError('local environment handoffs may only select Preview')
         if name in {'recovery.yml', 'production-diagnostics.yml'} and set(events) != {'workflow_dispatch'}:
             raise ValueError(f'{name}: operator operations must be manual only')
         for key, job in document['jobs'].items():
