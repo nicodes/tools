@@ -34,7 +34,7 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/platform-proxy:${GITHUB_SHA}"
           mkdir -p .artifacts/platform
           docker build --build-arg SOURCE_REVISION="$GITHUB_SHA" -f platform/proxy.Dockerfile --iidfile .artifacts/platform/image-id . -t "$image"
-          python3 helpers/scan-image.py "$(cat .artifacts/platform/image-id)" --expected-go 1.27.2 > .artifacts/platform/scan.txt
+          python3 helpers/scan-image.py "$(cat .artifacts/platform/image-id)" --expected-go 1.27.3 > .artifacts/platform/scan.txt
           docker run --rm --network none "$image" version > .artifacts/platform/version.txt
           docker run --rm --network none "$image" list-modules --packages > .artifacts/platform/modules.txt
           echo "name=$image" >> "$GITHUB_OUTPUT"
