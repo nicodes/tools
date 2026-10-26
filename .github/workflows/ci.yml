@@ -1,10 +1,15 @@
-name: "Build & Test"
-on:
+name: Build & Test
+'on':
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-  workflow_dispatch:
+    types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
   push:
-    branches: [main]
+    branches:
+    - main
+  workflow_dispatch: null
 permissions:
   contents: read
 concurrency:
@@ -14,174 +19,38 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
     steps:
-      - name: "Check out source"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 2
-          persist-credentials: false
-      - name: Record tested integration identity
-        if: github.event_name == 'pull_request'
-        env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-        shell: bash
-        run: |
-          python3 - <<'FLEET_IDENTITY'
-          #!/usr/bin/env python3
-          """Record the actual integration commit tested by a pull-request Test job."""
-          import hashlib
-          import json
-          import os
-          from pathlib import Path
-          import re
-          import subprocess
-
-
-          def identity(environment, git):
-              head = environment['EXPECTED_HEAD']
-              if not re.fullmatch('[a-f0-9]{40}', head):
-                  raise ValueError('exact PR head required')
-              commit = git(['rev-parse', 'HEAD']).strip()
-              tree = git(['rev-parse', 'HEAD^{tree}']).strip()
-              # cat-file reads raw parents even with checkout's depth-one shallow clone.
-              parents = [line[7:] for line in git(['cat-file', '-p', 'HEAD']).split('\n\n', 1)[0].splitlines()
-                         if line.startswith('parent ')]
-              if len(parents) != 2 or parents[1] != head:
-                  raise ValueError('Test must check out the integration, with the PR head as its second parent')
-              value = {'version': 1, 'repository': environment['GITHUB_REPOSITORY'],
-                       'run_id': int(environment['GITHUB_RUN_ID']),
-                       'attempt': int(environment['GITHUB_RUN_ATTEMPT']),
-                       'job': environment['GITHUB_JOB'], 'head': head, 'base': parents[0],
-                       'commit': commit, 'tree': tree}
-              if any(not re.fullmatch('[a-f0-9]{40}', value[key]) for key in ('head', 'base', 'commit', 'tree')):
-                  raise ValueError('invalid integration identity')
-              return value
-
-
-          def main():
-              git = lambda args: subprocess.check_output(['git', *args], text=True, timeout=10)
-              value = identity(os.environ, git)
-              tracked = git(['ls-files']).splitlines()
-              files = [path for path in tracked if Path(path).name in
-                       {'go.mod', 'go.sum', 'package.json', 'bun.lock', 'package-lock.json', '.mise.toml', 'engineering.json'}
-                       or path.startswith('.github/')]
-              value['inputs_sha256'] = hashlib.sha256(json.dumps(
-                  {path: hashlib.sha256(Path(path).read_bytes()).hexdigest() for path in files},
-                  sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-              destination = Path('.artifacts/fleet-integration.json')
-              destination.parent.mkdir(parents=True, exist_ok=True)
-              destination.write_text(json.dumps(value, sort_keys=True)+'\n')
-
-
-          if __name__ == '__main__':
-              main()
-          FLEET_IDENTITY
-      - name: "Upload artifacts"
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.event_name == 'pull_request'
-        with:
-          name: fleet-integration-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .artifacts/fleet-integration.json
-          if-no-files-found: error
-          retention-days: 7
-      - name: Validate unified workflow contract
-        shell: bash
-        run: |
-          python3 -m venv "$RUNNER_TEMP/fleet-workflow-contract"
-          "$RUNNER_TEMP/fleet-workflow-contract/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r .github/workflow-contract-requirements.txt
-          "$RUNNER_TEMP/fleet-workflow-contract/bin/python" .github/workflow_contract.py
-      - name: "Set up tools"
-        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
-      - name: Cache Go compilation
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.mise.toml', '**/go.mod', '**/go.sum') }}-${{ github.sha }}
-          restore-keys: |
-            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.mise.toml', '**/go.mod', '**/go.sum') }}-
-      - name: "Run project checks"
-        env:
-          VERIFICATION_BASE: ${{ github.event.pull_request.base.sha }}
-        run: |
-          make install
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            python3 helpers/verification-plan.py --base "$VERIFICATION_BASE" \
-              --output .artifacts/contract/verification-plan.json --run lint unit integration
-          else
-            make check
-          fi
-  caddy-security-control:
-    name: Caddy security negative control
-    # Build the vulnerable baseline only for this repair's PR, never on main
-    # or other branches. It is an isolated scan fixture, not a published artifact.
-    if: github.event_name == 'pull_request' && github.head_ref == 'fix/caddy-grpc-security-phase3'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - name: "Check out source"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: "Set up tools"
-        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
-      - name: Scan the fixed historical baseline with the same compiler and overlay
-        shell: bash
-        run: |
-          set -euo pipefail
-          work=$(mktemp -d)
-          trap 'rm -rf "$work"' EXIT
-          python3 - <<'VERIFY'
-          import hashlib, json
-          from pathlib import Path
-          root = Path('security-fixtures/caddy-grpc-baseline')
-          source = json.loads((root/'SOURCE.json').read_text())
-          for name, digest in source['files'].items():
-              if hashlib.sha256((root/name).read_bytes()).hexdigest() != digest:
-                  raise ValueError('security negative-control fixture differs')
-          VERIFY
-          cp security-fixtures/caddy-grpc-baseline/{go.mod,go.sum,main.go,caddy-build.sh} "$work/"
-          (cd "$work" && mise exec go@1.27.0 -- sh caddy-build.sh)
-          go version -m "$work/caddy" | tee "$work/build-info.txt"
-          govulncheck -mode=binary -json "$work/caddy" > "$work/scan.json"
-          python3 - "$work" <<'PY'
-          import importlib.util
-          import json
-          from pathlib import Path
-          import sys
-
-          root = Path(sys.argv[1])
-          info = (root/'build-info.txt').read_text()
-          if ': go1.27.0\n' not in info or '\tdep\tgoogle.golang.org/grpc\tv1.83.1\t' not in info:
-              raise ValueError('baseline compiler or gRPC module identity differs')
-          spec = importlib.util.spec_from_file_location('scanner', 'helpers/scan-image.py')
-          scanner = importlib.util.module_from_spec(spec)
-          spec.loader.exec_module(scanner)
-          verdict = scanner.judge_report((root/'scan.json').read_text())
-          print(json.dumps(verdict), flush=True)
-          if 'GO-2026-6443' not in verdict['reached']:
-              raise ValueError('baseline did not demonstrate the expected vulnerable linked symbol')
-          print('Baseline negative control: GO-2026-6443 linked symbol detected.')
-          PY
-  installed-consumers:
-    name: Installed consumers
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - name: "Check out source"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: "Set up tools"
-        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
-      - name: Exercise packaged helper consumers and real isolated restoration
-        run: mise exec -- python3 scripts/check-consumers.py --postgres
-        timeout-minutes: 15
-      - name: "Upload artifacts"
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: always()
-        with:
-          name: installed-consumers-${{ github.sha }}
-          path: .artifacts/consumers/consumer-check.json
-          if-no-files-found: error
-          retention-days: 30
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Set up locked Komizo
+      uses: nicodes/komizo/setup@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 5
+    - name: Record tested integration identity
+      if: github.event_name == 'pull_request'
+      env:
+        EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+      run: komizo exec --tools python -- python3 -c 'import os,runpy;runpy.run_path(os.environ["CICD_ENGINEERING"]+"/helpers/integration-identity.py",run_name="__main__")'
+    - name: Upload artifacts
+      if: github.event_name == 'pull_request'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: fleet-integration-${{ github.run_id }}-${{ github.run_attempt }}
+        path: .artifacts/fleet-integration.json
+        if-no-files-found: error
+        retention-days: 7
+        include-hidden-files: true
+    - name: Check libraries
+      uses: nicodes/komizo/run@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      with:
+        target: check
+        go-cache: 'true'

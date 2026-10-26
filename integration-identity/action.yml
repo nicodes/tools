@@ -1,8 +1,0 @@
-name: Record tested integration
-description: Record the actual pull-request integration commit, base, tree and inputs
-runs:
-  using: composite
-  steps:
-    - name: Record tested integration identity
-      shell: bash
-      run: python3 "$GITHUB_ACTION_PATH/../helpers/integration-identity.py"
