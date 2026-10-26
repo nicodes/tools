@@ -150,20 +150,14 @@ updates:
       - github.com/go-sql-driver/mysql
       - go.mongodb.org/mongo-driver/*
 - package-ecosystem: gomod
-  directories:
-  - /helpers
-  - /pgbudget
-  - /sessionauth
+  directory: /sessionauth
   schedule:
     interval: weekly
-    day: monday
     time: "09:08"
-    timezone: Etc/UTC
   open-pull-requests-limit: 5
-  cooldown:
-    default-days: 3
   groups:
-    routine-updates:
+    security-fixes:
+      applies-to: security-updates
       patterns:
       - '*'
       exclude-patterns:
@@ -185,95 +179,17 @@ updates:
       - '*prisma*'
       - '*drizzle*'
       - '*migrate*'
-      - cel.dev/cel-go
-      - cel.dev/expr
-      - cloud.google.com/go/auth
-      - cloud.google.com/go/auth/oauth2adapt
-      - cloud.google.com/go/compute/metadata
-      - filippo.io/bigmod
-      - github.com/AndreasBriese/bbloom
-      - github.com/KimMachineGun/automemlimit
-      - github.com/aryann/difflib
-      - github.com/caddyserver/certmagic
-      - github.com/caddyserver/zerossl
-      - github.com/dgraph-io/ristretto
-      - github.com/dgryski/go-farm
-      - github.com/golang/snappy
-      - github.com/google/cel-go
-      - github.com/google/go-tpm
-      - github.com/google/go-tspi
-      - github.com/google/s2a-go
-      - github.com/googleapis/enterprise-certificate-proxy
-      - github.com/jackc/pgservicefile
-      - github.com/manifoldco/promptui
-      - github.com/mattn/go-colorable
-      - github.com/mattn/go-isatty
-      - github.com/mgutz/ansi
-      - github.com/munnerz/goautoneg
-      - github.com/nlnwa/whatwg-url
-      - github.com/pbnjay/memory
-      - github.com/pires/go-proxyproto
-      - github.com/pkg/errors
-      - github.com/prometheus/client_model
-      - github.com/prometheus/common
-      - github.com/prometheus/procfs
-      - github.com/quic-go/qpack
-      - github.com/quic-go/quic-go
-      - github.com/smallstep/certificates
-      - github.com/smallstep/cli-utils
-      - github.com/smallstep/go-attestation
-      - github.com/smallstep/linkedca
-      - github.com/smallstep/nosql
-      - github.com/smallstep/pkcs7
-      - github.com/smallstep/scep
-      - github.com/smallstep/truststore
-      - github.com/tailscale/go-winio
-      - github.com/tailscale/tscert
-      - github.com/x448/float16
-      - github.com/zeebo/blake3
-      - go.opentelemetry.io/contrib/bridges/prometheus
-      - go.opentelemetry.io/contrib/exporters/autoexport
-      - go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
-      - go.opentelemetry.io/contrib/propagators/autoprop
-      - go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc
-      - go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp
-      - go.opentelemetry.io/otel/exporters/prometheus
-      - go.opentelemetry.io/otel/exporters/stdout/stdoutlog
-      - go.opentelemetry.io/otel/log
-      - go.opentelemetry.io/otel/sdk/log
-      - go.step.sm/crypto
-      - go.uber.org/zap/exp
-      - golang.org/x/crypto
-      - golang.org/x/crypto/x509roots/fallback
-      - golang.org/x/exp
-      - golang.org/x/mod
-      - golang.org/x/net
-      - golang.org/x/oauth2
-      - golang.org/x/sync
-      - golang.org/x/sys
-      - golang.org/x/term
-      - golang.org/x/text
-      - golang.org/x/time
-      - golang.org/x/tools
-      - google.golang.org/api
-      - google.golang.org/genproto/googleapis/api
-      - google.golang.org/genproto/googleapis/rpc
       - modernc.org/sqlite
       - github.com/jackc/pgx/*
       - github.com/go-sql-driver/mysql
       - go.mongodb.org/mongo-driver/*
-      update-types:
-      - minor
-      - patch
-    managed-releases:
-      patterns:
-      - nicodes/tools/*
-      - nicodes/cicd/*
-      - nicodes/komizo-actions/*
-      - aviorstudio/gdam-actions/*
-      update-types:
-      - minor
-      - patch
+- package-ecosystem: gomod
+  directory: /pgbudget
+  schedule:
+    interval: weekly
+    time: "09:08"
+  open-pull-requests-limit: 5
+  groups:
     security-fixes:
       applies-to: security-updates
       patterns:
