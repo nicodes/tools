@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "repository": "nicodes/tools",
+  "recipe": "go-library",
+  "tools": {
+    "go": "1.27.3",
+    "go:golang.org/x/vuln/cmd/govulncheck": "1.7.0",
+    "actionlint": "1.7.12",
+    "shellcheck": "0.11.0"
+  },
+  "validation": {
+    "workflow": {
+      "required": [
+        "ci.yml",
+        "dependency-maintenance.yml",
+        "dependency-policy.yml",
+        "security-scan.yml"
+      ],
+      "ci_gates": [
+        "Test"
+      ]
+    }
+  },
+  "stages": {
+    "install": [
+      [
+        "go",
+        "-C",
+        "sessionauth",
+        "mod",
+        "download"
+      ],
+      [
+        "go",
+        "-C",
+        "pgbudget",
+        "mod",
+        "download"
+      ]
+    ],
+    "lint": [
+      [
+        "bash",
+        "scripts/lint.sh"
+      ]
+    ],
+    "unit": [
+      [
+        "go",
+        "-C",
+        "sessionauth",
+        "vet",
+        "./..."
+      ],
+      [
+        "go",
+        "-C",
+        "sessionauth",
+        "test",
+        "-race",
+        "-count=1",
+        "./..."
+      ],
+      [
+        "go",
+        "-C",
+        "pgbudget",
+        "vet",
+        "./..."
+      ],
+      [
+        "go",
+        "-C",
+        "pgbudget",
+        "test",
+        "-race",
+        "-count=1",
+        "./..."
+      ]
+    ],
+    "integration": {
+      "inapplicable": "HTTP protocol and database-budget decisions are covered by library tests; serving database integration belongs to application consumers."
+    },
+    "build": [
+      [
+        "go",
+        "-C",
+        "sessionauth",
+        "build",
+        "./..."
+      ],
+      [
+        "go",
+        "-C",
+        "pgbudget",
+        "build",
+        "./..."
+      ]
+    ],
+    "artifact-check": {
+      "inapplicable": "Go source libraries publish no executable archive or container image."
+    },
+    "vuln": [
+      [
+        "bash",
+        "scripts/vuln.sh"
+      ]
+    ],
+    "dev": {
+      "inapplicable": "Source libraries have no application process."
+    },
+    "stop": {
+      "inapplicable": "Source libraries start no application process."
+    },
+    "clean": [
+      [
+        "python3",
+        "-c",
+        "from pathlib import Path;import shutil;p=Path(\".artifacts\");assert not p.is_symlink();shutil.rmtree(p,ignore_errors=True)"
+      ]
+    ]
+  },
+  "tasks": {
+    "dependency-maintenance": [
+      [
+        "python3",
+        "-c",
+        "import os,runpy;runpy.run_path(os.environ[\"CICD_ENGINEERING\"]+\"/helpers/watch-tools.py\",run_name=\"__main__\")"
+      ]
+    ]
+  }
+}
