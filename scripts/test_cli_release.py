@@ -54,6 +54,20 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'incomplete'):
             release.validate(self.root, 'example')
 
+    def test_explicit_linux_support_preserves_default_mac_requirement(self):
+        self.payload()
+        for path in self.root.glob('*_Darwin_*.tar.gz'):
+            path.unlink()
+        self.rehash()
+        release.validate(self.root, 'example', platforms='linux')
+        with self.assertRaisesRegex(ValueError, 'incomplete'):
+            release.validate(self.root, 'example')
+
+    def test_invalid_or_empty_platform_declarations(self):
+        for platforms in ['', 'windows', 'linux,linux', 'linux,', ',darwin']:
+            with self.subTest(platforms=platforms), self.assertRaises(ValueError):
+                release.targets(platforms)
+
     def test_duplicate_checksum(self):
         self.payload()
         path = self.root / 'checksums.txt'
@@ -131,7 +145,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_publication_verifies_uploaded_draft_before_publishing(self):
         expected = release.validate(self.payload(), 'example')
-        uploaded = {'draft': True, 'target_commitish': self.source,
+        uploaded = {'draft': True, 'tag_name': 'v0.0.1', 'target_commitish': self.source,
                     'assets': [{'name': n, 'digest': 'sha256:' + d} for n, d in expected.items()]}
         for tamper in [False, True]:
             with self.subTest(tamper=tamper):
@@ -141,7 +155,7 @@ class ReleaseTests(unittest.TestCase):
                 with patch.dict(os.environ, GITHUB_SHA=self.source, GITHUB_REF='refs/heads/main',
                                 GITHUB_EVENT_NAME='workflow_dispatch'), \
                         patch.object(release, 'absent') as absent, \
-                        patch.object(release, 'run', return_value=json.dumps(candidate)), \
+                        patch.object(release, 'run', side_effect=['', '42', json.dumps(candidate)]) as query, \
                         patch.object(release.subprocess, 'run') as command:
                     if tamper:
                         with self.assertRaisesRegex(ValueError, 'remains unpublished'):
@@ -149,8 +163,19 @@ class ReleaseTests(unittest.TestCase):
                     else:
                         release.publish(self.root, 'example', 'v0.0.1', self.source, 'example/cli')
                     self.assertEqual(absent.call_count, 2)
+                    self.assertEqual(query.call_args.args, ('gh', 'api', 'repos/example/cli/releases/42'))
                     self.assertIn('--draft', command.call_args_list[0].args[0])
                     self.assertEqual(command.call_count, 1 if tamper else 2)
+
+    def test_existing_draft_is_refused_before_creating_a_release(self):
+        self.payload()
+        with patch.dict(os.environ, GITHUB_SHA=self.source, GITHUB_REF='refs/heads/main',
+                        GITHUB_EVENT_NAME='workflow_dispatch'), \
+                patch.object(release, 'run', return_value='v0.0.1'), \
+                patch.object(release.subprocess, 'run') as command:
+            with self.assertRaisesRegex(ValueError, 'including drafts'):
+                release.publish(self.root, 'example', 'v0.0.1', self.source, 'example/cli')
+            command.assert_not_called()
 
     def test_preflight_distinguishes_absence_existing_and_network_failure(self):
         for status, code, allowed in [('404', 1, True), ('200', 0, False), ('403', 1, False), ('500', 1, False)]:

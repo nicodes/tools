@@ -18,6 +18,13 @@ TARGETS = [('linux', 'amd64', 'Linux', 'x86_64'),
            ('darwin', 'arm64', 'Darwin', 'arm64')]
 
 
+def targets(platforms):
+    selected = platforms.split(',')
+    if not selected or len(set(selected)) != len(selected) or not set(selected) <= {'linux', 'darwin'}:
+        raise ValueError('platforms must declare linux, darwin, or both without duplicates')
+    return [target for target in TARGETS if target[0] in selected]
+
+
 def run(*args, **kwargs):
     return subprocess.check_output(args, text=True, **kwargs).strip()
 
@@ -92,13 +99,13 @@ def archive_binary(path, binary):
         raise ValueError('archive does not contain the named executable')
 
 
-def validate(directory, binary, extra_files=()):
+def validate(directory, binary, extra_files=(), platforms='linux,darwin'):
     binary_name(binary)
     directory = Path(directory)
     files = {p.name: p for p in directory.iterdir()}
     if any(p.is_symlink() or not p.is_file() for p in files.values()):
         raise ValueError('release payload must contain regular top-level files')
-    required = {f'{binary}_{os_label}_{arch_label}.tar.gz' for _, _, os_label, arch_label in TARGETS}
+    required = {f'{binary}_{os_label}_{arch_label}.tar.gz' for _, _, os_label, arch_label in targets(platforms)}
     optional = {f'{binary}_Windows_{arch}.zip' for arch in ('x86_64', 'arm64')}
     extras = set(extra_files)
     if any(not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name) for name in extras):
@@ -118,7 +125,8 @@ def validate(directory, binary, extra_files=()):
     return {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in sorted(files.items())}
 
 
-def build(binary, package, module_dir, directory, tag, source, version_symbol='', revision_symbol=''):
+def build(binary, package, module_dir, directory, tag, source, version_symbol='', revision_symbol='',
+          platforms='linux,darwin'):
     binary_name(binary)
     release_tag(tag)
     if not re.fullmatch(r'[a-f0-9]{40}', source):
@@ -131,7 +139,7 @@ def build(binary, package, module_dir, directory, tag, source, version_symbol=''
             if not re.fullmatch(r'[A-Za-z0-9_./-]+\.[A-Za-z_][A-Za-z0-9_]*', symbol):
                 raise ValueError('invalid Go string symbol')
             flags += ['-X', symbol + '=' + value]
-    for goos, goarch, os_label, arch_label in TARGETS:
+    for goos, goarch, os_label, arch_label in targets(platforms):
         with tempfile.TemporaryDirectory() as temp:
             executable = Path(temp) / binary
             env = dict(os.environ, CGO_ENABLED='0', GOOS=goos, GOARCH=goarch)
@@ -153,7 +161,7 @@ def build(binary, package, module_dir, directory, tag, source, version_symbol=''
     (directory / 'checksums.txt').write_text(''.join(
         hashlib.sha256(path.read_bytes()).hexdigest() + '  ' + path.name + '\n'
         for path in sorted(directory.glob('*.tar.gz'))))
-    validate(directory, binary)
+    validate(directory, binary, platforms=platforms)
 
 
 def absent(repo, endpoint):
@@ -166,7 +174,7 @@ def absent(repo, endpoint):
         raise ValueError('could not establish that the release identity is unused')
 
 
-def publish(directory, binary, tag, source, repo, extra_files=()):
+def publish(directory, binary, tag, source, repo, extra_files=(), platforms='linux,darwin'):
     release_tag(tag)
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
         raise ValueError('invalid repository')
@@ -174,15 +182,25 @@ def publish(directory, binary, tag, source, repo, extra_files=()):
         raise ValueError('publication must use this workflow source commit')
     if os.environ.get('GITHUB_REF') != 'refs/heads/main' or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
         raise ValueError('publication requires an explicit main-branch dispatch')
-    expected = validate(directory, binary, extra_files)
+    expected = validate(directory, binary, extra_files, platforms)
+    # The tag endpoint excludes drafts. Refuse draft identities as well, and
+    # inspect the new draft by its database ID after uploading its assets.
+    existing = run('gh', 'api', '--paginate', f'repos/{repo}/releases?per_page=100',
+                   '--jq', '.[].tag_name')
+    if tag in existing.splitlines():
+        raise ValueError('release identities must be new, including drafts')
     absent(repo, 'git/ref/tags/' + quote(tag, safe=''))
     absent(repo, 'releases/tags/' + quote(tag, safe=''))
     files = [str(Path(directory) / name) for name in expected]
     subprocess.run(['gh', 'release', 'create', tag, *files, '--repo', repo, '--target', source,
                     '--draft', '--title', tag, '--notes', 'Prebuilt CLI binaries from source ' + source + '.'], check=True)
-    uploaded = json.loads(run('gh', 'api', f'repos/{repo}/releases/tags/{quote(tag, safe="")}'))
+    release_id = run('gh', 'release', 'view', tag, '--repo', repo,
+                     '--json', 'databaseId', '--jq', '.databaseId')
+    if not re.fullmatch(r'[1-9][0-9]*', release_id):
+        raise ValueError('GitHub did not identify the uploaded draft')
+    uploaded = json.loads(run('gh', 'api', f'repos/{repo}/releases/{release_id}'))
     actual = {asset['name']: asset.get('digest') for asset in uploaded['assets']}
-    if (not uploaded['draft'] or uploaded['target_commitish'] != source
+    if (not uploaded['draft'] or uploaded['tag_name'] != tag or uploaded['target_commitish'] != source
             or actual != {name: 'sha256:' + digest for name, digest in expected.items()}):
         raise ValueError('uploaded draft differs from the verified payload; it remains unpublished')
     subprocess.run(['gh', 'release', 'edit', tag, '--repo', repo, '--draft=false'], check=True)
@@ -198,6 +216,7 @@ def main():
         command = commands.add_parser(operation)
         command.add_argument('--binary', required=True)
         command.add_argument('--directory', default='release-assets')
+        command.add_argument('--platforms', default='linux,darwin')
         if operation != 'build':
             command.add_argument('--extra-files', default='')
         if operation != 'validate':
