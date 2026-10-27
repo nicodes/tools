@@ -1,8 +1,9 @@
 # Repository instructions
 
-This public repository contains shared Go runtime libraries maintained for our applications.
+This public repository contains shared Go runtime libraries and CLI release automation.
 
-- Keep `tools` focused on shared application code. Development recipes, installers and deployment automation belong to their owning products.
+- Keep shared application libraries and generic CLI build/release automation here. Each product owns its release versions, assets, installer and product-specific acceptance. Development recipes and deployment automation remain with their owning products.
+- Reusable release workflows run in GitHub Actions. Product users must not need a tools checkout, Go compiler or server connection to install a prebuilt CLI.
 - Products must install and run without a separate `tools` checkout or configuration. Compile shared libraries into product binaries; Go application authors import only the modules they need.
 - Keep product inventories, deployment hostnames and operational incident histories in the private `nicodes/docs` repository.
 - Accept product-specific settings through caller-owned inputs or policies. Use synthetic names, reserved example domains and loopback addresses in tests.

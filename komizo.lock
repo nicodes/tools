@@ -2,7 +2,7 @@
   "version": 1,
   "platform": "0.2.4",
   "platform_revision": "40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9",
-  "manifest_sha256": "5fe290efe1981ab2092cc27e48282c412599e9b8de40d40cbb72d1c01110034c",
+  "manifest_sha256": "28e0832c82b1c029f2dbbfc85b17a5d2c103eb86a8a798face92721334659706",
   "runtime_sha256": "000c1991c455b7e1269646e40c05ebf4a1b0717197c34838d2b7669430b3e862",
   "recipe_sha256": "a77022b354ffbf94c9dcf8c9208814204cca7b3aadf306fdec04817af761a1cc"
 }
