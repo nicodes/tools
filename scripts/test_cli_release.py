@@ -54,6 +54,20 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'incomplete'):
             release.validate(self.root, 'example')
 
+    def test_explicit_linux_support_preserves_default_mac_requirement(self):
+        self.payload()
+        for path in self.root.glob('*_Darwin_*.tar.gz'):
+            path.unlink()
+        self.rehash()
+        release.validate(self.root, 'example', platforms='linux')
+        with self.assertRaisesRegex(ValueError, 'incomplete'):
+            release.validate(self.root, 'example')
+
+    def test_invalid_or_empty_platform_declarations(self):
+        for platforms in ['', 'windows', 'linux,linux', 'linux,', ',darwin']:
+            with self.subTest(platforms=platforms), self.assertRaises(ValueError):
+                release.targets(platforms)
+
     def test_duplicate_checksum(self):
         self.payload()
         path = self.root / 'checksums.txt'

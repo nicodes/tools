@@ -18,6 +18,10 @@ name: Publish CLI
       tag:
         type: string
         required: true
+      platforms:
+        type: string
+        required: false
+        default: linux,darwin
     outputs:
       url:
         description: Published release URL
@@ -60,8 +64,9 @@ jobs:
         BINARY: ${{ inputs.binary }}
         TAG: ${{ inputs.tag }}
         EXTRA_FILES: ${{ inputs.extra-files }}
+        PLATFORMS: ${{ inputs.platforms }}
       run: |-
         set -euo pipefail
         python3 _cli_tools/scripts/cli_release.py publish --binary "$BINARY" --tag "$TAG" \
-          --source "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --extra-files "$EXTRA_FILES"
+          --source "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --extra-files "$EXTRA_FILES" --platforms "$PLATFORMS"
         printf 'url=https://github.com/%s/releases/tag/%s\n' "$GITHUB_REPOSITORY" "$TAG" >> "$GITHUB_OUTPUT"

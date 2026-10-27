@@ -40,6 +40,10 @@ name: Release CLI
         type: string
         required: false
         default: ''
+      platforms:
+        type: string
+        required: false
+        default: linux,darwin
     outputs:
       tag:
         description: Published version tag
@@ -112,10 +116,11 @@ jobs:
         MODULE_DIR: ${{ inputs.module-directory }}
         VERSION_SYMBOL: ${{ inputs.version-symbol }}
         REVISION_SYMBOL: ${{ inputs.revision-symbol }}
-      run: |-
+        PLATFORMS: ${{ inputs.platforms }}
+      run: |
         komizo exec --tools go -- python3 _cli_tools/scripts/cli_release.py build --binary "$BINARY" \
           --tag "$TAG" --source "$GITHUB_SHA" --package "$PACKAGE" --module-dir "$MODULE_DIR" \
-          --version-symbol "$VERSION_SYMBOL" --revision-symbol "$REVISION_SYMBOL"
+          --version-symbol "$VERSION_SYMBOL" --revision-symbol "$REVISION_SYMBOL" --platforms "$PLATFORMS"
     - name: Select previously verified archives
       if: inputs.prepared-assets != ''
       env:
@@ -129,7 +134,9 @@ jobs:
     - name: Verify complete release payload
       env:
         BINARY: ${{ inputs.binary }}
-      run: python3 _cli_tools/scripts/cli_release.py validate --binary "$BINARY"
+        PLATFORMS: ${{ inputs.platforms }}
+      run: |
+        python3 _cli_tools/scripts/cli_release.py validate --binary "$BINARY" --platforms "$PLATFORMS"
     - name: Attest build provenance
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
       with:
@@ -154,3 +161,4 @@ jobs:
       tag: ${{ needs.build.outputs.tag }}
       artifact-id: ${{ needs.build.outputs.artifact-id }}
       extra-files: ${{ inputs.extra-files }}
+      platforms: ${{ inputs.platforms }}
