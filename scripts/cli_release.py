@@ -175,14 +175,24 @@ def publish(directory, binary, tag, source, repo, extra_files=()):
     if os.environ.get('GITHUB_REF') != 'refs/heads/main' or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
         raise ValueError('publication requires an explicit main-branch dispatch')
     expected = validate(directory, binary, extra_files)
+    # The tag endpoint excludes drafts. Refuse draft identities as well, and
+    # inspect the new draft by its database ID after uploading its assets.
+    existing = run('gh', 'api', '--paginate', f'repos/{repo}/releases?per_page=100',
+                   '--jq', '.[].tag_name')
+    if tag in existing.splitlines():
+        raise ValueError('release identities must be new, including drafts')
     absent(repo, 'git/ref/tags/' + quote(tag, safe=''))
     absent(repo, 'releases/tags/' + quote(tag, safe=''))
     files = [str(Path(directory) / name) for name in expected]
     subprocess.run(['gh', 'release', 'create', tag, *files, '--repo', repo, '--target', source,
                     '--draft', '--title', tag, '--notes', 'Prebuilt CLI binaries from source ' + source + '.'], check=True)
-    uploaded = json.loads(run('gh', 'api', f'repos/{repo}/releases/tags/{quote(tag, safe="")}'))
+    release_id = run('gh', 'release', 'view', tag, '--repo', repo,
+                     '--json', 'databaseId', '--jq', '.databaseId')
+    if not re.fullmatch(r'[1-9][0-9]*', release_id):
+        raise ValueError('GitHub did not identify the uploaded draft')
+    uploaded = json.loads(run('gh', 'api', f'repos/{repo}/releases/{release_id}'))
     actual = {asset['name']: asset.get('digest') for asset in uploaded['assets']}
-    if (not uploaded['draft'] or uploaded['target_commitish'] != source
+    if (not uploaded['draft'] or uploaded['tag_name'] != tag or uploaded['target_commitish'] != source
             or actual != {name: 'sha256:' + digest for name, digest in expected.items()}):
         raise ValueError('uploaded draft differs from the verified payload; it remains unpublished')
     subprocess.run(['gh', 'release', 'edit', tag, '--repo', repo, '--draft=false'], check=True)
