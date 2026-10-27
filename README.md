@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 8112969729af0994759655aca0eccfef92aa8186916835365f5939d1df418948 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 1c75b6b03b4b48249d3b48d7115f635d55219fcc1f25ce708483177d5f0670da -->
 
 # tools
 
@@ -44,6 +44,6 @@ jobs:
       bump: ${{ inputs.bump }}
 ```
 
-The caller supplies a valid `komizo.json`/`komizo.lock` for its existing verification gate. Optional inputs select a Go module directory, Go version/revision string symbols, a tag prefix, or a directory of archives already built and checked by that gate. Repositories with additional acceptance requirements can retain those jobs and call `cli-publish.yml` with their accepted artifact ID, binary name, tag and pinned tools reference. Explicit `extra-files` select additional release assets.
+The caller supplies a valid `komizo.json`/`komizo.lock` for its existing verification gate. Optional inputs select supported platforms (`linux,darwin` by default), a Go module directory, Go version/revision string symbols, a tag prefix, or a directory of archives already built and checked by that gate. Repositories with additional acceptance requirements can retain those jobs and call `cli-publish.yml` with their accepted artifact ID, binary name, tag and pinned tools reference. Explicit `extra-files` select additional release assets.
 
 Publication requires an explicit dispatch from `main`. It refuses existing tags/releases, checks the complete archive matrix and SHA-256 checksums, stages a draft, verifies every uploaded asset digest, and publishes the draft only after the payload matches. Products own their versions, release assets, installer and additional acceptance checks. Installation does not require a tools checkout, a Go compiler or a server connection.
