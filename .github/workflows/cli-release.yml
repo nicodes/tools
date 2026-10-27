@@ -1,0 +1,156 @@
+name: Release CLI
+'on':
+  workflow_call:
+    inputs:
+      tools-ref:
+        type: string
+        required: true
+      binary:
+        type: string
+        required: true
+      extra-files:
+        type: string
+        required: false
+        default: ''
+      bump:
+        type: string
+        required: false
+        default: patch
+      tag-prefix:
+        type: string
+        required: false
+        default: v
+      main-package:
+        type: string
+        required: false
+        default: .
+      module-directory:
+        type: string
+        required: false
+        default: .
+      version-symbol:
+        type: string
+        required: false
+        default: ''
+      revision-symbol:
+        type: string
+        required: false
+        default: ''
+      prepared-assets:
+        type: string
+        required: false
+        default: ''
+    outputs:
+      tag:
+        description: Published version tag
+        value: ${{ jobs.build.outputs.tag }}
+      url:
+        description: Published release URL
+        value: ${{ jobs.publish.outputs.url }}
+permissions: {}
+jobs:
+  build:
+    name: Build release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      artifact-id: ${{ steps.assets.outputs.artifact-id }}
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+    - name: Validate release request
+      env:
+        TOOLS_REF: ${{ inputs.tools-ref }}
+      run: |-
+        set -euo pipefail
+        [[ "$TOOLS_REF" =~ ^[a-f0-9]{40}$ ]]
+        [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        ref: ${{ github.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Check out release tooling
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        repository: nicodes/tools
+        ref: ${{ inputs.tools-ref }}
+        path: _cli_tools
+        persist-credentials: false
+    - name: Determine release version
+      id: version
+      env:
+        BUMP: ${{ inputs.bump }}
+        PREFIX: ${{ inputs.tag-prefix }}
+      run: |-
+        set -euo pipefail
+        printf '/_cli_tools/\n' >> .git/info/exclude
+        python3 _cli_tools/scripts/cli_release.py version --bump "$BUMP" --prefix "$PREFIX"
+    - name: Set up locked verification tools
+      uses: nicodes/komizo/setup@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Check project
+      uses: nicodes/komizo/run@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      with:
+        target: check
+      env:
+        VERSION: ${{ steps.version.outputs.tag }}
+        COMMIT: ${{ github.sha }}
+    - name: Build portable binaries
+      if: inputs.prepared-assets == ''
+      env:
+        BINARY: ${{ inputs.binary }}
+        TAG: ${{ steps.version.outputs.tag }}
+        PACKAGE: ${{ inputs.main-package }}
+        MODULE_DIR: ${{ inputs.module-directory }}
+        VERSION_SYMBOL: ${{ inputs.version-symbol }}
+        REVISION_SYMBOL: ${{ inputs.revision-symbol }}
+      run: |-
+        komizo exec --tools go -- python3 _cli_tools/scripts/cli_release.py build --binary "$BINARY" \
+          --tag "$TAG" --source "$GITHUB_SHA" --package "$PACKAGE" --module-dir "$MODULE_DIR" \
+          --version-symbol "$VERSION_SYMBOL" --revision-symbol "$REVISION_SYMBOL"
+    - name: Select previously verified archives
+      if: inputs.prepared-assets != ''
+      env:
+        ASSETS: ${{ inputs.prepared-assets }}
+      run: |-
+        set -euo pipefail
+        mkdir release-assets
+        shopt -s nullglob
+        assets=("$ASSETS"/*.tar.gz "$ASSETS"/*.zip "$ASSETS"/checksums.txt)
+        cp -- "${assets[@]}" release-assets/
+    - name: Verify complete release payload
+      env:
+        BINARY: ${{ inputs.binary }}
+      run: python3 _cli_tools/scripts/cli_release.py validate --binary "$BINARY"
+    - name: Attest build provenance
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+      with:
+        subject-path: release-assets/*
+    - name: Upload accepted artifacts
+      id: assets
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: cli-release-${{ github.sha }}-${{ github.run_attempt }}
+        path: release-assets/
+        if-no-files-found: error
+        retention-days: 7
+  publish:
+    name: Publish release
+    needs: build
+    uses: ./.github/workflows/cli-publish.yml
+    permissions:
+      contents: write
+    with:
+      tools-ref: ${{ inputs.tools-ref }}
+      binary: ${{ inputs.binary }}
+      tag: ${{ needs.build.outputs.tag }}
+      artifact-id: ${{ needs.build.outputs.artifact-id }}
+      extra-files: ${{ inputs.extra-files }}
