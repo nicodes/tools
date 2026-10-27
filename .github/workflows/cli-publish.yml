@@ -36,11 +36,10 @@ jobs:
     - name: Validate source and tools identity
       env:
         TOOLS_REF: ${{ inputs.tools-ref }}
-      run: 'set -euo pipefail
-
+      run: |-
+        set -euo pipefail
         [[ "$TOOLS_REF" =~ ^[a-f0-9]{40}$ ]]
-
-        [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]'
+        [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
     - name: Check out release tooling
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -61,6 +60,8 @@ jobs:
         BINARY: ${{ inputs.binary }}
         TAG: ${{ inputs.tag }}
         EXTRA_FILES: ${{ inputs.extra-files }}
-      run: "set -euo pipefail\npython3 _cli_tools/scripts/cli_release.py publish --binary \"$BINARY\" --tag \"$TAG\"\
-        \ \\\n  --source \"$GITHUB_SHA\" --repo \"$GITHUB_REPOSITORY\" --extra-files \"$EXTRA_FILES\"\nprintf 'url=https://github.com/%s/releases/tag/%s\\\
-        n' \"$GITHUB_REPOSITORY\" \"$TAG\" >> \"$GITHUB_OUTPUT\""
+      run: |-
+        set -euo pipefail
+        python3 _cli_tools/scripts/cli_release.py publish --binary "$BINARY" --tag "$TAG" \
+          --source "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY" --extra-files "$EXTRA_FILES"
+        printf 'url=https://github.com/%s/releases/tag/%s\n' "$GITHUB_REPOSITORY" "$TAG" >> "$GITHUB_OUTPUT"

@@ -66,11 +66,10 @@ jobs:
     - name: Validate release request
       env:
         TOOLS_REF: ${{ inputs.tools-ref }}
-      run: 'set -euo pipefail
-
+      run: |-
+        set -euo pipefail
         [[ "$TOOLS_REF" =~ ^[a-f0-9]{40}$ ]]
-
-        [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]'
+        [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
     - name: Check out source
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
@@ -89,11 +88,10 @@ jobs:
       env:
         BUMP: ${{ inputs.bump }}
         PREFIX: ${{ inputs.tag-prefix }}
-      run: 'set -euo pipefail
-
-        printf ''/_cli_tools/\n'' >> .git/info/exclude
-
-        python3 _cli_tools/scripts/cli_release.py version --bump "$BUMP" --prefix "$PREFIX"'
+      run: |-
+        set -euo pipefail
+        printf '/_cli_tools/\n' >> .git/info/exclude
+        python3 _cli_tools/scripts/cli_release.py version --bump "$BUMP" --prefix "$PREFIX"
     - name: Set up locked verification tools
       uses: nicodes/komizo/setup@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
       env:
@@ -114,22 +112,20 @@ jobs:
         MODULE_DIR: ${{ inputs.module-directory }}
         VERSION_SYMBOL: ${{ inputs.version-symbol }}
         REVISION_SYMBOL: ${{ inputs.revision-symbol }}
-      run: "komizo exec --tools go -- python3 _cli_tools/scripts/cli_release.py build --binary \"$BINARY\" \\\n\
-        \  --tag \"$TAG\" --source \"$GITHUB_SHA\" --package \"$PACKAGE\" --module-dir \"$MODULE_DIR\" \\\n  --version-symbol\
-        \ \"$VERSION_SYMBOL\" --revision-symbol \"$REVISION_SYMBOL\""
+      run: |-
+        komizo exec --tools go -- python3 _cli_tools/scripts/cli_release.py build --binary "$BINARY" \
+          --tag "$TAG" --source "$GITHUB_SHA" --package "$PACKAGE" --module-dir "$MODULE_DIR" \
+          --version-symbol "$VERSION_SYMBOL" --revision-symbol "$REVISION_SYMBOL"
     - name: Select previously verified archives
       if: inputs.prepared-assets != ''
       env:
         ASSETS: ${{ inputs.prepared-assets }}
-      run: 'set -euo pipefail
-
+      run: |-
+        set -euo pipefail
         mkdir release-assets
-
         shopt -s nullglob
-
         assets=("$ASSETS"/*.tar.gz "$ASSETS"/*.zip "$ASSETS"/checksums.txt)
-
-        cp -- "${assets[@]}" release-assets/'
+        cp -- "${assets[@]}" release-assets/
     - name: Verify complete release payload
       env:
         BINARY: ${{ inputs.binary }}
