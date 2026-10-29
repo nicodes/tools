@@ -81,7 +81,7 @@ jobs:
           echo "refs=${refs# }" >> "$GITHUB_OUTPUT"
       - name: Preview up
         id: preview
-        uses: nicodes/komizo-actions/preview@ff3c1bb4650ba63c3a6191d8043662d5f0ad48b4 # v0.0.25 — pinned to the release's peeled commit SHA, never the annotated tag object
+        uses: nicodes/komizo-actions/preview@1569579a579116c5546cafbdac9a784873d91b87 # v0.0.25 — pinned to the release's peeled commit SHA, never the annotated tag object
         env:
           # The deploy-key SSH path, identical to the deploy composite's:
           # the composite cannot read the secrets context, so exactly these
@@ -173,7 +173,7 @@ jobs:
           done
           echo "refs=${refs# }" >> "$GITHUB_OUTPUT"
       - name: Preview down
-        uses: nicodes/komizo-actions/preview@ff3c1bb4650ba63c3a6191d8043662d5f0ad48b4 # v0.0.25 — pinned to the release's peeled commit SHA, never the annotated tag object
+        uses: nicodes/komizo-actions/preview@1569579a579116c5546cafbdac9a784873d91b87 # v0.0.25 — pinned to the release's peeled commit SHA, never the annotated tag object
         env:
           KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}
           KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}
