@@ -53,7 +53,7 @@ jobs:
         timeout-minutes: 3
       - name: Connect for the verified snapshot
         # Pin the transport action independently of the helper source.
-        uses: nicodes/komizo-actions/connect@b032fc88f82233f1c060e238bc60b2888a913490 # v0.0.11
+        uses: nicodes/komizo-actions/connect@6b1892c7a320a296ebda2d1a665b098657ceef5a # v0.0.11
         env:
           KOMIZO_SERVER_URL: "${{ inputs.server }}"
           KOMIZO_DEPLOY_KEY: "${{ secrets.KOMIZO_DEPLOY_KEY }}"
