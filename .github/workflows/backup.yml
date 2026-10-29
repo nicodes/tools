@@ -54,7 +54,7 @@ jobs:
         timeout-minutes: 3
       - name: "Connect to host"
         # Pin the transport action independently of the helper source.
-        uses: nicodes/komizo-actions/connect@66e672f5786688a5c5fbd492d35ec0009867a250 # v0.0.39
+        uses: nicodes/komizo-actions/connect@121ed71e76aa49c2f5471da11512a35e2a9022e7 # v0.0.39
         env:
           KOMIZO_SERVER_URL: "${{ inputs.server }}"
           KOMIZO_DEPLOY_KEY: "${{ secrets.KOMIZO_DEPLOY_KEY }}"
