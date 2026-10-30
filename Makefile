@@ -1,4 +1,4 @@
-.PHONY: check install lint unit build vuln
+.PHONY: check install lint unit build vuln integration
 
 check: install lint unit build vuln
 
@@ -27,3 +27,6 @@ build:
 
 vuln:
 	bash scripts/vuln.sh
+
+integration:
+	TOOLS_TEST_POSTGRES=1 python3 -m unittest discover -s tests -p test_postgres_recovery.py -v

@@ -52,6 +52,8 @@ jobs:
         include-hidden-files: true
     - name: Check libraries
       run: make check
+    - name: Verify disposable PostgreSQL recovery
+      run: make integration
     - name: Verify standalone CLI build and release preparation
       run: python3 tests/standalone_release.py
     - name: Verify operator boot directories
