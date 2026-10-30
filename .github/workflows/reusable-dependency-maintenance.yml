@@ -1,0 +1,57 @@
+name: Reusable Dependency Maintenance
+'on':
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller
+        type: string
+        required: false
+        default: ubuntu-24.04
+permissions:
+  contents: read
+jobs:
+  watch:
+    name: Check tool versions
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      issues: write
+      attestations: read
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+      timeout-minutes: 3
+    - name: Set up development tools
+      uses: nicodes/tools/setup@87da2fe9d430c67d15f62f603b07ba1ed40b5603
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 5
+    - name: Check tool versions
+      run: |
+        python3 "$TOOLS_ROOT"/helpers/watch-tools.py
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 12
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: tool-updates
+        path: .artifacts/tool-updates.json
+        if-no-files-found: ignore
+        retention-days: 30
+        include-hidden-files: true
+      timeout-minutes: 5
+    - name: Report failure
+      if: failure()
+      run: |
+        python3 "$TOOLS_ROOT"/helpers/report-failure.py
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 3
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}

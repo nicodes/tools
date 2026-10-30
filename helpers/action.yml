@@ -1,0 +1,14 @@
+name: Select CI helpers
+description: Expose the exact pinned helper source without installing caller SDKs
+runs:
+  using: composite
+  steps:
+    - name: Select reviewed helpers
+      shell: bash
+      env:
+        TOOLS_SOURCE: ${{ github.action_ref || github.sha }}
+        TOOLS_ACTION: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        [[ "$TOOLS_SOURCE" =~ ^[a-f0-9]{40}$ ]] || { echo 'Pin tools/helpers to a full source commit' >&2; exit 1; }
+        printf 'TOOLS_ROOT=%s\n' "$(cd "$TOOLS_ACTION/.." && pwd -P)" >> "$GITHUB_ENV"

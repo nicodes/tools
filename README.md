@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 0cea43b1e0eb8d4d2c03cafc995143170fdd824b50de0629c8c84687a691211e -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 97e53621de426b3940abd3717837c643e5b1024f525fd31f155fc88943826f47 -->
 
 # tools
 
@@ -24,6 +24,10 @@ Check out this repository at a reviewed full commit to use `helpers/integration-
 `nicodes/tools/dependencies@FULL_40_CHARACTER_COMMIT` inspects signed bot updates against the caller's protected `.github/dependency-policy.json`. Supply a new `output` report path and use `apply: 'true'` only from the trusted policy workflow. It verifies the bot commit, current required checks, integration tree and unchanged base/head before merging. It builds its metadata parser from the pinned action source and never loads the product's tool hooks or PR code.
 
 The recovery helpers accept caller-owned declarations and commands. The snapshot helper packages a product capture; the PostgreSQL helper retains ownership/ACL metadata; restore drills verify restoration in isolated disposable containers. Products supply database/image choices, role and data assertions, resource limits and retention policy. Transport helpers preserve conditioned creation, bounded responses and private credentials. The backup-store capability probe creates a uniquely named synthetic object only when explicitly invoked; it is never part of ordinary setup. Deployed-image scanning requires an explicit repository, image components and deployment environment in its scan declaration. Production host backup/restore authority and admission remain in the deployment system.
+
+Use the optional helpers action at a reviewed full commit to expose TOOLS_ROOT without installing SDKs. The runner supplies Python or other interpreters needed by the chosen helper. The setup action instead installs the caller's native SDK pins.
+
+Reusable dependency maintenance and security scanning live in tools. Security scanning requires a caller-owned source-command; deployed-image inspection is optional and uses the caller's explicit scan declaration. These workflows grant no host or OIDC authority. The optional setup-godot action caches reviewed archives and runs the caller-owned installer and checksum declaration.
 
 ## Source and release evidence
 

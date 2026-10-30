@@ -1,0 +1,21 @@
+name: Set up Godot
+description: Cache checksum-verified Godot archives and run the caller-owned tools/setup_godot.sh installer using tools/godot-release.json.
+inputs:
+  install-templates:
+    description: Install export templates as well as the editor binary; choose true or false.
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+  - name: Cache dependencies
+    uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+    with:
+      path: ${{ runner.temp }}/godot-downloads
+      key: godot-verified-v2-${{ runner.os }}-${{ hashFiles('tools/setup_godot.sh', 'tools/godot-release.json') }}
+  - name: Verify archives and install
+    shell: bash
+    env:
+      INSTALL_TEMPLATES: ${{ inputs.install-templates }}
+      GODOT_ARCHIVE_DIR: ${{ runner.temp }}/godot-downloads
+    run: bash tools/setup_godot.sh

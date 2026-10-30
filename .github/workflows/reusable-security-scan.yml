@@ -1,0 +1,100 @@
+name: Reusable Security Scan
+'on':
+  workflow_call:
+    inputs:
+      runner:
+        description: Runner label selected by the caller
+        type: string
+        required: false
+        default: ubuntu-24.04
+      scan-config:
+        description: Caller-owned deployed-image scan manifest
+        required: false
+        type: string
+        default: deploy/scan.json
+      source-command:
+        description: Caller-owned source verification command
+        type: string
+        required: true
+      scan-images:
+        description: Also inspect caller-declared deployed images
+        type: boolean
+        required: false
+        default: false
+permissions:
+  contents: read
+  packages: read
+  deployments: read
+jobs:
+  scan:
+    name: Scan dependencies
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 110
+    permissions:
+      contents: read
+      packages: read
+      deployments: read
+      attestations: read
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      timeout-minutes: 5
+      with:
+        persist-credentials: false
+    - name: Set up development tools
+      uses: nicodes/tools/setup@87da2fe9d430c67d15f62f603b07ba1ed40b5603
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 5
+    - name: Log in to container registry
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+      timeout-minutes: 3
+      if: inputs.scan-images
+    - name: Scan every source module
+      timeout-minutes: 30
+      run: bash -euo pipefail -c "$SOURCE_COMMAND"
+      env:
+        SOURCE_COMMAND: ${{ inputs.source-command }}
+    - name: Scan deployed runtime images
+      timeout-minutes: 45
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SCAN_CONFIG: ${{ inputs.scan-config }}
+      run: |
+        python3 "$TOOLS_ROOT/helpers/scan-deployed.py" --config "$SCAN_CONFIG"
+      if: inputs.scan-images
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+  report:
+    name: Report failure
+    needs:
+    - scan
+    if: failure()
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 11
+    permissions:
+      contents: read
+      issues: write
+      attestations: read
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Set up development tools
+      uses: nicodes/tools/setup@87da2fe9d430c67d15f62f603b07ba1ed40b5603
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 5
+    - name: Report failure
+      run: |
+        python3 "$TOOLS_ROOT"/helpers/report-failure.py
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 3
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
