@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 950c9046bb602862584bec73043799dd4dde799342873fad22e1ab1468fe63cb -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: c2d171fd6772559c6e9358cbc5d55c8817ce2ed28b31235d61c245d676f8c0b6 -->
 
 # tools
 
@@ -27,7 +27,7 @@ Check out this repository at a reviewed full commit to use `helpers/integration-
 
 The optional `tools-operator` CLI manages the protected engineering operator. It is separate from ordinary build/test setup and requires a root-owned authority policy before installation. Its releases use the `operator-v` tag prefix and the usual Linux/macOS archive names.
 
-After verifying a release archive's checksums and GitHub build attestation against this repository's `operator-release.yml` workflow and exact source revision, run:
+Before running the CLI, verify the archive checksum and GitHub attestation against this repository's `cli-release.yml` builder, binding both the signer and source digest to the exact release revision on `main`. Also require the verified certificate's `buildConfigURI` to name `operator-release.yml@refs/heads/main` and its `buildConfigDigest` to match that revision. Then run:
 
 ```sh
 sudo ./tools-operator plan

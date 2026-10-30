@@ -14,7 +14,8 @@ PATHS = {'fleet_operator.py': '/usr/local/libexec/fleet/fleet_operator.py',
          'fleet_broker.py': '/usr/local/libexec/fleet/fleet_broker.py',
          'fleet_publisher.py': '/usr/local/libexec/fleet/fleet_publisher.py',
          'fleet-operator.service': '/etc/systemd/system/fleet-operator.service',
-         'fleet-operator.socket': '/etc/systemd/system/fleet-operator.socket'}
+         'fleet-operator.socket': '/etc/systemd/system/fleet-operator.socket',
+         'fleet-operator.conf': '/etc/tmpfiles.d/fleet-operator.conf'}
 MAX_BYTES = 256 * 1024
 
 
@@ -161,6 +162,11 @@ class Installation:
             self.remove_old_socket(previous)
             for name, body in self.bundle.items():
                 atomic(self.files[name], body, self.owner, root=self.root)
+            # systemd establishes ReadWritePaths before the broker can create
+            # its own locks. tmpfiles handles boot; prepare this upgrade too.
+            locks = self.root/'run/lock/fleet-operator'
+            safe_directory(locks, self.owner, self.root)
+            os.chmod(locks, 0o700)
             self.control('daemon-reload')
             self.control('start', 'fleet-operator.socket')
             self.control('start', 'fleet-operator.service')

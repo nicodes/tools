@@ -54,3 +54,5 @@ jobs:
       run: make check
     - name: Verify standalone CLI build and release preparation
       run: python3 tests/standalone_release.py
+    - name: Verify operator boot directories
+      run: sudo /usr/bin/python3 tests/native_operator_boot.py

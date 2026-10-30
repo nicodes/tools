@@ -152,7 +152,8 @@ def checked_repository(policy, repository):
 def verification_path(path):
     parts = Path(path).parts
     name = Path(path).name
-    return (path.startswith(('.github/', 'tools/', 'scripts/', 'deploy/', 'fleet/', 'internal/operator/'))
+    return (path.startswith(('.github/', 'tools/', 'scripts/', 'deploy/', 'fleet/', 'internal/operator/',
+                             'operator/', 'helpers/', 'setup/', 'dependencies/'))
             or any(part in ('test', 'tests', '__tests__', 'testdata', 'fixtures', 'spec', 'specs')
                    for part in parts[:-1])
             or name in ('AGENTS.md', 'komizo.json', 'Makefile', 'mise.toml', '.mise.toml', 'mise.lock', '.gitmodules', 'Dockerfile',
