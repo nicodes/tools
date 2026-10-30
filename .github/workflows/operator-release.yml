@@ -1,0 +1,26 @@
+name: Release operator
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+permissions: {}
+concurrency: operator-release
+jobs:
+  release:
+    uses: ./.github/workflows/cli-release.yml
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    with:
+      tools-ref: ${{ github.sha }}
+      binary: tools-operator
+      main-package: ./cmd/tools-operator
+      module-directory: operator
+      version-symbol: main.version
+      tag-prefix: operator-v
+      check-command: make check
+      bump: ${{ inputs.bump }}

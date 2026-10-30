@@ -1,0 +1,38 @@
+name: Reconcile dependency updates
+description: Review or merge verified bot updates from protected caller policy without loading product code
+inputs:
+  apply:
+    description: Apply eligible updates after verifying current CI and immutable bot metadata
+    required: false
+    default: 'false'
+  output:
+    description: New report destination outside the checkout
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Set up metadata parser compiler
+      uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      with:
+        version: '2026.9.12'
+        working_directory: ${{ github.action_path }}/../operator
+        sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
+    - name: Reconcile verified bot updates
+      shell: bash
+      env:
+        TOOLS_ACTION: ${{ github.action_path }}
+        TOOLS_SOURCE: ${{ github.action_ref || github.sha }}
+        APPLY_UPDATES: ${{ inputs.apply }}
+        REPORT: ${{ inputs.output }}
+      run: |
+        set -euo pipefail
+        [[ "$TOOLS_SOURCE" =~ ^[a-f0-9]{40}$ ]]
+        [[ "$APPLY_UPDATES" == true || "$APPLY_UPDATES" == false ]]
+        test ! -e "$REPORT" && test ! -L "$REPORT"
+        stage="$(mktemp -d "$RUNNER_TEMP/dependency-policy.XXXXXXXX")"
+        trap 'rm -rf -- "$stage"' EXIT
+        GOWORK=off go -C "$TOOLS_ACTION/../operator" build -trimpath -o "$stage/tools-operator" ./cmd/tools-operator
+        export TOOLS_OPERATOR_EXECUTABLE="$stage/tools-operator"
+        arguments=(--output "$REPORT")
+        if [[ "$APPLY_UPDATES" == true ]]; then arguments+=(--apply); fi
+        /usr/bin/python3 -I "$TOOLS_ACTION/../helpers/dependency-reconcile.py" "${arguments[@]}"

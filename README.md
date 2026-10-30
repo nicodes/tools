@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: f880019d2caf3a81171ded29de1da4633dc9c8fb85ca701cc12eb8288d82dd64 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 950c9046bb602862584bec73043799dd4dde799342873fad22e1ab1468fe63cb -->
 
 # tools
 
@@ -17,7 +17,25 @@ Add the required module to your Go application with `go get`. For library develo
 
 ## CI helpers
 
+Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your product. It installs the tool versions in the product's `mise.toml` and exposes the reviewed helper directory as `TOOLS_ROOT`. Product Makefiles or scripts own the commands to run. The action supports Linux and macOS on x86_64 and arm64; it verifies the pinned mise executable before installation.
+
 Check out this repository at a reviewed full commit to use `helpers/integration-identity.py`. Run it from the product checkout with `EXPECTED_HEAD` set to the exact pull request head. It records the actual tested integration commit and raw parents in `.artifacts/fleet-integration.json`, refusing a checkout that does not contain the requested PR head as its second parent. Upload that file from the same job that performs verification. The helper also supports exact `main` delivery identity for push and manual dispatch events.
+
+`nicodes/tools/dependencies@FULL_40_CHARACTER_COMMIT` inspects signed bot updates against the caller's protected `.github/dependency-policy.json`. Supply a new `output` report path and use `apply: 'true'` only from the trusted policy workflow. It verifies the bot commit, current required checks, integration tree and unchanged base/head before merging. It builds its metadata parser from the pinned action source and never loads the product's tool hooks or PR code.
+
+## Protected operator
+
+The optional `tools-operator` CLI manages the protected engineering operator. It is separate from ordinary build/test setup and requires a root-owned authority policy before installation. Its releases use the `operator-v` tag prefix and the usual Linux/macOS archive names.
+
+After verifying a release archive's checksums and GitHub build attestation against this repository's `operator-release.yml` workflow and exact source revision, run:
+
+```sh
+sudo ./tools-operator plan
+sudo ./tools-operator apply --expected-plan REVIEWED_PLAN_SHA256
+sudo ./tools-operator status
+```
+
+`recover` restores a prepared installation after interruption. `export --directory NEW_ABSOLUTE_PATH` stages the embedded operator files without installing them. Installation preserves the protected policy and consumed grants. Application hosts independently enforce deployment admission; installing this optional operator does not grant access to a host.
 
 ## CLI releases
 
