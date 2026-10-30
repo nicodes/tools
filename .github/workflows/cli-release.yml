@@ -5,6 +5,10 @@ name: Release CLI
       tools-ref:
         type: string
         required: true
+      check-command:
+        description: Product-owned verification command, run before building or publishing
+        type: string
+        required: true
       binary:
         type: string
         required: true
@@ -96,17 +100,20 @@ jobs:
         set -euo pipefail
         printf '/_cli_tools/\n' >> .git/info/exclude
         python3 _cli_tools/scripts/cli_release.py version --bump "$BUMP" --prefix "$PREFIX"
-    - name: Set up locked verification tools
-      uses: nicodes/komizo/setup@2ca94e2fd4bb05f41bb228e9c366e5cc733c75e6
-      env:
-        GH_TOKEN: ${{ github.token }}
-    - name: Check project
-      uses: nicodes/komizo/run@2ca94e2fd4bb05f41bb228e9c366e5cc733c75e6
+    - name: Set up development tools
+      uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       with:
-        target: check
+        version: '2026.9.12'
+        sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
+    - name: Check project
       env:
+        CHECK_COMMAND: ${{ inputs.check-command }}
         VERSION: ${{ steps.version.outputs.tag }}
         COMMIT: ${{ github.sha }}
+      run: |-
+        set -euo pipefail
+        test -n "$CHECK_COMMAND"
+        bash -euo pipefail -c "$CHECK_COMMAND"
     - name: Build portable binaries
       if: inputs.prepared-assets == ''
       env:
@@ -118,7 +125,7 @@ jobs:
         REVISION_SYMBOL: ${{ inputs.revision-symbol }}
         PLATFORMS: ${{ inputs.platforms }}
       run: |
-        komizo exec --tools go -- python3 _cli_tools/scripts/cli_release.py build --binary "$BINARY" \
+        python3 _cli_tools/scripts/cli_release.py build --binary "$BINARY" \
           --tag "$TAG" --source "$GITHUB_SHA" --package "$PACKAGE" --module-dir "$MODULE_DIR" \
           --version-symbol "$VERSION_SYMBOL" --revision-symbol "$REVISION_SYMBOL" --platforms "$PLATFORMS"
     - name: Select previously verified archives
