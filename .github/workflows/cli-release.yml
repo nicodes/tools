@@ -84,7 +84,7 @@ jobs:
         ref: ${{ github.sha }}
         fetch-depth: 0
         persist-credentials: false
-    - name: Check out release tooling
+    - name: "Check out source"
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         repository: nicodes/tools
@@ -101,7 +101,7 @@ jobs:
         printf '/_cli_tools/\n' >> .git/info/exclude
         printf 'TOOLS_ROOT=%s/_cli_tools\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
         python3 _cli_tools/scripts/cli_release.py version --bump "$BUMP" --prefix "$PREFIX"
-    - name: Set up development tools
+    - name: "Set up tools"
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       with:
         version: '2026.9.12'
@@ -149,7 +149,7 @@ jobs:
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
       with:
         subject-path: release-assets/*
-    - name: Upload accepted artifacts
+    - name: "Upload artifacts"
       id: assets
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:

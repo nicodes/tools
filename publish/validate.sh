@@ -27,9 +27,9 @@ D='$'
 
 
 # Metadata `required: true` does not reject a missing composite-action input,
-# so required is checked at runtime too (see run-task/run.sh).
+# so required is checked at runtime too (see validate.sh).
 if [ -z "${PROJECT:-}" ]; then
-	echo '::error::project is empty. Pass the slug the images publish under, e.g. cazper.'
+	echo '::error::project is empty. Pass the slug the images publish under, e.g. mailroom.'
 	exit 1
 fi
 # The helper's own rule, checked early: ^[a-z][a-z0-9-]*$

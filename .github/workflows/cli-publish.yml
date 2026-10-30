@@ -44,14 +44,14 @@ jobs:
         set -euo pipefail
         [[ "$TOOLS_REF" =~ ^[a-f0-9]{40}$ ]]
         [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
-    - name: Check out release tooling
+    - name: "Check out source"
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         repository: nicodes/tools
         ref: ${{ inputs.tools-ref }}
         path: _cli_tools
         persist-credentials: false
-    - name: Download accepted artifacts
+    - name: "Download artifacts"
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
       with:
         artifact-ids: ${{ inputs.artifact-id }}
