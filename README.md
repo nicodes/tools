@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: c2d171fd6772559c6e9358cbc5d55c8817ce2ed28b31235d61c245d676f8c0b6 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 21064e2e161a3a7f3f7fd0aef34efc839039894f492c9a81dc190a8553fec768 -->
 
 # tools
 
@@ -22,6 +22,37 @@ Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your produ
 Check out this repository at a reviewed full commit to use `helpers/integration-identity.py`. Run it from the product checkout with `EXPECTED_HEAD` set to the exact pull request head. It records the actual tested integration commit and raw parents in `.artifacts/fleet-integration.json`, refusing a checkout that does not contain the requested PR head as its second parent. Upload that file from the same job that performs verification. The helper also supports exact `main` delivery identity for push and manual dispatch events.
 
 `nicodes/tools/dependencies@FULL_40_CHARACTER_COMMIT` inspects signed bot updates against the caller's protected `.github/dependency-policy.json`. Supply a new `output` report path and use `apply: 'true'` only from the trusted policy workflow. It verifies the bot commit, current required checks, integration tree and unchanged base/head before merging. It builds its metadata parser from the pinned action source and never loads the product's tool hooks or PR code.
+
+## Source and release evidence
+
+The optional `helpers/verification.py` wraps a command chosen by the product. It records the source and input digest, exact build outputs, public workflow identifiers and completed tests in `.artifacts/verification`. It installs no SDKs and defines no tasks. For example:
+
+```sh
+python3 "$TOOLS_ROOT/helpers/verification.py" build --artifact dist -- make build
+python3 "$TOOLS_ROOT/helpers/verification.py" session --test unit -- \
+  python3 "$TOOLS_ROOT/helpers/verification.py" test --name unit --artifact dist -- make unit
+```
+
+Every required test must complete within the same session. Stale receipts, changed source inputs, linked artifacts and conflicting production build variants or revision inputs are refused. Declare relevant environment variable names with `--environment` and revision variable names with `--revision-environment`; their values contribute to the input digest and are never written to receipts. Local edits can be checked, and receipts identify whether tracked source was clean.
+
+Container publishers use `helpers/release.py` to record and publish the exact images checked by their Build job. They own a tracked `deploy/release.json` artifact definition:
+
+```json
+{
+  "version": 1,
+  "project": "example",
+  "image_base": "ghcr.io/example/example",
+  "tests": ["unit", "integration"],
+  "inputs": {
+    "artifacts": [".artifacts/release"],
+    "images": ["ghcr.io/example/example-api:{revision}"],
+    "environment": [],
+    "revision_environment": []
+  }
+}
+```
+
+Pass `--definition deploy/release.json` to verification commands instead of individual input flags. The definition contains output selectors and required tests; product task commands and SDK pins stay in native configuration. An optional `stateful_contract` names the product's tracked data compatibility declaration. Publication retains immutable image IDs, archive hashes, clean source and same-run test checks. Stateful declarations alone cannot authorize automatic image rollback. Ordinary library, CLI and static builds need no release definition or deployment configuration.
 
 ## Protected operator
 
