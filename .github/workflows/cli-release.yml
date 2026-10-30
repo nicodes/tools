@@ -99,6 +99,7 @@ jobs:
       run: |-
         set -euo pipefail
         printf '/_cli_tools/\n' >> .git/info/exclude
+        printf 'TOOLS_ROOT=%s/_cli_tools\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
         python3 _cli_tools/scripts/cli_release.py version --bump "$BUMP" --prefix "$PREFIX"
     - name: Set up development tools
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
