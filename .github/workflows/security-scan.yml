@@ -22,12 +22,10 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-    - name: Set up locked komizo
-      uses: nicodes/komizo/setup@2ca94e2fd4bb05f41bb228e9c366e5cc733c75e6
-      env:
-        GH_TOKEN: ${{ github.token }}
+    - name: Set up development tools
+      uses: ./setup
       timeout-minutes: 5
     - name: Security Scan
-      run: komizo run install vuln
+      run: make install vuln
       env:
         GH_TOKEN: ${{ github.token }}

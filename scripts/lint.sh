@@ -2,4 +2,5 @@
 set -euo pipefail
 actionlint
 shellcheck scripts/*.sh
-test -z "$(gofmt -l sessionauth pgbudget)"
+shellcheck -s sh helpers/*.sh
+test -z "$(gofmt -l sessionauth pgbudget operator)"
