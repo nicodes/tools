@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 76fa2aa87a699533f102ba537cb1a5ff95af12270dcc6c12a1e39b53c64f9ea8 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 6ff3d94defb552b764be617248909e4f6b65d3831b85cbef689b04805a9035d5 -->
 
 # tools
 
@@ -66,6 +66,8 @@ python3 "$TOOLS_ROOT/helpers/dev.py" run --state .artifacts/dev -- \
 Install the optional [ghenv](https://github.com/nicodes/ghenv) CLI for credential isolation. `ghenv local` needs no account or remote credentials; `ghenv dev --config ghenv.json` applies the product's explicit local or Preview credential policy. Products own setup commands and credential selection. The static-site helper keeps supported Astro development scripts in the foreground and preserves caller arguments and exit status.
 
 Use `dev.py stop --state .artifacts/dev` to stop that checkout. `dev.py clean --state .artifacts/dev -- COMMAND` refuses cleanup while its session is active. A run can supply `--cleanup '["ghenv","local","--","bash","scripts/stop.sh"]'` before `--` to execute caller-owned cleanup after its descendants exit, while retaining the lease. Cleanup commands own their environment and resource selection.
+
+For dependency preparation before credential selection, supply an isolated explicit command with `--prepare '["ghenv","local","--","mise","run","install"]'` and repeat `--policy-input` for the product's native task and credential policy files. The supervisor acquires the checkout lease first and refuses application launch if those files or the source revision change during preparation.
 
 `helpers/auth-boundary.mjs` is an optional source check for products that choose its Clerk environment rules. Import `checkAuthBoundary(root, policy)` from product tests, or run `bun "$TOOLS_ROOT/helpers/auth-boundary.mjs" --policy AUTH_POLICY.json` with an explicit object such as `{"provider":"clerk","api":true}`. It reads no deployment configuration. Provider choice, runtime authorization and authentication acceptance tests remain product-owned.
 

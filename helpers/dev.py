@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -122,11 +123,30 @@ def checkout_lease(root):
         yield
 
 
+def policy_identity(root, names):
+    if not 1 <= len(names) <= 128:
+        raise RuntimeError('preparation requires explicit bounded source policy inputs')
+    result={}
+    for name in names:
+        relative=Path(name)
+        path=root/relative
+        if relative.is_absolute() or '..' in relative.parts or path.is_symlink() or any(p.is_symlink() for p in path.parents):
+            raise RuntimeError('development policy input must be caller-owned source')
+        info=path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size>1<<20:
+            raise RuntimeError('development policy input must be a bounded regular file')
+        result[name]=hashlib.sha256(path.read_bytes()).hexdigest()
+    result['HEAD']=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True,timeout=10).strip()
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['run', 'stop', 'clean'])
     parser.add_argument('--state', default='.local/dev')
     parser.add_argument('--cleanup', type=json.loads, help='explicit cleanup argv, run after owned descendants exit')
+    parser.add_argument('--prepare', type=json.loads, help='explicit isolated preparation argv, before launching the session')
+    parser.add_argument('--policy-input', action='append', default=[], help='caller-owned source to revalidate after preparation')
     options, command = sys.argv[1:], []
     if '--' in options:
         separator = options.index('--')
@@ -143,8 +163,9 @@ def main():
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     if state.stat().st_uid != os.getuid() or state.stat().st_mode & 0o077:
         raise RuntimeError('development state must be owned by this user and mode 0700')
-    if args.cleanup is not None and (not isinstance(args.cleanup,list) or not 1<=len(args.cleanup)<=64 or any(not isinstance(v,str) or not v or '\0' in v for v in args.cleanup)):
-        parser.error('cleanup must be a bounded explicit argv list')
+    for value in (args.cleanup,args.prepare):
+        if value is not None and (not isinstance(value,list) or not 1<=len(value)<=64 or any(not isinstance(v,str) or not v or '\0' in v for v in value)):
+            parser.error('preparation and cleanup must be bounded explicit argv lists')
     os.chdir(state)  # Relative Unix socket names also work in long checkout paths.
     if args.operation == 'stop':
         try:
@@ -164,6 +185,11 @@ def main():
         if args.operation == 'clean':
             subprocess.run(command,cwd=root,check=True)
             return
+        if args.prepare:
+            before=policy_identity(root,args.policy_input)
+            subprocess.run(args.prepare,cwd=root,check=True,timeout=1800)
+            if policy_identity(root,args.policy_input)!=before:
+                raise RuntimeError('development policy changed during preparation; review it before launch')
         Path('control.sock').unlink(missing_ok=True)
         token = secrets.token_hex(32)
         Path('token').write_text(token)

@@ -12,6 +12,22 @@ SCRIPT = str(Path(__file__).parents[1]/'helpers/dev.py')
 
 
 class OwnedDevelopment(unittest.TestCase):
+    def test_preparation_cannot_change_policy_before_the_application_launches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            subprocess.run(['git','init','-q',directory],check=True)
+            (root/'ghenv.json').write_text('reviewed policy')
+            subprocess.run(['git','add','.'],cwd=root,check=True)
+            subprocess.run(['git','-c','user.name=Fixture','-c','user.email=fixture@example.com',
+                            '-c','commit.gpgsign=false','commit','-qm','Fixture'],cwd=root,check=True)
+            prepare=[sys.executable,'-c',"from pathlib import Path;Path('ghenv.json').write_text('changed policy')"]
+            result=subprocess.run([sys.executable,SCRIPT,'run','--prepare',json.dumps(prepare),
+                                   '--policy-input','ghenv.json','--',sys.executable,'-c',
+                                   "from pathlib import Path;Path('application').touch()"],cwd=root,capture_output=True,text=True,timeout=5)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('policy changed during preparation',result.stderr)
+            self.assertFalse((root/'application').exists())
+
     def test_cleanup_keeps_checkout_lease_after_removing_runtime_state(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
