@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 21064e2e161a3a7f3f7fd0aef34efc839039894f492c9a81dc190a8553fec768 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 76fa2aa87a699533f102ba537cb1a5ff95af12270dcc6c12a1e39b53c64f9ea8 -->
 
 # tools
 
@@ -53,6 +53,21 @@ Container publishers use `helpers/release.py` to record and publish the exact im
 ```
 
 Pass `--definition deploy/release.json` to verification commands instead of individual input flags. The definition contains output selectors and required tests; product task commands and SDK pins stay in native configuration. An optional `stateful_contract` names the product's tracked data compatibility declaration. Publication retains immutable image IDs, archive hashes, clean source and same-run test checks. Stateful declarations alone cannot authorize automatic image rollback. Ordinary library, CLI and static builds need no release definition or deployment configuration.
+
+## Development sessions and optional auth checks
+
+`helpers/dev.py` owns one Git checkout's foreground process tree and authenticated local stop socket. Its Git lease remains held through descendant shutdown and explicit cleanup, even when cleanup removes runtime output. It never discovers shutdown targets by port or command name. For an offline static-site session with parent credentials removed:
+
+```sh
+python3 "$TOOLS_ROOT/helpers/dev.py" run --state .artifacts/dev -- \
+  ghenv local -- python3 "$TOOLS_ROOT/helpers/static-site.py"
+```
+
+Install the optional [ghenv](https://github.com/nicodes/ghenv) CLI for credential isolation. `ghenv local` needs no account or remote credentials; `ghenv dev --config ghenv.json` applies the product's explicit local or Preview credential policy. Products own setup commands and credential selection. The static-site helper keeps supported Astro development scripts in the foreground and preserves caller arguments and exit status.
+
+Use `dev.py stop --state .artifacts/dev` to stop that checkout. `dev.py clean --state .artifacts/dev -- COMMAND` refuses cleanup while its session is active. A run can supply `--cleanup '["ghenv","local","--","bash","scripts/stop.sh"]'` before `--` to execute caller-owned cleanup after its descendants exit, while retaining the lease. Cleanup commands own their environment and resource selection.
+
+`helpers/auth-boundary.mjs` is an optional source check for products that choose its Clerk environment rules. Import `checkAuthBoundary(root, policy)` from product tests, or run `bun "$TOOLS_ROOT/helpers/auth-boundary.mjs" --policy AUTH_POLICY.json` with an explicit object such as `{"provider":"clerk","api":true}`. It reads no deployment configuration. Provider choice, runtime authorization and authentication acceptance tests remain product-owned.
 
 ## Protected operator
 
