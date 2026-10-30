@@ -1,0 +1,130 @@
+name: "Publish"
+description: >
+  The whole publish, in one step: log in to ghcr.io and push exactly the images
+  the Build gate recorded — through the project's own vendored release helper.
+
+  The job this replaces was hand-rolled in every product repository: a
+  docker/login-action step pinned at whatever SHA that repo last copy-pasted,
+  then a run of the vendored release helper. Both halves drift on their own —
+  the login pin skews across the fleet (one repository on one commit of
+  login-action, another on a different one, with nothing saying so, and none of
+  them watched), and each hand-rolled invocation is its own small deploy script
+  to keep correct. Moving the step here internalizes the pin: one ref, bumped
+  once for the whole fleet, covered by this repository's Dependabot, inherited
+  by every product the moment it bumps its `uses:`.
+
+  The helper is selected from this pinned tools action source. It rechecks the
+  caller's release declaration, loaded image archive, source and same-run tests.
+  The caller checks out the exact publishing revision and supplies its checked
+  artifact under .artifacts/release/, or selects an artifact-name to download.
+
+  Registry credentials mirror deploy@: username and the run-scoped
+  GITHUB_TOKEN. The token is never echoed and never interpolated into shell
+  source; it travels as an input to the login step, and the one place that
+  inspects it — the non-empty check in validate.sh, because GitHub substitutes
+  an empty string for a secret that does not exist — reads it without printing
+  it.
+
+inputs:
+  # --- what to publish -------------------------------------------------------
+  project:
+    description: >
+      Project slug, e.g. cazper — the <project> in
+      ghcr.io/<owner>/<project>-<component>. Lowercase letters, digits and
+      hyphens, starting with a letter. The helper enforces the same shape;
+      failing it here costs one failed step rather than a registry login that
+      happened on the way to finding out.
+    required: true
+  image-base:
+    description: Explicit registry repository prefix; required with the tools release helper
+    required: false
+    default: ''
+  revision:
+    description: >
+      Full 40-hex commit SHA being released. A short SHA will not do: it is the
+      image tag, so anything shorter publishes images nothing can address
+      deterministically. Must match the checked-out HEAD — the helper refuses
+      the mismatch, which is its check to make.
+    required: true
+  components:
+    description: >
+      Distinct lowercase image component names. The caller declares the set;
+      the helper binds it to recorded image identities and the archive.
+    required: true
+
+  # --- registry --------------------------------------------------------------
+  registry-user:
+    description: Registry username, normally the repository owner.
+    required: false
+    default: ""
+  registry-token:
+    description: >
+      Registry password. Prefer the run-scoped GITHUB_TOKEN so nothing
+      long-lived is left behind. Checked non-empty without being echoed.
+    required: false
+    default: ""
+
+  # --- inputs with defaults --------------------------------------------------
+  artifact-name:
+    description: >
+      Name of the Build job's artifact, e.g. release-<sha>. When set, it is
+      downloaded to .artifacts/release/ before anything else runs. Leave empty
+      when the artifact is already on disk there — the helper's default
+      directory is that path, so both forms reach it unchanged.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Everything this action alone can check, checked before anything is
+    # downloaded or the registry is logged into — so a misconfiguration costs a
+    # failed step rather than a publish that half-happened. A file rather than
+    # an inline block so a test can drive it over the whole input matrix; see
+    # tests/publish-inputs.test.sh.
+    - name: Validate inputs
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        IMAGE_BASE: ${{ inputs.image-base }}
+        REVISION: ${{ inputs.revision }}
+        COMPONENTS: ${{ inputs.components }}
+        REGISTRY_USER: ${{ inputs.registry-user }}
+        REGISTRY_TOKEN: ${{ inputs.registry-token }}
+        ARTIFACT_NAME: ${{ inputs.artifact-name }}
+        HELPER: ${{ github.action_path }}/../helpers/release.py
+      run: bash "$GITHUB_ACTION_PATH/validate.sh"
+
+    # The Build gate's evidence, fetched only when it is not already on disk.
+    # The path is the helper's default directory, so the download and the
+    # invocation agree without a second knob.
+    - name: "Download artifacts"
+      if: inputs.artifact-name != ''
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: .artifacts/release/
+
+    # The internalized pin. Every product used to carry this step — each at
+    # whatever SHA it had last pasted, none of them watched. Here it is one
+    # ref, named for its version, covered by this repository's Dependabot.
+    - name: "Log in to container registry"
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.registry-user }}
+        password: ${{ inputs.registry-token }}
+
+    # The invocation every product hand-rolled, once, in one place. A file
+    # rather than an inline block so a test can pin the exact argv it builds —
+    # that argv is the contract the fleet has been keeping by copy-paste until
+    # now.
+    - name: Publish the validated images
+      shell: bash
+      env:
+        PROJECT: ${{ inputs.project }}
+        IMAGE_BASE: ${{ inputs.image-base }}
+        REVISION: ${{ inputs.revision }}
+        COMPONENTS: ${{ inputs.components }}
+        HELPER: ${{ github.action_path }}/../helpers/release.py
+      run: bash "$GITHUB_ACTION_PATH/run.sh"
