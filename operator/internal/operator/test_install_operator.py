@@ -14,6 +14,20 @@ module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 
 class InstallationTests(unittest.TestCase):
+    def test_upgrade_prepares_private_runtime_locks_before_service_namespace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installation,calls,_=self.fixture(directory,True)
+            def control(*args):
+                calls.append(args)
+                if args == ('start','fleet-operator.service'):
+                    locks=installation.root/'run/lock/fleet-operator'
+                    self.assertTrue(locks.is_dir())
+                    self.assertEqual(locks.stat().st_mode & 0o777,0o700)
+            installation.control=control
+            installation.apply(installation.plan()['plan_sha256'])
+            self.assertEqual((installation.root/'etc/tmpfiles.d/fleet-operator.conf').read_bytes(),
+                             installation.bundle['fleet-operator.conf'])
+
     def fixture(self, directory, old=False):
         root=Path(directory)
         (root/'etc').mkdir()

@@ -22,5 +22,5 @@ jobs:
       module-directory: operator
       version-symbol: main.version
       tag-prefix: operator-v
-      check-command: make check
+      check-command: make check && sudo /usr/bin/python3 tests/native_operator_boot.py
       bump: ${{ inputs.bump }}
