@@ -6,7 +6,9 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import socket
 import stat
+import struct
 import subprocess
 import tempfile
 
@@ -83,6 +85,25 @@ def service(*arguments):
                             env={'PATH': '/usr/bin:/bin', 'LC_ALL': 'C'}, timeout=20)
     if result.returncode:
         raise ValueError('operator service transition refused; inspect installed status')
+    if arguments == ('is-active', 'fleet-operator.socket', 'fleet-operator.service'):
+        # A queued activation socket is insufficient: require the protected
+        # broker to answer, without selecting or consuming any grant.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(10)
+            client.connect('/run/fleet-operator/operator.sock')
+            _, uid, _ = struct.unpack('3i', client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if uid != 0:
+                raise ValueError('operator endpoint is not root owned')
+            client.sendall(b'{}')
+            client.shutdown(socket.SHUT_WR)
+            reply = bytearray()
+            while len(reply) <= 1024:
+                chunk = client.recv(1025 - len(reply))
+                if not chunk:
+                    break
+                reply.extend(chunk)
+            if json.loads(reply) != {'ok': False, 'reason': 'operator refused or interrupted; inspect the protected receipt'}:
+                raise ValueError('operator broker did not answer its readiness request')
 
 
 class Installation:
@@ -164,7 +185,7 @@ class Installation:
                 atomic(self.files[name], body, self.owner, root=self.root)
             # systemd establishes ReadWritePaths before the broker can create
             # its own locks. tmpfiles handles boot; prepare this upgrade too.
-            locks = self.root/'run/lock/fleet-operator'
+            locks = self.root/'run/fleet-operator-locks'
             safe_directory(locks, self.owner, self.root)
             os.chmod(locks, 0o700)
             self.control('daemon-reload')
