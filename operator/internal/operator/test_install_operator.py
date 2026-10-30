@@ -17,16 +17,32 @@ class InstallationTests(unittest.TestCase):
     def test_upgrade_prepares_private_runtime_locks_before_service_namespace(self):
         with tempfile.TemporaryDirectory() as directory:
             installation,calls,_=self.fixture(directory,True)
+            shared=installation.root/'run/lock'
+            shared.mkdir(parents=True)
+            shared.chmod(0o1777)
             def control(*args):
                 calls.append(args)
                 if args == ('start','fleet-operator.service'):
-                    locks=installation.root/'run/lock/fleet-operator'
+                    locks=installation.root/'run/fleet-operator-locks'
                     self.assertTrue(locks.is_dir())
                     self.assertEqual(locks.stat().st_mode & 0o777,0o700)
             installation.control=control
             installation.apply(installation.plan()['plan_sha256'])
+            self.assertEqual(shared.stat().st_mode & 0o7777,0o1777)
             self.assertEqual((installation.root/'etc/tmpfiles.d/fleet-operator.conf').read_bytes(),
                              installation.bundle['fleet-operator.conf'])
+
+    def test_runtime_lock_directory_cannot_be_redirected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            installation,calls,grant=self.fixture(directory,True)
+            target=installation.root/'run/fleet-operator-locks'
+            target.parent.mkdir(parents=True)
+            target.symlink_to(installation.state,target_is_directory=True)
+            before=installation.plan()
+            with self.assertRaises(ValueError):
+                installation.apply(before['plan_sha256'])
+            self.assertEqual(installation.plan()['before'],before['before'])
+            self.assertEqual(grant.read_text(),'synthetic claimed grant')
 
     def fixture(self, directory, old=False):
         root=Path(directory)
