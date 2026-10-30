@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 6ff3d94defb552b764be617248909e4f6b65d3831b85cbef689b04805a9035d5 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 0cea43b1e0eb8d4d2c03cafc995143170fdd824b50de0629c8c84687a691211e -->
 
 # tools
 
@@ -22,6 +22,8 @@ Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your produ
 Check out this repository at a reviewed full commit to use `helpers/integration-identity.py`. Run it from the product checkout with `EXPECTED_HEAD` set to the exact pull request head. It records the actual tested integration commit and raw parents in `.artifacts/fleet-integration.json`, refusing a checkout that does not contain the requested PR head as its second parent. Upload that file from the same job that performs verification. The helper also supports exact `main` delivery identity for push and manual dispatch events.
 
 `nicodes/tools/dependencies@FULL_40_CHARACTER_COMMIT` inspects signed bot updates against the caller's protected `.github/dependency-policy.json`. Supply a new `output` report path and use `apply: 'true'` only from the trusted policy workflow. It verifies the bot commit, current required checks, integration tree and unchanged base/head before merging. It builds its metadata parser from the pinned action source and never loads the product's tool hooks or PR code.
+
+The recovery helpers accept caller-owned declarations and commands. The snapshot helper packages a product capture; the PostgreSQL helper retains ownership/ACL metadata; restore drills verify restoration in isolated disposable containers. Products supply database/image choices, role and data assertions, resource limits and retention policy. Transport helpers preserve conditioned creation, bounded responses and private credentials. The backup-store capability probe creates a uniquely named synthetic object only when explicitly invoked; it is never part of ordinary setup. Deployed-image scanning requires an explicit repository, image components and deployment environment in its scan declaration. Production host backup/restore authority and admission remain in the deployment system.
 
 ## Source and release evidence
 
