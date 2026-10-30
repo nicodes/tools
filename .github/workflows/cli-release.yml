@@ -97,11 +97,11 @@ jobs:
         printf '/_cli_tools/\n' >> .git/info/exclude
         python3 _cli_tools/scripts/cli_release.py version --bump "$BUMP" --prefix "$PREFIX"
     - name: Set up locked verification tools
-      uses: nicodes/komizo/setup@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      uses: nicodes/komizo/setup@2ca94e2fd4bb05f41bb228e9c366e5cc733c75e6
       env:
         GH_TOKEN: ${{ github.token }}
     - name: Check project
-      uses: nicodes/komizo/run@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      uses: nicodes/komizo/run@2ca94e2fd4bb05f41bb228e9c366e5cc733c75e6
       with:
         target: check
       env:
