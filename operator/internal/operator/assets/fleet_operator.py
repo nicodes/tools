@@ -23,7 +23,7 @@ import time
 import zipfile
 
 POLICY = Path('/etc/fleet-operator.json')
-LOCKS = Path('/var/lock/fleet-operator')
+LOCKS = Path('/run/fleet-operator-locks')
 SHA = re.compile(r'[a-f0-9]{40}\Z')
 REPOSITORY = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z')
 MAX_BYTES = 65536
