@@ -29,7 +29,7 @@ inputs:
   # --- what to publish -------------------------------------------------------
   project:
     description: >
-      Project slug, e.g. cazper — the <project> in
+      Project slug, e.g. mailroom — the <project> in
       ghcr.io/<owner>/<project>-<component>. Lowercase letters, digits and
       hyphens, starting with a letter. The helper enforces the same shape;
       failing it here costs one failed step rather than a registry login that

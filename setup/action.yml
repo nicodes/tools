@@ -1,4 +1,4 @@
-name: Set up development tools
+name: "Set up"
 description: Install caller-owned mise tools and expose helpers from the pinned action source
 inputs:
   directory:
@@ -8,7 +8,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Set up pinned tool manager
+    - name: "Set up tools"
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       with:
         version: '2026.9.12'

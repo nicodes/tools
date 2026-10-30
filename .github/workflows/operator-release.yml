@@ -10,6 +10,7 @@ permissions: {}
 concurrency: operator-release
 jobs:
   release:
+    name: "Release"
     uses: ./.github/workflows/cli-release.yml
     permissions:
       contents: write
