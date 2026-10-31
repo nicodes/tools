@@ -18,7 +18,7 @@ compiler_environment['GOFLAGS'] = os.environ.get('GOFLAGS', '') + ' -buildvcs=fa
 selected_version = subprocess.check_output([str(Path(go_root)/'bin/go'), 'version'], text=True).split()[2]
 with tempfile.TemporaryDirectory(prefix='caddy-engineering-') as directory:
     root = Path(directory)
-    for original, target in [('caddy.go.mod', 'go.mod'), ('caddy.go.sum', 'go.sum'), ('caddy-main.go', 'main.go')]:
+    for original, target in [('caddy.go.mod', 'go.mod'), ('caddy.go.sum', 'go.sum')]:
         shutil.copyfile(source/original, root/target)
     subprocess.run(['sh', str(source/'caddy-build.sh'), '--test'], cwd=root, env=compiler_environment, check=True, timeout=900)
     built_version = subprocess.check_output([str(Path(go_root)/'bin/go'), 'version', '-m', str(root/'caddy')],

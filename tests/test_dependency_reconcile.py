@@ -23,8 +23,12 @@ def setUpModule():
     global _directory, _environment
     _directory = tempfile.TemporaryDirectory()
     executable = str(Path(_directory.name)/'tools-operator')
-    source = Path(__file__).resolve().parents[1]/'operator'
-    subprocess.run(['go', 'build', '-o', executable, './cmd/tools-operator'], cwd=source, check=True, capture_output=True, timeout=120)
+    source = Path(__file__).resolve().parents[1]
+    subprocess.run(['cargo', 'build', '--locked', '-p', 'tools-operator'], cwd=source, check=True, capture_output=True, timeout=120)
+    import shutil
+    target = Path(os.environ.get('CARGO_TARGET_DIR', source/'target')).resolve()
+    shutil.copyfile(target/'debug/tools-operator', executable)
+    Path(executable).chmod(0o700)
     _environment = patch.dict(os.environ, {'TOOLS_OPERATOR_EXECUTABLE':executable})
     _environment.start()
 

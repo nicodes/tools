@@ -16,10 +16,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  native-operator:
+    name: Native operator
+    uses: ./.github/workflows/operator-native.yml
   test:
     name: Test
+    needs: native-operator
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 45
     permissions:
       contents: read
       attestations: read
@@ -50,8 +54,18 @@ jobs:
         if-no-files-found: error
         retention-days: 7
         include-hidden-files: true
+    - name: Download native operator archives
+      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+      with:
+        pattern: operator-native-*
+        path: .artifacts/native-operator
+        merge-multiple: true
+    - name: Verify complete native operator set
+      run: python3 scripts/operator_package.py assemble
     - name: Check libraries
       run: make check
+    - name: Verify locked upstream Caddy build and linked symbols
+      run: python3 helpers/test-caddy.py
     - name: Verify disposable PostgreSQL recovery
       run: make integration
     - name: Verify standalone CLI build and release preparation

@@ -1,0 +1,15 @@
+[package]
+name = "pgbudget"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+publish = false
+
+[dependencies]
+regex = "1.13.1"
+tokio = { version = "1.54.1", features = ["time", "macros"] }
+
+tokio-util = { version = "0.7.20", features = ["rt"] }
+
+[dev-dependencies]
+tokio = { version = "1.54.1", features = ["macros", "rt", "time"] }

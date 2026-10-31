@@ -73,41 +73,8 @@ updates:
       - github.com/jackc/pgx/*
       - github.com/go-sql-driver/mysql
       - go.mongodb.org/mongo-driver/*
-- package-ecosystem: gomod
-  directory: /sessionauth
-  schedule:
-    interval: weekly
-    time: "09:08"
-  open-pull-requests-limit: 5
-  groups:
-    security-fixes:
-      applies-to: security-updates
-      patterns:
-      - '*'
-      exclude-patterns:
-      - aviorstudio/gdam-actions/*
-      - nicodes/komizo-actions/*
-      - nicodes/komizo/*
-      - '*clerk*'
-      - '*pocketbase*'
-      - '*crypto*'
-      - '*jsonwebtoken*'
-      - '*jose*'
-      - '*oauth*'
-      - '*openid*'
-      - '*passport*'
-      - '*bcrypt*'
-      - '*argon2*'
-      - '@noble/*'
-      - '*prisma*'
-      - '*drizzle*'
-      - '*migrate*'
-      - modernc.org/sqlite
-      - github.com/jackc/pgx/*
-      - github.com/go-sql-driver/mysql
-      - go.mongodb.org/mongo-driver/*
-- package-ecosystem: gomod
-  directory: /pgbudget
+- package-ecosystem: cargo
+  directory: /
   schedule:
     interval: weekly
     time: "09:08"

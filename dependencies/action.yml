@@ -16,7 +16,7 @@ runs:
       with:
         version: '2026.9.12'
         working_directory: ${{ github.action_path }}/../operator
-        sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
+        sha256: ${{ runner.os == 'Linux' && (runner.arch == 'ARM64' && 'f344c6961190ed2f68e595ed7cb4f03c36c17812bd608886bec799a3082180ff' || 'e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a') || (runner.arch == 'ARM64' && 'f20d7cc555a5b0ee7b8a504acbc2583be1b0848d64115cfbe84119ceb705025b' || 'fa1e35456f1e27a4555a1ccec82d5367d7037f3b4f46d48b83c4a3bceb4d78f2') }}
     - name: Reconcile verified bot updates
       shell: bash
       env:
@@ -31,7 +31,7 @@ runs:
         test ! -e "$REPORT" && test ! -L "$REPORT"
         stage="$(mktemp -d "$RUNNER_TEMP/dependency-policy.XXXXXXXX")"
         trap 'rm -rf -- "$stage"' EXIT
-        GOWORK=off go -C "$TOOLS_ACTION/../operator" build -trimpath -o "$stage/tools-operator" ./cmd/tools-operator
+        bash "$TOOLS_ACTION/build-parser.sh" "$stage" "$TOOLS_SOURCE"
         export TOOLS_OPERATOR_EXECUTABLE="$stage/tools-operator"
         arguments=(--output "$REPORT")
         if [[ "$APPLY_UPDATES" == true ]]; then arguments+=(--apply); fi

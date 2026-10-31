@@ -1,0 +1,3 @@
+[workspace]
+members = ["operator", "pgbudget", "sessionauth"]
+resolver = "3"

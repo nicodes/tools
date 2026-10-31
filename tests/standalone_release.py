@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -14,12 +15,33 @@ spec.loader.exec_module(release)
 
 
 def main():
+    cargo = subprocess.check_output(['rustup', 'which', '--toolchain', '1.94.0', 'cargo'], text=True).strip()
+    rustc = subprocess.check_output(['rustup', 'which', '--toolchain', '1.94.0', 'rustc'], text=True).strip()
+    os.environ['TOOLS_FIXTURE_CARGO'] = cargo
+    os.environ['RUSTC'] = rustc
     with tempfile.TemporaryDirectory(prefix='standalone-cli-') as temporary:
         root = Path(temporary)
         source = root / 'source'
         source.mkdir()
-        (source / 'go.mod').write_text('module example.com/mailroom\n\ngo 1.26\n')
-        (source / 'main.go').write_text('package main\nimport "fmt"\nfunc main() { fmt.Println("mailroom ready") }\n')
+        (source / '.gitignore').write_text('/.artifacts/cargo-target/\n')
+        (source / 'src').mkdir()
+        (source / 'Cargo.toml').write_text('[package]\nname="mailroom"\nversion="0.0.1"\nedition="2024"\n')
+        (source / 'Cargo.lock').write_text('version = 4\n\n[[package]]\nname = "mailroom"\nversion = "0.0.1"\n')
+        (source / 'src/main.rs').write_text('fn main() { println!("mailroom ready"); }\n')
+        (source / 'build_fixture.py').write_text('''import hashlib,os,platform,subprocess,tarfile
+from pathlib import Path
+root=Path.cwd()
+target=root/'.artifacts/cargo-target'
+subprocess.run([os.environ['TOOLS_FIXTURE_CARGO'],'build','--locked','--target-dir',str(target)],check=True)
+output=root/'dist'
+output.mkdir()
+arch='arm64' if platform.machine() in ('aarch64','arm64') else 'x86_64'
+archive=output/f'mailroom_{platform.system()}_{arch}.tar.gz'
+with tarfile.open(archive,'w:gz') as payload:
+    payload.add(target/'debug/mailroom',arcname='mailroom')
+(output/'checksums.txt').write_text(hashlib.sha256(archive.read_bytes()).hexdigest()+'  '+archive.name+'\\n')
+''')
+        subprocess.run([cargo, 'generate-lockfile'], cwd=source, check=True)
         for args in (['init', '-q'], ['add', '.'],
                      ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'Initial CLI']):
             subprocess.run(['git', '-C', str(source), *args], check=True)
@@ -35,12 +57,21 @@ def main():
         verification=Path(__file__).resolve().parents[1]/'helpers/verification.py'
         archives = source / 'dist'
         subprocess.run([sys.executable,str(verification),'build','--artifact','dist','--',
-                        sys.executable,str(Path(release.__file__)),'build','--binary','mailroom',
-                        '--directory','dist','--tag','v0.0.1','--source',revision],cwd=source,check=True)
-        release.validate(archives, 'mailroom')
+                        sys.executable,'build_fixture.py'],cwd=source,check=True)
+        arch = 'arm64' if platform.machine() in ('aarch64', 'arm64') else 'x86_64'
+        archive_path = archives / f'mailroom_{platform.system()}_{arch}.tar.gz'
+        release.archive_binary(archive_path, 'mailroom')
+        assert release.checksums(archives)[archive_path.name]
+        # One native artifact is insufficient to publish a four-platform release.
+        try:
+            release.validate(archives, 'mailroom')
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('incomplete native set was admitted for publication')
         native = root / 'native'
         native.mkdir()
-        with tarfile.open(archives / 'mailroom_Linux_x86_64.tar.gz') as archive:
+        with tarfile.open(archive_path) as archive:
             archive.extract('mailroom', native, filter='data')
         output = subprocess.check_output([str(native / 'mailroom')], text=True)
         assert output == 'mailroom ready\n', output
@@ -51,10 +82,10 @@ def main():
         tested=json.loads((source/'.artifacts/verification/test.json').read_text())
         assert build['provenance']['source_commit']==tested['tested_commit']==revision
         assert build['identity']==tested['input_identity']
-        assert len(build['artifacts'])==5
+        assert len(build['artifacts'])==2
         assert not (source/'deploy/release.json').exists()
         assert not (source/'komizo.json').exists()
-        print('Standalone CLI builds, runs and validates four archives with source/test evidence and no deployment configuration.')
+        print('Standalone Rust CLI builds and runs natively with source/test evidence; incomplete release sets are refused.')
 
 
 if __name__ == '__main__':
