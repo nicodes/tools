@@ -35,7 +35,7 @@ jobs:
       with:
         persist-credentials: false
     - name: "Set up tools"
-      uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      uses: jdx/mise-action@6be3c7ed4c21d4f76b208d351d95aac273ebb76d
       with:
         version: '2026.9.12'
         sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
