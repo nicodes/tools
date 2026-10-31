@@ -14,6 +14,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+# Resolve before the isolated HOME removes Mise's configuration trust state.
+# Exercise the helper with the installed interpreter rather than a HOME-sensitive shim.
+python_bin_dir="$(dirname "$(python3 -c 'import sys; print(sys.executable)')")"
+
 pass=0
 fail=0
 
@@ -41,7 +45,7 @@ run() {
 	tmp="$(mktemp -d)"
 	out="$(
 		env -i \
-			PATH="$PATH" HOME="$tmp" \
+			PATH="$python_bin_dir:$PATH" HOME="$tmp" \
 			PROJECT= REVISION= COMPONENTS= \
 			REGISTRY_USER=nicodes REGISTRY_TOKEN=stub-token ARTIFACT_NAME= \
 			HELPER="$stub" \
