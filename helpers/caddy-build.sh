@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run in a disposable directory containing caddy.go.mod as go.mod,
-# caddy.go.sum as go.sum and caddy-main.go as main.go.
+# caddy.go.sum as go.sum. The entry point is the locked upstream distribution.
 #
 # This used to carry a patch. Caddy v2.11.4 could not compile against a
 # cel-go new enough to fix GHSA-gcjh-h69q-9w9g: cel-go changed the
@@ -22,8 +22,7 @@
 set -eu
 export GOTOOLCHAIN=local
 go mod download
-go mod vendor
-go build -mod=vendor -trimpath -o caddy .
+go build -mod=readonly -trimpath -o caddy github.com/caddyserver/caddy/v2/cmd/caddy
 if [ "${1:-}" = --test ]; then
     # Go vendor intentionally omits upstream tests. Run those from a separate
     # full source copy with the same root dependency lock.

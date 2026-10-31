@@ -9,8 +9,38 @@ on:
 permissions: {}
 concurrency: operator-release
 jobs:
+  version:
+    name: Determine operator version
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Determine release version
+      id: version
+      env:
+        BUMP: ${{ inputs.bump }}
+      run: |-
+        set -euo pipefail
+        [[ "$GITHUB_REF" == refs/heads/main ]]
+        python3 scripts/cli_release.py version --bump "$BUMP" --prefix operator-v
+  native:
+    name: Native operator
+    needs: version
+    uses: ./.github/workflows/operator-native.yml
+    permissions:
+      contents: read
+    with:
+      version: ${{ needs.version.outputs.tag }}
   release:
     name: "Release"
+    needs: [version, native]
     uses: ./.github/workflows/cli-release.yml
     permissions:
       contents: write
@@ -19,9 +49,10 @@ jobs:
     with:
       tools-ref: ${{ github.sha }}
       binary: tools-operator
-      main-package: ./cmd/tools-operator
-      module-directory: operator
-      version-symbol: main.version
+      requested-tag: ${{ needs.version.outputs.tag }}
+      prepared-artifact-pattern: operator-native-*
+      prepared-artifact-directory: .artifacts/native-operator
+      prepared-assets: .artifacts/operator-release
       tag-prefix: operator-v
-      check-command: make check && sudo /usr/bin/python3 tests/native_operator_boot.py
+      check-command: make check && sudo /usr/bin/python3 tests/native_operator_boot.py && python3 scripts/operator_package.py assemble
       bump: ${{ inputs.bump }}

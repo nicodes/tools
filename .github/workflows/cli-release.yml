@@ -44,6 +44,20 @@ name: Release CLI
         type: string
         required: false
         default: ''
+      requested-tag:
+        description: Expected computed tag for coordinated native builds
+        type: string
+        required: false
+        default: ''
+      prepared-artifact-pattern:
+        description: Optional current-run native artifact names
+        type: string
+        required: false
+        default: ''
+      prepared-artifact-directory:
+        type: string
+        required: false
+        default: .artifacts/native-cli
       platforms:
         type: string
         required: false
@@ -74,9 +88,16 @@ jobs:
     - name: Validate release request
       env:
         TOOLS_REF: ${{ inputs.tools-ref }}
+        PREPARED_PATTERN: ${{ inputs.prepared-artifact-pattern }}
+        PREPARED_DIRECTORY: ${{ inputs.prepared-artifact-directory }}
+        PREPARED_ASSETS: ${{ inputs.prepared-assets }}
       run: |-
         set -euo pipefail
         [[ "$TOOLS_REF" =~ ^[a-f0-9]{40}$ ]]
+        if [ -n "$PREPARED_PATTERN" ]; then
+          [[ "$PREPARED_PATTERN" =~ ^[A-Za-z0-9_.*-]+$ && -n "$PREPARED_ASSETS" ]]
+          [[ "$PREPARED_DIRECTORY" =~ ^\.artifacts/[A-Za-z0-9_./-]+$ && "$PREPARED_DIRECTORY" != *..* ]]
+        fi
         [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
     - name: Check out source
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -96,16 +117,28 @@ jobs:
       env:
         BUMP: ${{ inputs.bump }}
         PREFIX: ${{ inputs.tag-prefix }}
+        REQUESTED_TAG: ${{ inputs.requested-tag }}
       run: |-
         set -euo pipefail
         printf '/_cli_tools/\n' >> .git/info/exclude
         printf 'TOOLS_ROOT=%s/_cli_tools\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
         python3 _cli_tools/scripts/cli_release.py version --bump "$BUMP" --prefix "$PREFIX"
+        if [ -n "$REQUESTED_TAG" ]; then
+          actual="$(python3 -c 'import sys;sys.path.insert(0,"_cli_tools/scripts");import cli_release;print(cli_release.version(sys.argv[1],sys.argv[2])[1])' "$BUMP" "$PREFIX")"
+          [[ "$actual" == "$REQUESTED_TAG" ]]
+        fi
     - name: "Set up tools"
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       with:
         version: '2026.9.12'
         sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
+    - name: Download verified native artifacts
+      if: inputs.prepared-artifact-pattern != ''
+      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+      with:
+        pattern: ${{ inputs.prepared-artifact-pattern }}
+        path: ${{ inputs.prepared-artifact-directory }}
+        merge-multiple: true
     - name: Check project
       env:
         CHECK_COMMAND: ${{ inputs.check-command }}

@@ -1,0 +1,59 @@
+name: Native Rust operator
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        default: dev
+permissions:
+  contents: read
+jobs:
+  native:
+    name: Operator (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ubuntu-24.04
+          platform: Linux_x86_64
+        - runner: ubuntu-24.04-arm
+          platform: Linux_arm64
+        - runner: macos-15-intel
+          platform: Darwin_x86_64
+        - runner: macos-15
+          platform: Darwin_arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version }}
+      COMMIT: ${{ github.sha }}
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Set up tools
+      uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      with:
+        version: '2026.9.12'
+        sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
+    - name: Install static Linux linker
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+    - name: Verify native Rust libraries and operator
+      run: |-
+        set -euo pipefail
+        cargo test --workspace --all-targets --locked
+        cargo build --locked -p tools-operator
+        TOOLS_OPERATOR_EXECUTABLE="$CARGO_TARGET_DIR/debug/tools-operator" python3 -m unittest discover -s tests -p test_operator_cli.py -v
+        python3 scripts/operator_package.py native
+        python3 tests/standalone_release.py
+    - name: Upload native operator archive and receipt
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: operator-native-${{ matrix.platform }}
+        path: .artifacts/native-operator/*
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 7

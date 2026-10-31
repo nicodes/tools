@@ -31,7 +31,7 @@ runs:
         test ! -e "$REPORT" && test ! -L "$REPORT"
         stage="$(mktemp -d "$RUNNER_TEMP/dependency-policy.XXXXXXXX")"
         trap 'rm -rf -- "$stage"' EXIT
-        GOWORK=off go -C "$TOOLS_ACTION/../operator" build -trimpath -o "$stage/tools-operator" ./cmd/tools-operator
+        bash "$TOOLS_ACTION/build-parser.sh" "$stage" "$TOOLS_SOURCE"
         export TOOLS_OPERATOR_EXECUTABLE="$stage/tools-operator"
         arguments=(--output "$REPORT")
         if [[ "$APPLY_UPDATES" == true ]]; then arguments+=(--apply); fi

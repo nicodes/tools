@@ -1,19 +1,20 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 97e53621de426b3940abd3717837c643e5b1024f525fd31f155fc88943826f47 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 6c89dc0648bfe52cad3ccb21045e8c478ee3ac4407cc9e7bde9a81c9ad20d856 -->
 
 # tools
 
-Shared Go libraries, development helpers and reusable CLI release automation.
+Shared Rust libraries, development helpers and reusable CLI release automation.
 
-## Go libraries
+## Rust libraries
 
-The Go modules are:
+The Cargo workspace contains:
 
-- `github.com/nicodes/tools/sessionauth`: Clerk session verification.
-- `github.com/nicodes/tools/pgbudget`: bounded PostgreSQL pools and query deadlines.
+- `sessionauth` under `sessionauth/`: local Clerk session verification using a caller-supplied JWK, authorized-party policy, clock and bounded leeway. Callers own issuer pinning, origin policy, bounded key retrieval and error mapping. Verified raw claims and normalized organization claims remain available.
+- `pgbudget` under `pgbudget/`: serving-pool settings, PostgreSQL timeout validation and an operation deadline that retains a tighter parent deadline. Apply all configured fields when constructing your driver pool and wrap the entire operation, including pool acquisition. Query/result semantics and migration credentials remain product-owned.
+- `tools-operator` under `operator/`: the protected operator CLI and bounded dependency-metadata parser.
 
-Users of products built with these libraries do not need to clone or configure this repository. Install and use the product directly.
+Reference the required package from this repository at a reviewed full commit in your application's Cargo dependencies. Historical Go module tags remain available. Product users install their application's published distribution directly.
 
-Add the required module to your Go application with `go get`. For library development, install [mise](https://mise.jdx.dev/), then run `mise install` and `mise exec -- make check`. Tool versions live in `mise.toml`; the Makefile owns verification. Both modules retain vet, race and vulnerability checks.
+For development, install [mise](https://mise.jdx.dev/), then run `mise install` and `mise exec -- make check`. The pinned Rust toolchain builds and tests the libraries and operator. Go remains a contributor tool for the locked upstream Caddy dependency; Tools contains no owned Go entry point for it. CI builds that upstream command directly, retains its dependency lock, runs the upstream race tests, and scans linked symbols. SDK verification includes signed-session security cases, database-budget contracts, metadata ambiguity refusal and private bundle export checks.
 
 ## CI helpers
 
@@ -79,7 +80,7 @@ For dependency preparation before credential selection, supply an isolated expli
 
 ## Protected operator
 
-The optional `tools-operator` CLI manages the protected engineering operator. It is separate from ordinary build/test setup and requires a root-owned authority policy before installation. Its releases use the `operator-v` tag prefix and the usual Linux/macOS archive names.
+The optional Rust `tools-operator` CLI manages the protected engineering operator. It is separate from ordinary build/test setup and requires a root-owned authority policy before installation. Its releases use the `operator-v` tag prefix and the usual Linux/macOS archive names.
 
 Before running the CLI, verify the archive checksum and GitHub attestation against this repository's `cli-release.yml` builder, binding both the signer and source digest to the exact release revision on `main`. Also require the verified certificate's `buildConfigURI` to name `operator-release.yml@refs/heads/main` and its `buildConfigDigest` to match that revision. Then run:
 
@@ -93,7 +94,7 @@ sudo ./tools-operator status
 
 ## CLI releases
 
-Use the reusable workflow to check a Go CLI, build Linux/macOS archives for x86_64/arm64, attest the payload, and publish a new version in the calling repository. Pin both references to the same reviewed full commit:
+Use the reusable workflow to check and publish a complete Linux/macOS archive set for x86_64/arm64. Rust products build their archives on native runners and supply the verified set through `prepared-assets`; the source-build Go interface remains available for dependent tooling. Pin both references to the same reviewed full commit:
 
 ```yaml
 name: Release
@@ -116,11 +117,11 @@ jobs:
     with:
       tools-ref: FULL_40_CHARACTER_COMMIT
       binary: example
-      main-package: ./cmd/example
+      prepared-assets: dist
       check-command: make check
       bump: ${{ inputs.bump }}
 ```
 
-The caller supplies its own `mise.toml` and required `check-command`. Verification and builds run with those tools; deployment software and deployment configuration are not required. Optional inputs select supported platforms (`linux,darwin` by default), a Go module directory, Go version/revision string symbols, a tag prefix, or a directory of archives already built and checked by that gate. Repositories with additional acceptance requirements can retain those jobs and call `cli-publish.yml` with their accepted artifact ID, binary name, tag and pinned tools reference. Explicit `extra-files` select additional release assets.
+The caller supplies its own `mise.toml` and required `check-command`. Verification and builds run with those tools; deployment software and deployment configuration are not required. Optional inputs select supported platforms (`linux,darwin` by default), a Go module directory, Go version/revision string symbols, a tag prefix, or a directory of archives already built and checked by that gate. Repositories with additional acceptance requirements can retain those jobs and call `cli-publish.yml` with their accepted artifact ID, binary name, tag and pinned tools reference. Explicit `extra-files` select additional release assets. For coordinated native jobs, `requested-tag` must match the freshly computed release tag. `prepared-artifact-pattern` downloads artifacts from the same run into a bounded `prepared-artifact-directory` under `.artifacts/` before the caller verification command. That command must verify the complete native set and stage `prepared-assets`. The operator release uses this path while retaining the existing `cli-release.yml` signing identity.
 
 Publication requires an explicit dispatch from `main`. It refuses existing tags/releases, checks the complete archive matrix and SHA-256 checksums, stages a draft, verifies every uploaded asset digest, and publishes the draft only after the payload matches. Products own their versions, release assets, installer and additional acceptance checks. Installation does not require a tools checkout, a Go compiler or a server connection.
