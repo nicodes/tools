@@ -43,7 +43,7 @@ def native():
     NATIVE.mkdir(parents=True, exist_ok=True)
     archive = NATIVE / f"tools-operator_{label}.tar.gz"
     with tarfile.open(archive, "w:gz") as output:
-        for path in [binary, ROOT / "README.md", ROOT / "LICENSE"]:
+        for path in [binary, *[ROOT / name for name in ("README.md", "LICENSE") if (ROOT / name).is_file()]]:
             info = output.gettarinfo(path, arcname=path.name)
             info.uid = info.gid = 0
             info.uname = info.gname = ""
@@ -70,7 +70,8 @@ def assemble():
         assert receipt["archive_sha256"] == digest(archive)
         with tarfile.open(archive, "r:gz") as payload:
             members = payload.getmembers()
-            assert {m.name for m in members} == {"tools-operator", "README.md", "LICENSE"} and len(members) == 3
+            expected = {"tools-operator"} | {name for name in ("README.md", "LICENSE") if (ROOT / name).is_file()}
+            assert {m.name for m in members} == expected and len(members) == len(expected)
             assert all(m.isfile() for m in members)
             binary = payload.getmember("tools-operator")
             assert binary.mode & 0o777 == 0o755 and binary.size < 64 << 20

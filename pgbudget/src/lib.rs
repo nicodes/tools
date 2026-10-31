@@ -109,6 +109,63 @@ impl OperationDeadline {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationStopped {
+    Cancelled,
+    DeadlineExceeded,
+}
+impl fmt::Display for OperationStopped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Cancelled => "database operation cancelled",
+            Self::DeadlineExceeded => "database operation deadline exceeded",
+        })
+    }
+}
+impl std::error::Error for OperationStopped {}
+/// A cancellable child context: parent cancellation propagates, while cancelling
+/// this context does not cancel its parent or siblings.
+#[derive(Clone, Debug)]
+pub struct OperationContext {
+    deadline: Instant,
+    cancellation: tokio_util::sync::CancellationToken,
+}
+impl OperationContext {
+    pub fn new(parent: Option<&Self>) -> Self {
+        Self::with_deadline(Instant::now() + QUERY_TIMEOUT, parent)
+    }
+    pub fn with_deadline(at: Instant, parent: Option<&Self>) -> Self {
+        let deadline = at.min(Instant::now() + QUERY_TIMEOUT);
+        Self {
+            deadline: parent.map_or(deadline, |p| deadline.min(p.deadline)),
+            cancellation: parent.map_or_else(tokio_util::sync::CancellationToken::new, |p| {
+                p.cancellation.child_token()
+            }),
+        }
+    }
+    pub fn at(&self) -> Instant {
+        self.deadline
+    }
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.cancellation.is_cancelled() || Instant::now() >= self.deadline
+    }
+    pub async fn cancelled(&self) -> OperationStopped {
+        tokio::select! { biased;
+            _=self.cancellation.cancelled()=>OperationStopped::Cancelled,
+            _=tokio::time::sleep_until(self.deadline)=>OperationStopped::DeadlineExceeded,
+        }
+    }
+    pub async fn run<F: Future>(&self, operation: F) -> Result<F::Output, OperationStopped> {
+        tokio::select! { biased;
+            reason=self.cancelled()=>Err(reason),
+            result=operation=>Ok(result),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +246,34 @@ mod tests {
         let child = OperationDeadline::new(Some(parent));
         assert_eq!(child.at(), parent);
         assert!(child.run(std::future::pending::<()>()).await.is_err());
+    }
+    #[tokio::test]
+    async fn child_context_inherits_cancellation_and_deadline_without_cancelling_parent() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let parent = OperationContext::new(None);
+        let child = OperationContext::new(Some(&parent));
+        child.cancel();
+        assert!(child.is_stopped());
+        assert!(!parent.is_stopped());
+        let sibling = OperationContext::new(Some(&parent));
+        parent.cancel();
+        let polled = AtomicBool::new(false);
+        assert_eq!(
+            sibling
+                .run(async {
+                    polled.store(true, Ordering::SeqCst);
+                })
+                .await,
+            Err(OperationStopped::Cancelled)
+        );
+        assert!(!polled.load(Ordering::SeqCst));
+        let parent =
+            OperationContext::with_deadline(Instant::now() + Duration::from_millis(10), None);
+        let child = OperationContext::new(Some(&parent));
+        assert_eq!(child.at(), parent.at());
+        assert_eq!(
+            child.run(std::future::pending::<()>()).await,
+            Err(OperationStopped::DeadlineExceeded)
+        );
     }
 }
