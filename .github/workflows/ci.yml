@@ -62,12 +62,10 @@ jobs:
         merge-multiple: true
     - name: Verify complete native operator set
       run: python3 scripts/operator_package.py assemble
-    - name: Check libraries
-      run: make check
+    - name: Check libraries and disposable recovery
+      run: mise run check
     - name: Verify locked upstream Caddy build and linked symbols
       run: python3 helpers/test-caddy.py
-    - name: Verify disposable PostgreSQL recovery
-      run: make integration
     - name: Verify standalone CLI build and release preparation
       run: python3 tests/standalone_release.py
     - name: Verify operator boot directories
