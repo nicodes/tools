@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check metadata and basic accessible markup in an actual static-site export."""
 import argparse
+import gzip
+import json
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -126,12 +128,58 @@ def check(root):
     return files, errors
 
 
+def performance(root, budget):
+    """Measure reproducible export bytes, independent of CDN compression or timing."""
+    required = {'max_total_bytes', 'max_file_bytes', 'max_html_gzip_bytes', 'max_javascript_gzip_bytes'}
+    if not isinstance(budget, dict) or set(budget) != required or any(type(value) is not int or not 0 < value <= 64 * 1024 * 1024 for value in budget.values()):
+        raise ValueError('performance budget requires four positive bounded integer byte limits')
+    root = Path(root)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError('site output must be a regular directory')
+    errors, total, javascript, count = [], 0, 0, 0
+    largest_html = 0
+    for path in sorted(root.rglob('*')):
+        if path.is_symlink():
+            raise ValueError('performance output must not contain symbolic links')
+        if path.is_dir():
+            continue
+        count += 1
+        if count > 10000 or not path.is_file():
+            raise ValueError('performance output must contain bounded regular files')
+        size = path.stat().st_size
+        total += size
+        name = str(path.relative_to(root))
+        if size > budget['max_file_bytes']:
+            errors.append(f'{name}: {size} bytes exceeds per-file budget {budget["max_file_bytes"]}')
+        # Never load an unbounded file merely to produce a compressed-size report.
+        if path.suffix.lower() in {'.html', '.js', '.mjs'}:
+            if size > 8 * 1024 * 1024:
+                raise ValueError('compressible website output must be bounded')
+            compressed = len(gzip.compress(path.read_bytes(), mtime=0))
+            if path.suffix.lower() == '.html':
+                largest_html = max(largest_html, compressed)
+                if compressed > budget['max_html_gzip_bytes']:
+                    errors.append(f'{name}: {compressed} gzip bytes exceeds HTML budget {budget["max_html_gzip_bytes"]}')
+            else:
+                javascript += compressed
+    if total > budget['max_total_bytes']:
+        errors.append(f'export: {total} bytes exceeds total budget {budget["max_total_bytes"]}')
+    if javascript > budget['max_javascript_gzip_bytes']:
+        errors.append(f'JavaScript: {javascript} gzip bytes exceeds budget {budget["max_javascript_gzip_bytes"]}')
+    return {'files': count, 'total_bytes': total, 'largest_html_gzip_bytes': largest_html, 'javascript_gzip_bytes': javascript}, errors
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
+    parser.add_argument('--budget', type=Path, help='product-owned JSON byte limits for the actual export')
     args = parser.parse_args()
     try:
         files, errors = check(args.directory)
+        if args.budget:
+            metrics, exceeded = performance(args.directory, json.loads(args.budget.read_text(encoding='utf-8')))
+            errors.extend(exceeded)
+            print('Export performance:', json.dumps(metrics, sort_keys=True))
     except (OSError, ValueError) as error:
         parser.exit(1, str(error) + '\n')
     if errors:

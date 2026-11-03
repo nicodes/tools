@@ -54,5 +54,37 @@ class StaticSiteContract(unittest.TestCase):
             self.assertEqual(errors, ['nested/index.html: button requires an accessible name'])
 
 
+class WebsitePerformanceContract(unittest.TestCase):
+    def budget(self, **overrides):
+        return dict(max_total_bytes=4096, max_file_bytes=2048, max_html_gzip_bytes=1024, max_javascript_gzip_bytes=1024, **overrides)
+
+    def test_actual_bytes_and_all_budget_categories_are_enforced(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'index.html').write_text(PAGE.format('Home'))
+            (root/'client.js').write_text('console.log("loaded")')
+            metrics, errors=helper.performance(root,self.budget())
+            self.assertEqual(errors,[])
+            self.assertEqual(metrics['total_bytes'],sum(path.stat().st_size for path in root.iterdir()))
+            for key in ['max_total_bytes','max_file_bytes','max_html_gzip_bytes','max_javascript_gzip_bytes']:
+                budget=self.budget();budget[key]=1
+                self.assertTrue(helper.performance(root,budget)[1],key)
+
+    def test_duplicate_references_do_not_hide_oversized_unreferenced_assets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            (root/'index.html').write_text(PAGE.format('<img alt="" src="art.png"><img alt="" src="art.png">'))
+            (root/'art.png').write_bytes(b'x'*2049)
+            self.assertTrue(any('art.png' in error for error in helper.performance(root,self.budget())[1]))
+
+    def test_bad_declarations_and_linked_outputs_refuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            for budget in [{},self.budget()|{'max_file_bytes':True},self.budget()|{'unknown':4},self.budget()|{'max_file_bytes':0}]:
+                with self.assertRaises(ValueError):helper.performance(root,budget)
+            (root/'linked').symlink_to(root/'missing')
+            with self.assertRaises(ValueError):helper.performance(root,self.budget())
+
+
 if __name__ == '__main__':
     unittest.main()
