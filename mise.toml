@@ -13,3 +13,30 @@ node = "26.7.0"
 CARGO_TARGET_DIR = "{{ get_env(name='CARGO_TARGET_DIR', default=config_root ~ '/.artifacts/rust-target') }}"
 CARGO_INCREMENTAL = "0"
 PYTHONDONTWRITEBYTECODE = "1"
+
+[tasks.install]
+run = "make install"
+
+[tasks.lint]
+run = "make lint"
+
+[tasks.unit]
+run = "make unit"
+
+[tasks.integration]
+run = "make integration"
+
+[tasks.test]
+run = "make test"
+
+[tasks.build]
+run = "make build"
+
+[tasks.vuln]
+run = "make vuln"
+
+[tasks.check]
+run = "make check"
+
+[tasks.clean]
+run = "make clean"

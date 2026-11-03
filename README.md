@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 6c89dc0648bfe52cad3ccb21045e8c478ee3ac4407cc9e7bde9a81c9ad20d856 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: b4893d556d538001eb9893e1ae17a2601e7427be31b28ec212c05be663343e14 -->
 
 # tools
 
@@ -14,9 +14,13 @@ The Cargo workspace contains:
 
 Reference the required package from this repository at a reviewed full commit in your application's Cargo dependencies. Historical Go module tags remain available. Product users install their application's published distribution directly.
 
-For development, install [mise](https://mise.jdx.dev/), then run `mise install` and `mise exec -- make check`. The pinned Rust toolchain builds and tests the libraries and operator. Go remains a contributor tool for the locked upstream Caddy dependency; Tools contains no owned Go entry point for it. CI builds that upstream command directly, retains its dependency lock, runs the upstream race tests, and scans linked symbols. SDK verification includes signed-session security cases, database-budget contracts, metadata ambiguity refusal and private bundle export checks.
+For development, install [mise](https://mise.jdx.dev/) and Docker, then run `mise install` and `mise run check`. The pinned Rust toolchain builds and tests the libraries and operator; Docker supplies owned disposable PostgreSQL recovery fixtures. `mise run test` runs unit and integration checks, `mise run build` builds the workspace, and `mise run clean` removes declared generated outputs. Make targets invoke the same implementations. Go remains a contributor tool for the locked upstream Caddy dependency; Tools contains no owned Go entry point for it. CI builds that upstream command directly, retains its dependency lock, runs the upstream race tests, and scans linked symbols. SDK verification includes signed-session security cases, database-budget contracts, metadata ambiguity refusal and private bundle export checks.
 
 ## CI helpers
+
+`python3 "$TOOLS_ROOT/helpers/clean.py" --path dist --path .artifacts/build` removes only explicitly named generated outputs from the checkout root. It validates all paths before removal and refuses tracked source, linked paths, traversal and the whole `.artifacts` namespace. Products with a running development session invoke cleanup through their session supervisor.
+
+`python3 "$TOOLS_ROOT/helpers/site-contract.py" dist` checks actual exported HTML for language, title, description, viewport, a main landmark, image alternatives and basic control labels. It complements the product's browser, responsive-layout and performance checks.
 
 Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your product. It installs the tool versions in the product's `mise.toml` and exposes the reviewed helper directory as `TOOLS_ROOT`. Product Makefiles or scripts own the commands to run. The action supports Linux and macOS on x86_64 and arm64; it verifies the pinned mise executable before installation.
 
