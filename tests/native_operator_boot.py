@@ -9,7 +9,7 @@ import tempfile
 def main():
     if os.geteuid() != 0:
         raise SystemExit('Run this isolated tmpfiles acceptance with sudo.')
-    source=Path(__file__).resolve().parents[1]/'operator/internal/operator/assets/fleet-operator.conf'
+    source=Path(__file__).resolve().parents[1]/'crates/operator/internal/operator/assets/fleet-operator.conf'
     with tempfile.TemporaryDirectory(prefix='operator-boot-') as temporary:
         root=Path(temporary)
         configuration=root/'etc/tmpfiles.d'

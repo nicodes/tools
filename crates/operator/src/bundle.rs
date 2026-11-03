@@ -178,7 +178,7 @@ mod tests {
             "/tmp/./operator",
             "/tmp/../operator",
             "/tmp//operator",
-            "/tmp/operator/",
+            "/tmp/crates/operator/",
         ] {
             assert!(export(Path::new(path)).is_err(), "{path}");
         }

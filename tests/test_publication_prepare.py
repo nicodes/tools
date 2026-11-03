@@ -21,7 +21,7 @@ def load(name, path):
 
 
 m = load('publication_prepare', Path(__file__).parents[1]/'helpers/publication-prepare.py')
-publisher = load('publisher', Path(__file__).resolve().parents[1] / 'operator/internal/operator/assets/fleet_publisher.py')
+publisher = load('publisher', Path(__file__).resolve().parents[1] / 'crates/operator/internal/operator/assets/fleet_publisher.py')
 REVISION = 'a' * 40
 SOURCE = {'repository': 'example/product', 'revision': REVISION}
 IMAGE = 'ghcr.io/example/product-core:' + REVISION
