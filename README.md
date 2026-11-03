@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: b4893d556d538001eb9893e1ae17a2601e7427be31b28ec212c05be663343e14 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: c92504618b31ffbdabca41722e21d411ef6f6da0b9e4f1dc64f9ab20bc270157 -->
 
 # tools
 
@@ -8,6 +8,7 @@ Shared Rust libraries, development helpers and reusable CLI release automation.
 
 The Cargo workspace contains:
 
+- `httpcontract` under `httpcontract/`: Axum middleware for bounded JSON failures, server-generated request IDs and structured request diagnostics. Add `axum::middleware::from_fn(httpcontract::observe)` to application HTTP routes, inside response compression and before payload signing. Success/streaming bodies and domain metadata remain intact; application authentication, authorization and business error codes remain product-owned. Pre-signed RPC protocols retain their own wire contract. `httpcontract::failure` constructs an application failure and `httpcontract::health` constructs public status/revision metadata for product-owned liveness and dependency-readiness handlers.
 - `sessionauth` under `sessionauth/`: local Clerk session verification using a caller-supplied JWK, authorized-party policy, clock and bounded leeway. Callers own issuer pinning, origin policy, bounded key retrieval and error mapping. Verified raw claims and normalized organization claims remain available.
 - `pgbudget` under `pgbudget/`: serving-pool settings, PostgreSQL timeout validation and an operation deadline that retains a tighter parent deadline. Apply all configured fields when constructing your driver pool and wrap the entire operation, including pool acquisition. Query/result semantics and migration credentials remain product-owned.
 - `tools-operator` under `operator/`: the protected operator CLI and bounded dependency-metadata parser.
