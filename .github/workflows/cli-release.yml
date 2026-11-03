@@ -132,7 +132,7 @@ jobs:
       with:
         version: '2026.9.12'
         sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
-    - name: Download verified native artifacts
+    - name: "Download artifacts"
       if: inputs.prepared-artifact-pattern != ''
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:

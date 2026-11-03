@@ -10,6 +10,7 @@ permissions: {}
 concurrency: operator-release
 jobs:
   version:
+    timeout-minutes: 5
     name: Determine operator version
     runs-on: ubuntu-24.04
     permissions:
