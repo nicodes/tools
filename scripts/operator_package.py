@@ -34,7 +34,7 @@ def native():
     binary = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")) / target / "release/tools-operator"
     report = json.loads(subprocess.check_output([str(binary), "--build-info"], text=True))
     assert report["version"] == VERSION and report["commit"] == SOURCE and report["target"] == target
-    assets = ROOT / "operator/internal/operator/assets"
+    assets = ROOT / "crates/operator/internal/operator/assets"
     assert set(report["bundle"]) == ASSET_NAMES
     assert all(digest(assets / name) == value for name, value in report["bundle"].items())
     if label.startswith("Linux_"):
@@ -76,7 +76,7 @@ def assemble():
             binary = payload.getmember("tools-operator")
             assert binary.mode & 0o777 == 0o755 and binary.size < 64 << 20
             assert hashlib.sha256(payload.extractfile(binary).read()).hexdigest() == receipt["binary_sha256"]
-        assets = ROOT / "operator/internal/operator/assets"
+        assets = ROOT / "crates/operator/internal/operator/assets"
         assert set(receipt["bundle"]) == ASSET_NAMES and all(digest(assets / name) == value for name, value in receipt["bundle"].items())
         verified.append(archive)
     output.mkdir()

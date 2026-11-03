@@ -1,3 +1,3 @@
 [workspace]
-members = ["httpcontract", "operator", "pgbudget", "sessionauth"]
+members = ["crates/httpcontract", "crates/operator", "crates/pgbudget", "crates/sessionauth"]
 resolver = "3"

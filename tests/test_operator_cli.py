@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 BINARY = Path(os.environ.get("TOOLS_OPERATOR_EXECUTABLE", str(Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")) / "debug/tools-operator"))).resolve()
-ASSETS = ROOT / "operator/internal/operator/assets"
+ASSETS = ROOT / "crates/operator/internal/operator/assets"
 
 
 class OperatorCLI(unittest.TestCase):
@@ -70,7 +70,7 @@ class OperatorCLI(unittest.TestCase):
             self.assertEqual(set(p.name for p in stage.iterdir()), {"reviewed"})
 
     def test_invalid_exports_never_create_a_stage(self):
-        for directory in ["/", "relative", "/tmp/./operator", "/tmp/../operator", "/tmp//operator", "/tmp/operator/"]:
+        for directory in ["/", "relative", "/tmp/./operator", "/tmp/../operator", "/tmp//operator", "/tmp/crates/operator/"]:
             self.assertEqual(self.cli("export", "--directory", directory).returncode, 1)
 
     def test_invalid_flags_never_dispatch_lifecycle_or_consume_a_grant(self):
