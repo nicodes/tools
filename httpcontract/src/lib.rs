@@ -4,14 +4,19 @@
 //! by the application. Pre-signed RPC payloads retain their own wire contract;
 //! apply this layer to application HTTP routes before signing/compression.
 use axum::{
-    body::{Body, to_bytes},
+    body::Body,
     extract::{MatchedPath, Request},
     http::{HeaderValue, Method, StatusCode, header},
     middleware::Next,
     response::Response,
 };
+use http_body_util::{BodyExt, Limited};
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+    time::{Duration, Instant},
+};
 use tracing::Instrument;
 
 const ERROR_BYTES: usize = 64 * 1024;
@@ -101,13 +106,39 @@ fn envelope(value: Value, status: StatusCode, request_id: &str) -> Value {
     Value::Object(root)
 }
 
+struct RetainedErrorBody {
+    payload: Body,
+    // The original body may own an admission permit or another response lease.
+    _source: Body,
+}
+impl http_body::Body for RetainedErrorBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        Pin::new(&mut self.payload).poll_frame(cx)
+    }
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.payload.size_hint()
+    }
+    fn is_end_stream(&self) -> bool {
+        self.payload.is_end_stream()
+    }
+}
+
 async fn normalize(response: Response, request_id: &str, head: bool) -> Response {
-    let (mut parts, body) = response.into_parts();
-    let value =
-        match tokio::time::timeout(Duration::from_secs(2), to_bytes(body, ERROR_BYTES)).await {
-            Ok(Ok(bytes)) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-            _ => Value::Null,
-        };
+    let (mut parts, mut source) = response.into_parts();
+    let value = match tokio::time::timeout(
+        Duration::from_secs(2),
+        Limited::new(&mut source, ERROR_BYTES).collect(),
+    )
+    .await
+    {
+        Ok(Ok(bytes)) => serde_json::from_slice(&bytes.to_bytes()).unwrap_or(Value::Null),
+        _ => Value::Null,
+    };
     let value = envelope(value, parts.status, request_id);
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.remove(header::CONTENT_ENCODING);
@@ -120,7 +151,13 @@ async fn normalize(response: Response, request_id: &str, head: bool) -> Response
     } else {
         Body::from(serde_json::to_vec(&value).expect("JSON values serialize"))
     };
-    Response::from_parts(parts, body)
+    Response::from_parts(
+        parts,
+        Body::new(RetainedErrorBody {
+            payload: body,
+            _source: source,
+        }),
+    )
 }
 
 /// Give every response one server-generated correlation ID. Error-body reads are
@@ -187,8 +224,60 @@ pub fn health(status: &str, revision: &str) -> axum::Json<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Router, middleware, routing::get};
+    use axum::{Router, body::to_bytes, middleware, routing::get};
     use tower::ServiceExt;
+
+    struct LeasedBody {
+        body: Body,
+        released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Drop for LeasedBody {
+        fn drop(&mut self) {
+            self.released
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    impl axum::body::HttpBody for LeasedBody {
+        type Data = axum::body::Bytes;
+        type Error = axum::Error;
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+            std::pin::Pin::new(&mut self.body).poll_frame(cx)
+        }
+    }
+
+    #[tokio::test]
+    async fn retains_response_resource_ownership_until_consumed_or_dropped() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        for consume in [false, true] {
+            let released = Arc::new(AtomicBool::new(false));
+            let source = Body::new(LeasedBody {
+                body: Body::from("{}"),
+                released: released.clone(),
+            });
+            let response = normalize(
+                Response::builder().status(400).body(source).unwrap(),
+                "id",
+                false,
+            )
+            .await;
+            assert!(
+                !released.load(Ordering::SeqCst),
+                "normalizing the payload must preserve its admission lease"
+            );
+            if consume {
+                let _ = body(response).await;
+            } else {
+                drop(response);
+            }
+            assert!(released.load(Ordering::SeqCst));
+        }
+    }
 
     async fn body(response: Response) -> Value {
         serde_json::from_slice(&to_bytes(response.into_body(), ERROR_BYTES).await.unwrap()).unwrap()
