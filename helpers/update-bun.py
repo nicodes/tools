@@ -50,10 +50,15 @@ def parse_inventory(output):
 
 def prepare(root):
     tracked = set(run(['git', 'ls-files', '-z'], cwd=root).split('\0'))
-    # Discover the product's own top-level package directories instead of
-    # assuming `app/` — the same `*/package.json` scan pins.mjs uses.
+    # Keep existing top-level applications and include nested owned packages
+    # with a tracked Bun lock. Retained fixtures and third-party copies are
+    # not dependency-maintenance targets.
+    excluded = {'node_modules', 'vendor', 'third_party', 'history', 'testdata', 'fixtures'}
     applications = sorted({str(Path(name).parent) for name in tracked
-                           if name.endswith('/package.json') and name.count('/') == 1})
+                           if name.endswith('/package.json')
+                           and not excluded.intersection(Path(name).parts)
+                           and (name.count('/') == 1
+                                or str(Path(name).with_name('bun.lock')) in tracked)})
     if not applications:
         raise ValueError('The product must declare an application manifest')
     inventory, changes = [], {}
