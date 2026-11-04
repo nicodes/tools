@@ -90,6 +90,8 @@ def cargo_args(component, operation, *, target=None):
     argv = ['cargo', commands[operation]]
     if operation not in {'fmt', 'fmt-check'}:
         argv.append('--locked')
+        if operation != 'fetch':
+            argv.append('--offline')
     argv += ['--manifest-path', component.get('manifest', 'Cargo.toml')]
     if operation in {'fmt', 'fmt-check'}:
         if values.get('workspace'):
@@ -176,7 +178,7 @@ def setup(root, components, environment, run):
     targets = sorted(targets)
     if targets:
         run(['rustup', 'target', 'add', '--toolchain', version, *targets], root, environment)
-    invoke(root, components, environment, 'fetch', run)
+    invoke(root, components, environment, 'fetch', run, target=environment.get('RUST_TARGET'))
 
 
 def format(root, components, environment, run):
