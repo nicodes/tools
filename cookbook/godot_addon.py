@@ -10,6 +10,7 @@ import sys
 import tomllib
 
 from configuration import godot_pins, load, relative
+from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -82,23 +83,7 @@ def lint(root, config, env):
 
 
 def test_entries(root, config, env, suite):
-    entries = config.get('tests', {}).get(suite, [])
-    if not entries:
-        raise ValueError('test group has no declared product checks: ' + suite)
-    for entry in entries:
-        program = relative(root, entry['path'], exists=True)
-        if entry['runner'] in {'godot', 'godot-suite'}:
-            native = helper('godot-test')
-            if entry['runner'] == 'godot-suite':
-                native.suite(env['GODOT_BIN'], root, program, entry['sentinel'], entry.get('timeout', 30), env)
-            else:
-                native.run(env['GODOT_BIN'], root, program, entry['sentinel'],
-                           entry.get('timeout', 30), entry.get('args', []), env)
-            continue
-        executable = {'python': sys.executable, 'node': 'node', 'bun': 'bun',
-                      'bash': 'bash'}[entry['runner']]
-        argv = [executable, str(program), *entry.get('args', [])]
-        run(argv, root, env, timeout=entry.get('timeout', 300))
+    run_entries(root, config, env, suite)
 
 
 def current_build(root, config, verification):
