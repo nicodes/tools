@@ -7,7 +7,10 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from test_cookbook_addon import AddonRecipe, TOOLS, generator
+import test_cookbook_addon as addon_fixture
+
+TOOLS = addon_fixture.TOOLS
+generator = addon_fixture.generator
 
 sys.path.insert(0, str(TOOLS / 'cookbook'))
 spec = importlib.util.spec_from_file_location('recipe_ci', TOOLS / 'cookbook/ci.py')
@@ -19,11 +22,11 @@ spec.loader.exec_module(publication)
 
 
 class ValidationEvidence(unittest.TestCase):
-    make = AddonRecipe.make
-    succeeded = AddonRecipe.succeeded
+    make = addon_fixture.AddonRecipe.make
+    succeeded = addon_fixture.AddonRecipe.succeeded
 
     def setUp(self):
-        AddonRecipe.setUp(self)
+        addon_fixture.AddonRecipe.setUp(self)
         self.tools = ci.git(TOOLS, 'rev-parse', 'HEAD')
         (self.root / 'Makefile').write_text(generator.makefile(self.root, self.tools))
         subprocess.run(['git', '-C', str(self.root), 'add', 'Makefile'], check=True)
