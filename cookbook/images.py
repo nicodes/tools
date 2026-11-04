@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 from configuration import relative
 
@@ -82,6 +83,35 @@ def stage_caddy(root, *, host=False):
     for name, destination in names.items():
         shutil.copy2(TOOLS / 'helpers' / name, directory / destination)
     return directory
+
+
+def host_caddy(root, environment, run):
+    expected = tomllib.loads((root / 'mise.toml').read_text())['tools']['go']
+    actual = subprocess.check_output(['go', 'env', 'GOVERSION'], cwd=root, env=environment, text=True).strip()
+    if actual != 'go' + expected:
+        raise ValueError('Caddy requires the exact caller-pinned Go SDK')
+    platform = environment.get('DOCKER_DEFAULT_PLATFORM') or subprocess.check_output(
+        ['docker', 'version', '--format', '{{.Server.Os}}/{{.Server.Arch}}'],
+        cwd=root, env=environment, text=True, timeout=30).strip()
+    if platform not in {'linux/amd64', 'linux/arm64'}:
+        raise ValueError('unsupported Caddy runtime platform')
+    directory = stage_caddy(root, host=True)
+    values = environment | {'CGO_ENABLED': '0', 'GOOS': 'linux', 'GOARCH': platform.split('/')[1],
+                            'GOTOOLCHAIN': 'local', 'GOFLAGS': '-buildvcs=false'}
+    run(['sh', 'build.sh'], directory, values)
+    # The previous compiler-image cache is obsolete for host-compiled Caddy.
+    # Use the same component lock as docker-build.py and retain every other cache.
+    if environment.get('FLEET_BUILDKIT_CACHE'):
+        import fcntl
+        cache_root = Path(environment['FLEET_BUILDKIT_CACHE'])
+        cache, lock = cache_root / 'gate-caddy', cache_root / 'gate-caddy.lock'
+        if any(path.is_symlink() for path in [cache_root, cache, lock]):
+            raise ValueError('compiler layer cache must not be a symlink')
+        if cache.exists():
+            with lock.open('a') as stream:
+                fcntl.flock(stream, fcntl.LOCK_EX)
+                if cache.exists():
+                    shutil.rmtree(cache)
 
 
 def build(root, config, environment, run, *, native=None):
