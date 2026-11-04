@@ -89,12 +89,14 @@ class NativeCargoComponent(unittest.TestCase):
             root = Path(scratch)
             (root / 'Cargo.toml').write_text('[package]\nname="native"\nversion="0.0.1"\n')
             (root / 'mise.toml').write_text('[tools]\nrust="1.94.0"\n[env]\nRUST_NIGHTLY="nightly-2026-03-06"\n')
-            component = {'toolchain_environment': 'RUST_NIGHTLY', 'build_std': True, 'target': 'wasm32-unknown-emscripten', 'timeout': 1200}
+            component = {'toolchain_environment': 'RUST_NIGHTLY', 'build_std': True, 'target': 'wasm32-unknown-emscripten', 'timeout': 1200, 'lint': {'enabled': False}}
             calls = []
             cargo.setup(root, [component], {}, lambda argv, *_args: calls.append(argv))
             installs = [argv for argv in calls if argv[:3] == ['rustup', 'toolchain', 'install']]
             self.assertEqual(len(installs), 1)
             self.assertIn('rust-src', installs[0])
+            self.assertNotIn('rustfmt', installs[0])
+            self.assertNotIn('clippy', installs[0])
             self.assertFalse(any(argv[:3] == ['rustup', 'target', 'add'] for argv in calls))
             self.assertEqual(calls[-1][:5], ['rustup', 'run', 'nightly-2026-03-06', 'cargo', 'fetch'])
             self.assertIn('-Zbuild-std', calls[-1])

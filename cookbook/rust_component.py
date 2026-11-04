@@ -221,6 +221,16 @@ def setup(root, components, environment, run):
     if targets:
         run(['rustup', 'target', 'add', '--toolchain', version, *sorted(targets)], root, environment)
     installed = set()
+    nightly_components = {}
+    for component in components:
+        if component.get('toolchain_environment'):
+            values = component_environment(component, environment, root)
+            key = values[component['toolchain_environment']]
+            selected = nightly_components.setdefault(key, set())
+            if component.get('build_std'):
+                selected.add('rust-src')
+            if component.get('lint', {}).get('enabled') is not False:
+                selected.add('clippy')
     for component in components:
         validate(component, root)
         if not component.get('toolchain_environment'):
@@ -228,7 +238,10 @@ def setup(root, components, environment, run):
         values = component_environment(component, environment, root)
         nightly = values[component['toolchain_environment']]
         if nightly not in installed:
-            run(['rustup', 'toolchain', 'install', nightly, '--profile', 'minimal', '--component', 'rust-src', '--component', 'rustfmt', '--component', 'clippy'], root, environment)
+            command = ['rustup', 'toolchain', 'install', nightly, '--profile', 'minimal']
+            for name in sorted(nightly_components[nightly]):
+                command += ['--component', name]
+            run(command, root, environment)
             installed.add(nightly)
         extra = set(component.get('targets', []))
         if component.get('target'):
