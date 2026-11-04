@@ -8,7 +8,7 @@ import unittest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"helpers"))
 from godot_web_release import pack_paths, prepare
-from godot_version_release import compact_payloads, restore_export_inputs
+from godot_version_release import compact_payloads, restore_export_inputs, stage_version
 import gzip
 import json
 import hashlib
@@ -141,6 +141,45 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'parent'):
                 restore_export_inputs(root)
             self.assertFalse((outside / 'runtime.js').exists())
+
+    def test_nested_sdk_and_extension_payloads_keep_versioned_identity_and_native_callback_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            (root / 'sdk').mkdir()
+            (root / 'sdk/runtime.js').write_bytes(b'native SDK chunk')
+            (root / 'sdk/runtime.js.gz').write_bytes(gzip.compress(b'native SDK chunk', mtime=0))
+            (root / 'extension.wasm').write_bytes(b'extension')
+            html = (root / 'index.html').read_text().replace('src="index.js"', 'src="index.js?v=42"')
+            config = {'executable': 'index', 'fileSizes': {'index.wasm?cache=42': 7, 'index.pck': 8},
+                      'gdextensionLibs': ['extension.wasm']}
+            html = re.sub(r'const GODOT_CONFIG = (\{[^\n]+\});', 'const GODOT_CONFIG = ' + json.dumps(config) + ';', html)
+            (root / 'index.html').write_text(html)
+            names = ['index.html', 'index.js', 'index.wasm', 'index.pck', 'sdk/runtime.js', 'extension.wasm']
+            files = {name: {'sha256': hashlib.sha256((root / name).read_bytes()).hexdigest()} for name in names}
+            release = stage_version(root, files, recovery_id='fixture-release-recovery',
+                failure_function='fixtureLoadFailure', release_root='fixtureReleaseRoot', strip_cache_query=True)
+            staged = root / 'releases' / release
+            self.assertEqual((staged / 'sdk/runtime.js').read_bytes(), b'native SDK chunk')
+            self.assertEqual(gzip.decompress((staged / 'sdk/runtime.js.gz').read_bytes()), b'native SDK chunk')
+            html = (root / 'index.html').read_text()
+            self.assertIn(f'window.fixtureReleaseRoot = "/releases/{release}/";', html)
+            self.assertIn('window.fixtureLoadFailure = function', html)
+            self.assertNotIn('index.js?v=', html)
+            self.assertIn(f'/releases/{release}/index.wasm', html)
+
+    def test_undeclared_extension_or_nonliteral_callback_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            files = {name: {'sha256': hashlib.sha256((root / name).read_bytes()).hexdigest()}
+                     for name in ['index.html', 'index.js', 'index.wasm', 'index.pck']}
+            with self.assertRaises(ValueError):
+                stage_version(root, files, failure_function='callback(); injected(')
+            original = (root / 'index.html').read_text()
+            config = {'executable': 'index', 'fileSizes': {}, 'gdextensionLibs': ['missing.wasm']}
+            (root / 'index.html').write_text(re.sub(r'const GODOT_CONFIG = (\{[^\n]+\});',
+                'const GODOT_CONFIG = ' + json.dumps(config) + ';', original))
+            with self.assertRaisesRegex(ValueError, 'extension library'):
+                stage_version(root, files)
 
     @staticmethod
     def pack(names, flags=0, version=2):
