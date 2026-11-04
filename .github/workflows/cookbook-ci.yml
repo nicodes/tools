@@ -1,0 +1,35 @@
+name: Recipe CI
+'on':
+  workflow_call:
+    inputs:
+      tools-ref:
+        type: string
+        required: true
+      source:
+        type: string
+        required: true
+      merge-gate:
+        type: boolean
+        default: false
+permissions: {}
+jobs:
+  fast:
+    name: Fast source checks
+    if: github.event_name == 'pull_request' && inputs.merge-gate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cookbook-validation.yml
+    with:
+      tools-ref: ${{ inputs.tools-ref }}
+      source: ${{ inputs.source }}
+      mode: fast
+  full:
+    name: Full source checks
+    if: github.event_name != 'pull_request' || !inputs.merge-gate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cookbook-validation.yml
+    with:
+      tools-ref: ${{ inputs.tools-ref }}
+      source: ${{ inputs.source }}
+      mode: full

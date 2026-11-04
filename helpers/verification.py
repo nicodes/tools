@@ -1,7 +1,6 @@
 """Bind caller-owned commands to source, test coverage and immutable outputs."""
 import argparse
 import contextlib
-import fcntl
 import hashlib
 import json
 import os
@@ -12,11 +11,17 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+
+if os.name == 'nt':
+    import msvcrt
+else:
+    import fcntl
 
 CONTEXT_KEYS = ('GITHUB_SERVER_URL', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID',
                 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB', 'GITHUB_SHA',
                 'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA', 'GITHUB_EVENT_NAME')
-CONFIG_FILES = ('mise.toml', '.mise.toml', 'mise.lock', '.tool-versions',
+CONFIG_FILES = ('Makefile', 'cookbook.toml', 'mise.toml', '.mise.toml', 'mise.lock', '.tool-versions',
                 'komizo.json', 'deploy/release.json')
 NAME = re.compile(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z')
 
@@ -167,6 +172,55 @@ def artifacts(declaration):
     return found
 
 
+def windows_access(path):
+    """Inspect the native owner/DACL; Unix mode bits do not describe NTFS ACLs."""
+    script = r'''
+$ErrorActionPreference = 'Stop'
+$acl = Get-Acl -LiteralPath $env:TOOLS_EVIDENCE_PATH
+$sid = [System.Security.Principal.SecurityIdentifier]
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+$rules = @($acl.GetAccessRules($true, $true, $sid) | ForEach-Object {
+    @{sid=$_.IdentityReference.Value; allow=($_.AccessControlType -eq 'Allow'); rights=[int64]$_.FileSystemRights}
+})
+@{owner=$acl.GetOwner($sid).Value; current=$identity.User.Value;
+  administrator=$principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
+  rules=$rules} | ConvertTo-Json -Depth 4 -Compress
+'''
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
+                            env={**os.environ, 'TOOLS_EVIDENCE_PATH': str(path.resolve())},
+                            capture_output=True, text=True, timeout=15, check=True)
+    if len(result.stdout) > 262144:
+        raise ValueError('evidence ACL metadata exceeds its bound')
+    return json.loads(result.stdout)
+
+
+def protected_windows_acl(value):
+    owner, current = value['owner'], value['current']
+    administrators = 'S-1-5-32-544'
+    if owner != current and not (owner == administrators and value.get('administrator') is True):
+        raise ValueError('verification output is not owned by the current Windows principal')
+    # Windows Python mkdir(mode=0700) can represent the current owner using the
+    # OWNER RIGHTS SID. Administrators/SYSTEM retain normal platform authority.
+    trusted = {current, administrators, 'S-1-5-18', 'S-1-3-4'}
+    writable = 0x2 | 0x4 | 0x10 | 0x40 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x10000000 | 0x40000000
+    rules = value.get('rules')
+    if not isinstance(rules, list) or not rules:
+        raise ValueError('verification output requires an explicit protected Windows DACL')
+    for rule in rules:
+        if rule.get('allow') is True and rule['rights'] & writable and rule['sid'] not in trusted:
+            raise ValueError('verification output grants write access to another Windows principal')
+
+
+def owned(path, info):
+    if os.name == 'nt':
+        if getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('verification output may not be a reparse point')
+        protected_windows_acl(windows_access(path))
+    elif info.st_uid != os.getuid():
+        raise ValueError('verification output is not owned by the current user')
+
+
 def protected_directory(path):
     if path.is_absolute() or '..' in path.parts:
         raise ValueError('verification output must stay within the checkout')
@@ -175,7 +229,10 @@ def protected_directory(path):
         parent = parent/part
         parent.mkdir(mode=0o700, exist_ok=True)
         info = parent.lstat()
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError('verification output directory is not protected')
+        owned(parent, info)
+        if os.name != 'nt' and info.st_mode & 0o022:
             raise ValueError('verification output directory is not protected')
     return path
 
@@ -184,8 +241,9 @@ def write(path, value):
     protected_directory(path.parent)
     if path.exists() or path.is_symlink():
         info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        if not stat.S_ISREG(info.st_mode):
             raise ValueError('verification output is not an owned regular file')
+        owned(path, info)
     descriptor, name = tempfile.mkstemp(prefix='.receipt-', dir=path.parent)
     try:
         with os.fdopen(descriptor, 'w') as output:
@@ -199,10 +257,31 @@ def write(path, value):
 @contextlib.contextmanager
 def locked():
     path = Path(git('rev-parse', '--git-path', 'verification.lock'))
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
+    if path.is_symlink() or (os.name == 'nt' and path.exists() and path.lstat().st_file_attributes & 0x400):
+        raise ValueError('verification lock may not be a link or reparse point')
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(descriptor, 'a+b') as lock:
+        if os.name == 'nt':
+            if path.stat().st_size == 0:
+                lock.write(b'\0')
+                lock.flush()
+            lock.seek(0)
+            while True:
+                try:
+                    msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as error:
+                    if error.errno not in (11, 13, 36):
+                        raise
+                    time.sleep(0.1)
+            try:
+                yield
+            finally:
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
 
 
 def invoke(command, environment=None):

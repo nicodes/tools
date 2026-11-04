@@ -63,6 +63,16 @@ class RecipeConfiguration(unittest.TestCase):
         with self.assertRaises(ValueError):
             configuration.godot_pins(self.root)
 
+    def test_reviewed_sha512_godot_pins_retain_their_exact_identity(self):
+        (self.root / 'mise.toml').write_text('[env]\nGODOT_VERSION="4.7.2"\nGODOT_EXPECTED_VERSION="4.7.2.stable.fixture"\n'
+            + 'GODOT_BINARY_CHECKSUM="sha512:' + 'a' * 128 + '"\nGODOT_TEMPLATES_CHECKSUM="sha512:' + 'b' * 128 + '"\n')
+        self.assertEqual(configuration.godot_pins(self.root)['GODOT_BINARY_CHECKSUM'], 'sha512:' + 'a' * 128)
+
+    def test_native_working_directory_cannot_escape_the_owning_checkout(self):
+        self.write('[[tests.unit]]\nrunner="python"\npath="tests/test_behavior.py"\ncwd="../outside"\n')
+        with self.assertRaises(ValueError):
+            configuration.load(self.root)
+
 
 if __name__ == '__main__':
     unittest.main()

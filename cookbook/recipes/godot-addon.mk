@@ -1,8 +1,9 @@
 COOKBOOK_PYTHON ?= python3
-COOKBOOK_ADDON = $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/godot_addon.py"
+COOKBOOK_EXEC ?= env MISE_AUTO_INSTALL=false MISE_EXEC_AUTO_INSTALL=false MISE_TRUSTED_CONFIG_PATHS="$(CURDIR)" mise exec --
+COOKBOOK_ADDON = $(COOKBOOK_EXEC) $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/godot_addon.py"
 
 define cookbook_setup
-$(COOKBOOK_ADDON) setup
+env MISE_TRUSTED_CONFIG_PATHS="$(CURDIR)" $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/godot_addon.py" setup
 endef
 define cookbook_fmt
 $(COOKBOOK_ADDON) fmt
@@ -32,7 +33,7 @@ define cookbook_test_all
 $(COOKBOOK_ADDON) test
 endef
 define cookbook_clean
-$(COOKBOOK_ADDON) clean
+$(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/godot_addon.py" clean
 endef
 
 include $(call cookbook_path,$(COOKBOOK_ROOT)/cookbook/common.mk)

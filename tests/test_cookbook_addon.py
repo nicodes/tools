@@ -51,7 +51,7 @@ path="tests/test_behavior.py"
             subprocess.run(['git', '-C', str(self.root), *argv], check=True)
 
     def make(self, operation):
-        return subprocess.run(['make', '--no-print-directory', operation, 'COOKBOOK_ROOT=' + str(TOOLS)],
+        return subprocess.run(['make', '--no-print-directory', operation, 'COOKBOOK_ROOT=' + str(TOOLS), 'COOKBOOK_EXEC='],
                               cwd=self.root, capture_output=True, text=True)
 
     def succeeded(self, operation):

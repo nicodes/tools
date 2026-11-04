@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
@@ -65,6 +66,22 @@ class CookbookGeneration(unittest.TestCase):
         path = self.root / 'cookbook.toml'
         path.write_text(path.read_text() + '\n[clean]\npaths=["dist"]\n')
         self.assertNotEqual(before, generator.makefile(self.root, 'a' * 40))
+
+    def test_generated_workflow_callers_are_valid_without_product_commands(self):
+        executable = shutil.which('actionlint')
+        self.assertIsNotNone(executable, 'the caller test requires the pinned actionlint SDK')
+        path = self.root / 'cookbook.toml'
+        path.write_text(path.read_text() + '\n[publication]\ntag_prefix="gd-v"\n')
+        files = generator.workflow_files(self.root, 'a' * 40)
+        for name, content in files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            self.assertNotIn('run:', content)
+        result = subprocess.run([executable, *files], cwd=self.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(set(files), {'.github/workflows/ci.yml', '.github/workflows/request-merge.yml',
+                                      '.github/workflows/release.yml'})
 
 
 if __name__ == '__main__':

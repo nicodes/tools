@@ -29,7 +29,11 @@ class ValidationEvidence(unittest.TestCase):
         addon_fixture.AddonRecipe.setUp(self)
         self.tools = ci.git(TOOLS, 'rev-parse', 'HEAD')
         (self.root / 'Makefile').write_text(generator.makefile(self.root, self.tools))
-        subprocess.run(['git', '-C', str(self.root), 'add', 'Makefile'], check=True)
+        for name, text in generator.workflow_files(self.root, self.tools).items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        subprocess.run(['git', '-C', str(self.root), 'add', 'Makefile', '.github'], check=True)
         subprocess.run(['git', '-C', str(self.root), '-c', 'user.name=CI Controls',
                         '-c', 'user.email=ci@example.invalid', 'commit', '-qm', 'pin fixture cookbook'], check=True)
         self.source = ci.git(self.root, 'rev-parse', 'HEAD')

@@ -8,6 +8,94 @@ import re
 from configuration import load
 
 
+def workflow_files(root, revision):
+    if not re.fullmatch('[a-f0-9]{40}', revision):
+        raise ValueError('cookbook workflows require a full source pin')
+    config = load(root)
+    if config['recipe'] != 'godot-addon':
+        raise ValueError('workflow callers for this recipe are not implemented yet')
+    header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
+    files = {'.github/workflows/ci.yml': header + '''name: Build & Test
+'on':
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source:
+        description: Exact source commit; defaults to this main revision
+        type: string
+        default: ''
+      tools:
+        description: Accepted cookbook commit; defaults to the pinned recipe
+        type: string
+        default: ''
+permissions: {}
+concurrency:
+  group: ci-${{ github.ref }}-${{ inputs.source || 'current' }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    uses: nicodes/tools/.github/workflows/cookbook-ci.yml@PIN
+    permissions:
+      contents: read
+    with:
+      tools-ref: ${{ inputs.tools || 'PIN' }}
+      source: ${{ inputs.source || github.sha }}
+      merge-gate: ${{ vars.COOKBOOK_REQUEST_MERGE == 'enabled' }}
+'''.replace('PIN', revision), '.github/workflows/request-merge.yml': header + '''name: Request merge
+'on':
+  workflow_dispatch:
+    inputs:
+      pull-request:
+        description: PR number to fully validate and merge when current
+        type: string
+        required: true
+permissions: {}
+concurrency:
+  group: cookbook-merge-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  request:
+    uses: nicodes/tools/.github/workflows/cookbook-request-merge.yml@PIN
+    permissions:
+      contents: write
+      pull-requests: read
+      statuses: write
+      actions: write
+    with:
+      tools-ref: PIN
+      pull-request: ${{ inputs.pull-request }}
+'''.replace('PIN', revision)}
+    if config.get('publication'):
+        files['.github/workflows/release.yml'] = header + '''name: Release
+'on':
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump; plugin.cfg must already match
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+permissions: {}
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  release:
+    uses: nicodes/tools/.github/workflows/cookbook-addon-release.yml@PIN
+    permissions:
+      contents: write
+    with:
+      tools-ref: PIN
+      bump: ${{ inputs.bump }}
+    secrets:
+      gdam-key: ${{ secrets.GDAM_API_KEY }}
+'''.replace('PIN', revision)
+    return files
+
+
 def makefile(root, revision):
     if not re.fullmatch('[a-f0-9]{40}', revision):
         raise ValueError('cookbook source must be pinned to a full commit')
@@ -53,15 +141,21 @@ def main():
     parser.add_argument('--root', type=Path, default=Path.cwd())
     parser.add_argument('--revision', required=True)
     parser.add_argument('--check', action='store_true')
+    parser.add_argument('--workflows', action='store_true')
     args = parser.parse_args()
     try:
         expected = makefile(args.root, args.revision)
-        path = args.root / 'Makefile'
-        if args.check:
-            if not path.is_file() or path.read_text() != expected:
-                raise ValueError('generated Makefile differs from its pinned recipe data')
-        else:
-            path.write_text(expected)
+        files = {'Makefile': expected}
+        if args.workflows:
+            files.update(workflow_files(args.root, args.revision))
+        for name, expected in files.items():
+            path = args.root / name
+            if args.check:
+                if not path.is_file() or path.read_text() != expected:
+                    raise ValueError('generated entrypoint differs from its pinned recipe data: ' + name)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(expected)
     except (OSError, ValueError) as error:
         parser.exit(1, str(error) + '\n')
 

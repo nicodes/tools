@@ -5,7 +5,8 @@ import tomllib
 
 RECIPES = {'rust-cli', 'react-native', 'godot-game', 'godot-addon', 'native'}
 SUITES = {'lint', 'unit', 'integration', 'e2e', 'security'}
-RUNNERS = {'python', 'node', 'bun', 'bash', 'godot', 'godot-suite'}
+RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
+           'bash', 'godot', 'godot-suite', 'godot-check'}
 
 
 def relative(root, name, *, exists=False):
@@ -43,7 +44,7 @@ def load(root):
         if not isinstance(entries, list) or not entries:
             raise ValueError('declared test groups must contain real checks')
         for entry in entries:
-            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel'}:
+            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern'}:
                 raise ValueError('invalid native test entry')
             if entry.get('runner') not in RUNNERS:
                 raise ValueError('unsupported native test runner')
@@ -52,7 +53,9 @@ def load(root):
                 if not isinstance(sentinel, str) or not sentinel or '\n' in sentinel or '\r' in sentinel:
                     raise ValueError('Godot tests require one exact assertion sentinel')
             program = relative(root, entry.get('path'), exists=True)
-            if not (program.is_dir() if entry['runner'] == 'godot-suite' else program.is_file()):
+            discovery = entry['runner'] in {'godot-suite', 'python-unittest', 'node-test', 'bun-test'}
+            if not (program.is_dir() if entry['runner'] == 'godot-suite' else
+                    (program.is_file() or program.is_dir()) if discovery else program.is_file()):
                 raise ValueError('test entry must name a source file')
             if not any(part in {'tests', 'test'} for part in Path(entry['path']).parts):
                 raise ValueError('product test entry points belong with their tests')
@@ -61,6 +64,13 @@ def load(root):
                 raise ValueError('native test arguments must be literal strings')
             if entry['runner'] == 'godot-suite' and arguments:
                 raise ValueError('Godot suite discovery does not accept script arguments')
+            if 'cwd' in entry and not relative(root, entry['cwd'], exists=True).is_dir():
+                raise ValueError('native test working directory must exist inside the checkout')
+            if 'pattern' in entry:
+                pattern = entry['pattern']
+                if (entry['runner'] not in {'python-unittest', 'node-test'} or not isinstance(pattern, str)
+                        or not pattern or '/' in pattern or '\\' in pattern or '\0' in pattern):
+                    raise ValueError('native test discovery requires one filename pattern')
             if type(entry.get('timeout', 300)) is not int or not 1 <= entry.get('timeout', 300) <= 3600:
                 raise ValueError('native tests require a bounded timeout')
     for name in data.get('clean', {}).get('paths', []):
@@ -78,6 +88,6 @@ def godot_pins(root):
     if not isinstance(pins['GODOT_EXPECTED_VERSION'], str) or not pins['GODOT_EXPECTED_VERSION'].startswith(pins['GODOT_VERSION'] + '.'):
         raise ValueError('Godot binary identity must match its pinned version')
     for name in ['GODOT_BINARY_CHECKSUM', 'GODOT_TEMPLATES_CHECKSUM']:
-        if not isinstance(pins[name], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', pins[name]):
+        if not isinstance(pins[name], str) or not re.fullmatch(r'(?:sha256:[a-f0-9]{64}|sha512:[a-f0-9]{128})', pins[name]):
             raise ValueError('Godot downloads require reviewed exact checksums')
     return pins

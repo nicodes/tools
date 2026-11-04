@@ -7,8 +7,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 from configuration import godot_pins, load, relative
+from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -61,7 +63,7 @@ def setup(root, config, env):
     run(command, root, env)
     for name in config.get('node', {}).get('packages', []):
         directory = relative(root, name, exists=True)
-        run(['npm', 'ci', '--prefix', str(directory), '--no-audit', '--no-fund'], root, env)
+        run(['mise', 'exec', '--', 'npm', 'ci', '--prefix', str(directory), '--no-audit', '--no-fund'], root, env)
     (root / '.artifacts/tmp').mkdir(exist_ok=True)
 
 
@@ -81,23 +83,7 @@ def lint(root, config, env):
 
 
 def test_entries(root, config, env, suite):
-    entries = config.get('tests', {}).get(suite, [])
-    if not entries:
-        raise ValueError('test group has no declared product checks: ' + suite)
-    for entry in entries:
-        program = relative(root, entry['path'], exists=True)
-        if entry['runner'] in {'godot', 'godot-suite'}:
-            native = helper('godot-test')
-            if entry['runner'] == 'godot-suite':
-                native.suite(env['GODOT_BIN'], root, program, entry['sentinel'], entry.get('timeout', 30), env)
-            else:
-                native.run(env['GODOT_BIN'], root, program, entry['sentinel'],
-                           entry.get('timeout', 30), entry.get('args', []), env)
-            continue
-        executable = {'python': sys.executable, 'node': 'node', 'bun': 'bun',
-                      'bash': 'bash'}[entry['runner']]
-        argv = [executable, str(program), *entry.get('args', [])]
-        run(argv, root, env, timeout=entry.get('timeout', 300))
+    run_entries(root, config, env, suite)
 
 
 def current_build(root, config, verification):
@@ -122,6 +108,21 @@ def main():
         if config['recipe'] != 'godot-addon':
             raise ValueError('Godot addon operations require the addon recipe')
         env = environment(root)
+        if args.operation not in {'setup', 'clean'} and (root / 'mise.toml').is_file():
+            tools = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
+            if tools.get('python') != '.'.join(map(str, sys.version_info[:3])):
+                raise ValueError('use the exact caller-pinned Python SDK; run make setup first')
+            required = ['python']
+            if args.operation == 'fmt':
+                required.append('pipx:gdtoolkit')
+            if args.operation in {'test', 'test:lint'} or (args.operation == '_test' and args.suite == 'lint'):
+                required.append('actionlint')
+            if config.get('node', {}).get('packages') and args.operation in {'test', 'test:security', '_test'}:
+                required.append('node')
+            for name in required:
+                if name not in tools:
+                    raise ValueError('declare the required SDK in mise.toml: ' + name)
+                subprocess.run(['mise', 'where', name], cwd=root, env=env, check=True, stdout=subprocess.DEVNULL)
         if args.operation == 'setup':
             setup(root, config, env)
         elif args.operation == 'fmt':
