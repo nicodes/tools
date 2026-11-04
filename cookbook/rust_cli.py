@@ -293,6 +293,12 @@ def setup(root, config, environment):
         pinned(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt'], root, environment)
     elif stage == 'full':
         rust_component.setup(root, components(config), environment, pinned)
+        runtime = config.get('components', {}).get('runtime')
+        if runtime:
+            if not isinstance(runtime, dict) or set(runtime) != {'manifest'}:
+                raise ValueError('runtime setup requires one caller-owned input manifest')
+            relative(root, runtime['manifest'], exists=True)
+            helper('runtime-inputs').prepare(root, runtime['manifest'])
         for package in config.get('components', {}).get('python', []):
             requirements = relative(root, package['requirements'], exists=True)
             destination = relative(root, package['target'])
