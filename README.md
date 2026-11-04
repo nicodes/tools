@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: c8714a848ecd7f99dd58e8147a509f6094a8a99c9d5e5abdbd4c2f0dc4d77a43 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 1e0377416d4a6faf2ec33328af683b71b15ed3d8ed2ea0512a5505571ca99337 -->
 
 # tools
 
@@ -132,3 +132,23 @@ The caller supplies its own `mise.toml` and required `check-command`. Verificati
 Publication requires an explicit dispatch from `main`. It refuses existing tags/releases, checks the complete archive matrix and SHA-256 checksums, stages a draft, verifies every uploaded asset digest, and publishes the draft only after the payload matches. Products own their versions, release assets, installer and additional acceptance checks. Installation does not require a tools checkout, a Go compiler or a server connection.
 
 Website exports can declare product byte limits with `helpers/site-contract.py OUTPUT --budget scripts/site-budget.json`. The JSON requires `max_total_bytes` and `max_file_bytes` for the complete export, `max_html_gzip_bytes` per page and `max_javascript_gzip_bytes` for all JavaScript. These reproducible byte checks complement browser acceptance; they do not claim network timing.
+
+
+## Cookbook building blocks
+
+The cookbook owns reusable automation implementations. `cookbook/common.mk` supplies the shared Make command interface to native recipe implementations. Its default target displays help; `build` runs compilation/packaging followed by output validation, while `test` runs the implemented lint, unit, integration, E2E and security groups without invoking setup or a product build. Optional development and database commands exist only when a recipe implements them. Recipe adoption is incremental; existing independently pinned interfaces remain available.
+
+The setup action accepts an optional `tools` input containing space-separated tool identifiers, such as `python rust`, to install only those tools at the versions declared by the caller. Leaving it empty preserves installation of all declared tools.
+
+For a closed-manifest addon package:
+
+```sh
+python3 "$TOOLS_ROOT/helpers/addon-package.py" build \
+  --source addon --manifest package.files --archive dist/addon.zip
+python3 "$TOOLS_ROOT/helpers/addon-package.py" verify \
+  --manifest package.files --archive dist/addon.zip
+```
+
+The manifest contains sorted, unique package-relative filenames. Packaging preserves their bytes and rejects unlisted files, traversal, source/archive symlinks and duplicate archive entries. Build validates the candidate archive before replacing the destination.
+
+`helpers/merge-candidate.py snapshot` records the pull request head, current main base, synthetic merge commit and exact tree. Its `verify` operation requires the same current identities and clean-source build/test proof. It refuses stale, conflicting, closed or draft candidates. The helper validates candidate identity; credentialed merge orchestration separately owns required job completion and merge authority.
