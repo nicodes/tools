@@ -17,6 +17,7 @@ from configuration import load, relative
 import rust_component
 import node_component
 import ui_component
+import native_components
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -86,6 +87,9 @@ def environment(root, config):
     python_paths = [str(relative(root, package['target'])) for package in config.get('components', {}).get('python', [])]
     if python_paths:
         value['PYTHONPATH'] = os.pathsep.join([*python_paths, *([value['PYTHONPATH']] if value.get('PYTHONPATH') else [])])
+    if config.get('components', {}).get('native'):
+        value['SOURCE_COMMIT'] = source
+        value.setdefault('RUST_TARGET', selected_target(package_data(root, config), value)['target'])
     return value
 
 
@@ -98,12 +102,19 @@ def binary_path(root, name):
 def verification_scope(root, config):
     artifacts = config.get('artifacts', {})
     paths = artifacts.get('paths', [])
+    if config.get('components', {}).get('native'):
+        environment_values = environment(root, config)
+        record = selected_target(package_data(root, config), environment_values)
+        selected = native_components.selection(config, environment_values)
+        native_paths = native_components.artifacts(root, config, record, environment_values)
+        paths = [*paths, *native_paths] if any(value['role'] == 'cli' for value in selected) else native_paths
     if not paths:
         raise ValueError('Rust build verification requires explicit product outputs')
     for name in paths:
         relative(root, name)
     return helper('verification').scope(artifacts=paths,
-        environment=artifacts.get('environment', ['VERSION', 'COMMIT', 'DATE', 'RUST_TARGET']),
+        environment=[*artifacts.get('environment', ['VERSION', 'COMMIT', 'DATE', 'RUST_TARGET']),
+                     *(['COOKBOOK_NATIVE_COMPONENTS'] if config.get('components', {}).get('native') else [])],
         revision_environment=artifacts.get('revision_environment', ['COMMIT']))
 
 
@@ -256,6 +267,10 @@ def product_tests(root, config, environment, suite, selected=None):
             helper('native_cli').immutable_fixture(root, fixture)
     arguments = {'{binary}': str(binary_path(root, config['package']['output'])), '{version}': environment['VERSION'],
                  '{root}': str(root), '{commit}': environment['COMMIT']}
+    if config.get('components', {}).get('native'):
+        record = selected_target(package_data(root, config), environment)
+        arguments.update({'{native.' + value['name'] + '}': str(native_components.output(root, value, native_components.platform(record)))
+                          for value in native_components.records(config)})
     for entry in entries:
         executable = {'python': sys.executable, 'node': 'node', 'bun': 'bun', 'bash': 'bash'}.get(entry['runner'])
         if executable is None:
@@ -318,6 +333,25 @@ def security(root, config, environment):
     product_tests(root, config, environment, 'security')
 
 
+def build_checks(root, config, environment):
+    entries = config.get('components', {}).get('build_checks', [])
+    if not isinstance(entries, list) or len(entries) > 32:
+        raise ValueError('build validation checks must be a bounded list')
+    for entry in entries:
+        if (not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'cwd', 'pattern'}
+                or entry.get('runner') not in {'python', 'python-unittest', 'bash', 'node', 'node-test', 'bun', 'bun-test'}
+                or 'tests' not in Path(entry.get('path', '')).parts):
+            raise ValueError('build checks must name real owned test assertion programs')
+        relative(root, entry['path'], exists=True)
+        if (not isinstance(entry.get('args', []), list)
+                or any(not isinstance(item, str) or '\0' in item for item in entry.get('args', []))
+                or type(entry.get('timeout', 300)) is not int or not 1 <= entry.get('timeout', 300) <= 3600):
+            raise ValueError('build check arguments and deadlines must be bounded native data')
+    if entries:
+        from native_tests import run_entries
+        run_entries(root, {'tests': {'build': entries}}, environment, 'build')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['setup', 'fmt', 'build', '_build', 'validate', 'test', '_test',
@@ -366,13 +400,32 @@ def main():
             node_component.build(root, config.get('node', {}).get('packages', []), env, run)
             ui_component.validate_build(root, config.get('components', {}).get('ui', []),
                                         config.get('node', {}).get('packages', []), env, run)
-            if not env.get('NATIVE_CLI_ARCHIVES'):
+            graph = config.get('components', {}).get('native')
+            contexts = []
+            record = selected_target(package_data(root, config), env) if graph else None
+            if graph:
+                if not env.get('NATIVE_CLI_ARCHIVES'):
+                    contexts = native_components.build(root, config, record, env, run)
+                native_components.verify(root, config, record, env)
+            elif not env.get('NATIVE_CLI_ARCHIVES'):
                 rust_component.build(root, components(config), env, run, target=env.get('RUST_TARGET'))
-            assemble(root, config, env)
-            validate_package(root, config, env)
-            rust_component.validate_build(root, components(config), env, run, target=env.get('RUST_TARGET'))
+            if not graph or any(value['role'] == 'cli' for value in native_components.selection(config, env)):
+                assemble(root, config, env)
+                validate_package(root, config, env)
+            if contexts:
+                for component, values in contexts:
+                    rust_component.validate_build(root, [component], values, run, target=env.get('RUST_TARGET'))
+            else:
+                rust_component.validate_build(root, components(config), env, run, target=env.get('RUST_TARGET'))
+            build_checks(root, config, env)
         elif args.operation == 'validate':
-            validate_package(root, config, env)
+            if config.get('components', {}).get('native'):
+                record = selected_target(package_data(root, config), env)
+                native_components.verify(root, config, record, env)
+                if any(value['role'] == 'cli' for value in native_components.selection(config, env)):
+                    validate_package(root, config, env)
+            else:
+                validate_package(root, config, env)
         else:
             verify = helper('verification')
             declaration = verification_scope(root, config)
@@ -397,8 +450,12 @@ def main():
                 suite = args.operation.split(':', 1)[1]
                 if suite in {'integration', 'e2e'}:
                     current_build(root, config)
+                    if config.get('components', {}).get('native') and not any(value['role'] == 'cli' for value in native_components.selection(config, env)) and not selected:
+                        raise ValueError('a partial native role build may run only declared filtered boundary checks')
                 if selected:
                     allowed = set(selected_target(package_data(root, config), env).get('checks', []))
+                    if config.get('components', {}).get('native'):
+                        allowed = {path for value in native_components.selection(config, env) for path in value.get('checks', [])}
                     if not set(selected) <= allowed:
                         raise ValueError('selected checks are not declared for this native target')
                     for path in selected:

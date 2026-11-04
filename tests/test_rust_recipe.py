@@ -42,7 +42,8 @@ import sys
 root=Path.cwd();output=root/'.artifacts';output.mkdir(exist_ok=True)
 with (output/'commands.jsonl').open('a') as stream:stream.write(json.dumps(sys.argv[1:])+'\n')
 if sys.argv[1]=='build':
-    binary=Path(os.environ['CARGO_TARGET_DIR'])/'release/example';binary.parent.mkdir(parents=True,exist_ok=True)
+    target=([sys.argv[sys.argv.index('--target')+1]] if '--target' in sys.argv else [])
+    binary=Path(os.environ['CARGO_TARGET_DIR']).joinpath(*target,'release/example');binary.parent.mkdir(parents=True,exist_ok=True)
     binary.write_text('#!'+sys.executable+'\nprint('+repr('example '+os.environ['VERSION']+' ('+os.environ['COMMIT']+')')+')\n');binary.chmod(0o755)
 ''')
         compiler.chmod(0o755)
@@ -103,6 +104,22 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
         self.assertEqual(commands, ['build', 'clippy'])
         self.assertTrue((self.root / '.artifacts/verification/build.json').is_file())
         self.assertEqual(len(list((self.root / '.artifacts/native-package').iterdir())), 2)
+
+    def test_api_wave_binds_only_its_outputs_and_cannot_claim_the_full_boundary_group(self):
+        data = self.root / 'cookbook.toml'
+        data.write_text(data.read_text() + '\n[[components.native]]\nname="api"\nrole="api"\ncomponent="cli"\nbinary="example"\noutput=".artifacts/native-api/example_{platform}_{arch}"\nchecks=["tests/boundary.py"]\n')
+        (self.root / 'Makefile').write_text(generate.makefile(self.root, 'a' * 40))
+        self.environment['COOKBOOK_NATIVE_COMPONENTS'] = '["api"]'
+        self.passed('build')
+        receipt = json.loads((self.root / '.artifacts/verification/build.json').read_text())
+        self.assertEqual(len(receipt['artifacts']), 2)
+        self.assertTrue(all(name.startswith('.artifacts/native-api/') for name in receipt['artifacts']))
+        self.assertFalse((self.root / 'dist').exists())
+        result = self.make('test:integration')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('partial native role build', result.stderr)
+        self.passed('test:integration', ['tests/boundary.py'])
+        self.assertFalse((self.root / '.artifacts/verification/integration.json').exists())
 
     def test_boundary_tests_require_existing_outputs_without_building(self):
         self.assertNotEqual(self.make('test:integration').returncode, 0)

@@ -25,12 +25,15 @@ def records(config):
     names = set()
     cargo_names = {value.get('name') for value in config['components']['rust']}
     for value in values:
-        if not isinstance(value, dict) or set(value) - {'name', 'role', 'component', 'binary', 'output', 'environment', 'needs'}:
+        if not isinstance(value, dict) or set(value) - {'name', 'role', 'component', 'binary', 'output', 'environment', 'needs', 'checks'}:
             raise ValueError('unsupported native component declaration')
         name = value.get('name')
         if not isinstance(name, str) or not re.fullmatch('[A-Za-z0-9_-]{1,64}', name) or name in names:
             raise ValueError('native component names must be unique identifiers')
         names.add(name)
+        checks = value.get('checks', [])
+        if not isinstance(checks, list) or len(checks) > 128 or any(not isinstance(path, str) or 'tests' not in Path(path).parts or '..' in Path(path).parts for path in checks) or len(checks) != len(set(checks)):
+            raise ValueError('native role checks must be declared test source paths')
         if value.get('role') not in {'api', 'host', 'cli'} or value.get('component') not in cargo_names:
             raise ValueError('native roles must select a declared Cargo component')
         if not isinstance(value.get('binary'), str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', value['binary']):
