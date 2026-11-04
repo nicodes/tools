@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from configuration import godot_pins, load, relative
 from native_tests import run_entries
 import rust_component
+import godot_package
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -49,7 +50,8 @@ def project(root, config):
 def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
-               'import_ignored_patterns', 'lint_arguments', 'forbidden_diagnostics', 'art_sources'}
+               'import_ignored_patterns', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
+               'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
     if values.get('origin', 'godot') not in {'godot', 'godot-builds'}:
@@ -60,9 +62,11 @@ def validate_config(root, config):
         raise ValueError('Godot test concurrency must be bounded')
     if type(values.get('import_timeout', 180)) is not int or not 1 <= values.get('import_timeout', 180) <= 600:
         raise ValueError('Godot imports require a bounded reviewed deadline')
+    if values.get('import_stage', 'setup') not in {'setup', 'build'}:
+        raise ValueError('native imports belong to explicit setup or build stages')
     seen = set()
     for export in values.get('exports', []):
-        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform'}:
+        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility'}:
             raise ValueError('unsupported native Godot export setting')
         if export.get('kind', 'release') not in {'release', 'debug'} or export.get('platform', 'web') not in {'web', 'linux', 'windows', 'macos'}:
             raise ValueError('unsupported Godot export kind or platform')
@@ -79,6 +83,7 @@ def validate_config(root, config):
         relative(root, package['path'], exists=True)
         if package.get('manager', 'npm') != 'npm' or type(package.get('ignore_scripts', False)) is not bool:
             raise ValueError('native Node package setup requires reviewed npm data')
+    godot_package.validate(root, config, verification_scope(root, config)['artifacts'])
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
 
@@ -166,6 +171,12 @@ def setup(root, config, env):
          '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, env)
     if (directory / 'gdam.json').exists():
         helper('godot-addons').restore(directory)
+    if settings.get('import_stage', 'setup') == 'setup':
+        import_native(root, config, env)
+
+
+def import_native(root, config, env):
+    directory, settings = project(root, config)
     strict = helper('godot-game-runner')
     helper('godot-project').import_project(directory, env['GODOT_BIN'],
         lambda argv, timeout: strict.main(argv, timeout=timeout, environment=env),
@@ -268,6 +279,9 @@ def compile_outputs(root, config, env):
         helper('godot-addons').verify(directory)
     if config.get('components', {}).get('rust'):
         rust_component.build(root, config['components']['rust'], env, run)
+    godot_package.author(root, config, env, run, 'prepare')
+    if settings.get('import_stage', 'setup') == 'build':
+        import_native(root, config, env)
     exports = settings.get('exports', [])
     if not exports:
         raise ValueError('build requires at least one real native export')
@@ -277,6 +291,10 @@ def compile_outputs(root, config, env):
     for export in exports:
         presets.append((export['preset'], relative(root, export['output']), export.get('kind', 'release')))
     helper('godot-export').export(directory, presets, binary=env['GODOT_BIN'])
+    godot_package.runtime(root, config)
+    godot_package.packs(root, config, env)
+    godot_package.author(root, config, env, run, 'postprocess')
+    godot_package.package(root, config, env)
     validate_outputs(root, config, env, compiler=True)
 
 

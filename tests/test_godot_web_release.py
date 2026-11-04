@@ -251,6 +251,18 @@ class ArtifactTests(unittest.TestCase):
                 decoded = subprocess.run(['node', str(helper), 'decompress'], input=encoded, capture_output=True, check=True, timeout=10).stdout
                 self.assertEqual(decoded, source)
 
+    def test_extra_pack_metadata_is_derived_from_real_payloads_and_cannot_override_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            (root / 'optional.pck').write_bytes(self.pack(['res://optional.scn']))
+            prepare(root, policy={'pack_metadata': {'optional_pack_entries': 'optional.pck'}})
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            self.assertEqual(manifest['optional_pack_entries'], 1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            with self.assertRaisesRegex(ValueError, 'existing native resource pack'):
+                prepare(root, policy={'pack_metadata': {'source_commit': 'index.pck'}})
+
     @staticmethod
     def pack(names, flags=0, version=2):
         data = b"GDPC" + struct.pack("<5IQ", version, 4, 7, 2, flags, 0)

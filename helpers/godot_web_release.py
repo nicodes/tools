@@ -63,7 +63,7 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
     allowed = {'payload_directories', 'forbidden_prefixes', 'forbidden_names',
                'required_pack_paths', 'deferred_payloads', 'brotli_wasm', 'brotli_timeout',
                'recovery_id', 'failure_function', 'release_root', 'strip_cache_query',
-               'max_file_bytes', 'max_tree_bytes'}
+               'max_file_bytes', 'max_tree_bytes', 'pack_metadata'}
     if not isinstance(policy, dict) or set(policy) - allowed:
         raise ValueError('Unknown Godot payload policy')
     for key in ['payload_directories', 'forbidden_prefixes', 'forbidden_names', 'required_pack_paths']:
@@ -134,6 +134,19 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
         if path.suffix != '.png':
             files[name]['gzip_bytes'] = len(compressed)
             files[name]['transfer_encoding'] = 'br' if use_brotli else 'gzip'
+    extra_packs = policy.get('pack_metadata', {})
+    if not isinstance(extra_packs, dict):
+        raise ValueError('extra pack metadata requires a literal name/path table')
+    pack_metadata = {}
+    reserved = {'files', 'transfer_bytes', 'pack_entries', 'release_id', 'layout', 'source_commit',
+                'deferred_transfer_bytes', 'full_transfer_bytes', 'duplicate_logical_bytes_removed'}
+    for key, name in extra_packs.items():
+        if (not isinstance(key, str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,63}', key)
+                or key in reserved or not isinstance(name, str) or name not in files or not name.endswith('.pck')):
+            raise ValueError('extra pack metadata must name an existing native resource pack')
+        pack_metadata[key] = len(pack_paths(root / name))
+        if not pack_metadata[key]:
+            raise ValueError('extra resource packs must contain actual resources')
     release_id = stage_version(root, files, relative_urls=relative_urls,
         **{key: policy[key] for key in ['recovery_id', 'failure_function', 'release_root', 'strip_cache_query'] if key in policy})
     html = (root / 'index.html').read_bytes()
@@ -156,6 +169,7 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
     if max_transfer_bytes and total > max_transfer_bytes:
         raise ValueError(f"Cold payload {total:,} bytes exceeds the caller budget")
     manifest = {"files": files, "transfer_bytes": total, "pack_entries": len(paths), "release_id": release_id}
+    manifest.update(pack_metadata)
     if deferred:
         manifest.update(full_transfer_bytes=full_total, deferred_transfer_bytes=deferred_total)
     if versioned_only:
@@ -163,18 +177,23 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
         # directory separate from this generated serving root; no links cross the
         # extraction boundary and every browser-facing versioned URL is unchanged.
         manifest.update(compact_payloads(root, files, release_id, root_files))
-    for name in ['max_file_bytes', 'max_tree_bytes']:
-        if type(policy.get(name, 0)) is not int or policy.get(name, 0) < 0:
-            raise ValueError('Hosting byte limits must be nonnegative integers')
     if source_commit is not None:
         manifest['source_commit'] = source_commit
     (root / "release-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    validate_hosting(root, policy)
+    print(json.dumps(manifest, indent=2))
+
+
+def validate_hosting(root, policy):
+    root = Path(root)
+    for name in ['max_file_bytes', 'max_tree_bytes']:
+        if type(policy.get(name, 0)) is not int or policy.get(name, 0) < 0:
+            raise ValueError('Hosting byte limits must be nonnegative integers')
     physical = [path for path in root.rglob('*') if path.is_file()]
     if policy.get('max_file_bytes') and any(path.stat().st_size > policy['max_file_bytes'] for path in physical):
         raise ValueError('Release file exceeds the caller hosting byte limit')
     if policy.get('max_tree_bytes') and sum(path.stat().st_size for path in physical) > policy['max_tree_bytes']:
         raise ValueError('Release tree exceeds the caller hosting byte limit')
-    print(json.dumps(manifest, indent=2))
 
 
 if __name__ == "__main__":
