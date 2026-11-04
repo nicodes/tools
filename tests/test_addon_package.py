@@ -2,6 +2,7 @@ import importlib.util
 import os
 from pathlib import Path
 import stat
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -70,6 +71,53 @@ class AddonPackage(unittest.TestCase):
             self.skipTest('symlink creation unavailable')
         with self.assertRaisesRegex(ValueError, 'symlink'):
             package.build(self.source, self.manifest, self.archive)
+
+    def test_archive_source_and_installed_bytes_are_independently_checked(self):
+        package.build(self.source, self.manifest, self.archive)
+        installed = self.root/'installed'
+        shutil.copytree(self.source, installed)
+        package.verify(self.archive, self.manifest, self.source, installed)
+        (installed/'plugin.cfg').write_text('changed installed bytes')
+        with self.assertRaisesRegex(ValueError, 'installed addon bytes'):
+            package.verify(self.archive, self.manifest, installed=installed)
+        (self.source/'plugin.cfg').write_text('changed source bytes')
+        with self.assertRaisesRegex(ValueError, 'archive bytes'):
+            package.verify(self.archive, self.manifest, source=self.source)
+
+    def test_uid_policy_detects_missing_both_source_and_manifest_and_duplicate_ids(self):
+        for name, uid in [('first', 'uid://first'), ('second', 'uid://second')]:
+            (self.source/(name+'.gd')).write_text('extends Node\n')
+            (self.source/(name+'.gd.uid')).write_text(uid+'\n')
+        self.manifest.write_text(''.join(p.relative_to(self.source).as_posix()+'\n' for p in sorted(self.source.iterdir())))
+        package.build(self.source, self.manifest, self.archive, script_uids=True)
+        before = self.archive.read_bytes()
+        (self.source/'second.gd.uid').write_text('uid://first\n')
+        with self.assertRaisesRegex(ValueError, 'unique'):
+            package.build(self.source, self.manifest, self.archive, script_uids=True)
+        self.assertEqual(self.archive.read_bytes(), before)
+        (self.source/'second.gd.uid').write_text('uid://second\n')
+        (self.source/'first.gd.uid').unlink()
+        self.manifest.write_text(self.manifest.read_text().replace('first.gd.uid\n', ''))
+        with self.assertRaisesRegex(ValueError, 'UID sidecar'):
+            package.build(self.source, self.manifest, self.archive, script_uids=True)
+
+    def test_installed_tree_closure_rejects_added_generated_files(self):
+        package.build(self.source, self.manifest, self.archive)
+        installed = self.root/'installed'
+        shutil.copytree(self.source, installed)
+        (installed/'unexpected.uid').write_text('uid://unexpected\n')
+        with self.assertRaisesRegex(ValueError, 'closed manifest'):
+            package.verify(self.archive, self.manifest, installed=installed)
+
+    def test_non_regular_archive_entries_cannot_pass_as_payload(self):
+        self.archive.parent.mkdir()
+        with zipfile.ZipFile(self.archive, 'w') as archive:
+            info = zipfile.ZipInfo('plugin.cfg')
+            info.create_system = 3
+            info.external_attr = (stat.S_IFIFO | 0o600) << 16
+            archive.writestr(info, 'payload')
+        with self.assertRaisesRegex(ValueError, 'non-regular'):
+            package.verify(self.archive, self.manifest)
 
     def test_archive_duplicates_and_symlinks_are_refused(self):
         self.archive.parent.mkdir()
