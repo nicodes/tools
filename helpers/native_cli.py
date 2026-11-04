@@ -13,6 +13,8 @@ import struct
 import subprocess
 import tarfile
 import zipfile
+from urllib.parse import quote
+import urllib.request
 
 BINARY = re.compile(r'[a-z][a-z0-9-]*\Z')
 FILE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]*\Z')
@@ -218,3 +220,61 @@ def checksums(directory, names):
         if not FILE.fullmatch(name) or (directory / name).is_symlink() or not (directory / name).is_file():
             raise ValueError('native checksums require regular flat payload files')
     return ''.join(digest(directory / name) + '  ' + name + '\n' for name in sorted(names))
+
+
+def immutable_fixture(root, declaration, *, install=False):
+    """Materialize or verify a source-pinned former release for compatibility tests."""
+    root = Path(root).resolve()
+    manifest = root / declaration['manifest']
+    if manifest.is_symlink() or not manifest.resolve().is_relative_to(root) or manifest.stat().st_size > 262144:
+        raise ValueError('native fixture manifest must be bounded caller-owned source')
+    record = json.loads(manifest.read_text())
+    repository = declaration['repository']
+    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
+        raise ValueError('invalid native fixture repository')
+    package = {'binary': declaration['binary'], 'files': declaration.get('files', ['README.md']),
+               'native_targets': declaration['native_targets']}
+    target = native_target(package)
+    name = archive_name(package, target)
+    folder = root / '.artifacts/fixtures' / package['binary'] / (target['platform'] + '-' + target['arch'])
+    if folder.is_symlink():
+        raise ValueError('native fixture directory cannot be a link')
+    if install:
+        folder.mkdir(parents=True, exist_ok=True)
+    elif not folder.is_dir():
+        raise ValueError('immutable native fixture is missing; run make setup')
+    for filename, expected in [(name, record['archives'][name]), ('checksums.txt', record['checksums_sha256'])]:
+        if not re.fullmatch('[a-f0-9]{64}', expected):
+            raise ValueError('native fixtures require exact reviewed SHA256 values')
+        path = folder / filename
+        if path.is_symlink():
+            raise ValueError('native fixture files cannot be symlinks')
+        if not path.is_file() or digest(path) != expected:
+            if not install:
+                raise ValueError('immutable native fixture is missing or changed; run make setup')
+            url = 'https://github.com/' + repository + '/releases/download/' + quote(record['tag'], safe='') + '/' + quote(filename, safe='')
+            with urllib.request.urlopen(url, timeout=60) as response:
+                content = response.read((64 << 20) + 1)
+            if len(content) > 64 << 20 or hashlib.sha256(content).hexdigest() != expected:
+                raise ValueError('immutable native fixture download differs from its reviewed hash')
+            path.write_bytes(content)
+    if f"{record['archives'][name]}  {name}" not in (folder / 'checksums.txt').read_text().splitlines():
+        raise ValueError('native fixture checksum manifest omits its archive identity')
+    payload = inspect_archive(folder / name, package, target)
+    binary = folder / executable(package, target)
+    expected = payload[executable(package, target)]
+    if binary.is_symlink():
+        raise ValueError('native fixture executable cannot be a link')
+    if not binary.is_file() or binary.read_bytes() != expected:
+        if not install:
+            raise ValueError('immutable fixture executable changed after preparation')
+        binary.write_bytes(expected)
+        binary.chmod(0o755)
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in {'GH_TOKEN', 'GITHUB_TOKEN', 'TOKEN', 'SECRET', 'PASSWORD'}
+                   and not key.endswith(('_API_KEY', '_TOKEN', '_PASSWORD', '_SECRET'))}
+    text = subprocess.check_output([str(binary), *declaration.get('version_arguments', ['--version'])],
+                                   env=environment, text=True, timeout=15).splitlines()
+    if not text or text[0] not in declaration['version_first_lines'] or render(declaration['source_line'], record) not in text:
+        raise ValueError('native compatibility fixture does not report the reviewed source/version')
+    return binary

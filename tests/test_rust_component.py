@@ -58,6 +58,12 @@ class NativeCargoComponent(unittest.TestCase):
         with self.assertRaises(ValueError):
             cargo.cargo_args({'test': {'test_arguments': ['--list']}}, 'unit')
 
+    def test_distributable_binary_selection_does_not_drop_library_or_workspace_tests(self):
+        component = {'binaries': ['example'], 'workspace': True}
+        self.assertIn('--bin', cargo.cargo_args(component, 'build'))
+        self.assertNotIn('--bin', cargo.cargo_args(component, 'unit'))
+        self.assertNotIn('--bin', cargo.cargo_args(component, 'lint'))
+
 
 if __name__ == '__main__':
     unittest.main()

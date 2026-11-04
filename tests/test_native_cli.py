@@ -1,11 +1,15 @@
 import importlib.util
 import io
+import json
+import os
 from pathlib import Path
 import stat
 import tarfile
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
+import sys
 
 spec = importlib.util.spec_from_file_location('native_cli_package_controls', Path(__file__).resolve().parents[1] / 'helpers/native_cli.py')
 native = importlib.util.module_from_spec(spec)
@@ -80,6 +84,29 @@ class NativeArchive(unittest.TestCase):
         with self.assertRaises(ValueError):
             native.inspect_archive(archive, self.package, record, destination)
         self.assertEqual((destination / 'example').read_bytes(), b'existing')
+
+    @unittest.skipIf(os.name == 'nt', 'fixture executable uses a POSIX shebang; actual Windows native fixtures are verified by hosted consumers')
+    def test_cached_reference_fixture_requires_exact_archive_binary_and_source(self):
+        system, arch = native.host()
+        target = {'platform': system, 'arch': arch, 'extension': 'tar.gz', 'target': 'native-host'}
+        source = 'a' * 40
+        self.binary.write_text('#!' + sys.executable + '\nprint("example fixture")\nprint("commit: ' + source + '")\n')
+        cache = self.root / '.artifacts/fixtures/example' / (system + '-' + arch)
+        archive = native.write_archive(self.root, self.binary, self.package, target, cache)
+        checksums = native.checksums(cache, [archive.name])
+        (cache / 'checksums.txt').write_text(checksums)
+        record = {'tag': 'v0.0.1', 'source_commit': source, 'archives': {archive.name: native.digest(archive)},
+                  'checksums_sha256': native.digest(cache / 'checksums.txt')}
+        (self.root / 'fixture.json').write_text(json.dumps(record))
+        declaration = {'repository': 'owner/project', 'binary': 'example', 'manifest': 'fixture.json',
+                       'native_targets': [target], 'version_first_lines': ['example fixture'],
+                       'source_line': 'commit: {source_commit}'}
+        with patch.object(native.urllib.request, 'urlopen', side_effect=AssertionError('cached fixture must not download')):
+            binary = native.immutable_fixture(self.root, declaration, install=True)
+            self.assertEqual(native.immutable_fixture(self.root, declaration), binary)
+            binary.write_bytes(b'changed after fixture setup')
+            with self.assertRaisesRegex(ValueError, 'changed after preparation'):
+                native.immutable_fixture(self.root, declaration)
 
 
 if __name__ == '__main__':

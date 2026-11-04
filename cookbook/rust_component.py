@@ -83,6 +83,10 @@ def cargo_args(component, operation, *, target=None):
     if operation not in commands:
         raise ValueError('unsupported native Cargo operation')
     values = component | component.get({'unit': 'test', 'fmt-check': 'lint'}.get(operation, operation), {})
+    if operation in {'unit', 'lint'} and 'binaries' not in component.get('test' if operation == 'unit' else 'lint', {}):
+        # A package's distributable executables do not restrict its library,
+        # workspace or integration-test coverage.
+        values = {key: value for key, value in values.items() if key != 'binaries'}
     argv = ['cargo', commands[operation]]
     if operation not in {'fmt', 'fmt-check'}:
         argv.append('--locked')
@@ -144,7 +148,7 @@ def invoke(root, components, environment, operation, run, *, target=None):
     if not components:
         raise ValueError('a Rust operation requires at least one real Cargo component')
     count = 0
-    selector = {'unit': 'test'}.get(operation, operation)
+    selector = {'unit': 'test', 'fmt-check': 'lint'}.get(operation, operation)
     for component in components:
         validate(component, root)
         if component.get(selector, {}).get('enabled') is False:

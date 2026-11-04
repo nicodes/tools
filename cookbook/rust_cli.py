@@ -77,6 +77,14 @@ def environment(root, config):
         if not re.fullmatch('[A-Z][A-Z0-9_]*', name):
             raise ValueError('invalid native binary environment selector')
         value[name] = str(binary_path(root, path))
+    for fixture in config.get('components', {}).get('fixtures', []):
+        record = helper('native_cli').native_target({'native_targets': fixture['native_targets']})
+        binary = fixture['binary'] + ('.exe' if record['platform'] == 'Windows' else '')
+        value[fixture['environment']] = str(root / '.artifacts/fixtures' / fixture['binary'] /
+                                            (record['platform'] + '-' + record['arch']) / binary)
+    python_paths = [str(relative(root, package['target'])) for package in config.get('components', {}).get('python', [])]
+    if python_paths:
+        value['PYTHONPATH'] = os.pathsep.join([*python_paths, *([value['PYTHONPATH']] if value.get('PYTHONPATH') else [])])
     return value
 
 
@@ -230,6 +238,9 @@ def validate_package(root, config, environment):
             raise ValueError('staged native source receipt or bytes changed')
     if (root / 'dist/checksums.txt').read_text() != native.checksums(root / 'dist', [*expected, *package.get('extra_files', [])]):
         raise ValueError('native package checksums changed')
+    if package.get('release_metadata') and json.loads((root / 'dist/release.json').read_text()) != {
+            'revision': environment['COMMIT'], 'version': environment['VERSION']}:
+        raise ValueError('release metadata belongs to another source or version')
     native.verify_identity(binary_path(root, package['output']), package, selected_target(package, environment), environment)
 
 
@@ -239,11 +250,17 @@ def product_tests(root, config, environment, suite, selected=None):
         entries = [entry for entry in entries if entry['path'] in selected]
         if {entry['path'] for entry in entries} != set(selected):
             raise ValueError('selected native checks must be exact declared product test entries')
+    if entries and suite in {'unit', 'integration', 'e2e'}:
+        for fixture in config.get('components', {}).get('fixtures', []):
+            helper('native_cli').immutable_fixture(root, fixture)
+    arguments = {'{binary}': str(binary_path(root, config['package']['output'])), '{version}': environment['VERSION'],
+                 '{root}': str(root), '{commit}': environment['COMMIT']}
     for entry in entries:
         executable = {'python': sys.executable, 'node': 'node', 'bun': 'bun', 'bash': 'bash'}.get(entry['runner'])
         if executable is None:
             raise ValueError('unsupported Rust recipe native test entry')
-        run([executable, str(relative(root, entry['path'], exists=True)), *entry.get('args', [])],
+        run([executable, str(relative(root, entry['path'], exists=True)),
+             *[arguments.get(value, value) for value in entry.get('args', [])]],
             root, environment, timeout=entry.get('timeout', 300))
     return len(entries)
 
@@ -260,6 +277,13 @@ def setup(root, config, environment):
         pinned(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt'], root, environment)
     elif stage == 'full':
         rust_component.setup(root, components(config), environment, pinned)
+        for package in config.get('components', {}).get('python', []):
+            requirements = relative(root, package['requirements'], exists=True)
+            destination = relative(root, package['target'])
+            pinned(['python3', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir',
+                    '--require-hashes', '--target', str(destination), '-r', str(requirements)], root, environment)
+        for fixture in config.get('components', {}).get('fixtures', []):
+            helper('native_cli').immutable_fixture(root, fixture, install=True)
     if config.get('node', {}).get('packages'):
         node_component.install(root, config['node']['packages'], environment, pinned)
     (root / '.artifacts/tmp').mkdir(parents=True, exist_ok=True)
