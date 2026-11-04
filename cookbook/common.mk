@@ -1,6 +1,6 @@
 # Shared public command contract. Recipe files supply native implementations.
 .DEFAULT_GOAL := help
-.NOTPARALLEL: test
+.NOTPARALLEL: test _cookbook-tests
 
 COOKBOOK_TEST_SUITES ?= lint unit security
 COOKBOOK_KNOWN_SUITES := lint unit integration e2e security
@@ -15,7 +15,7 @@ define cookbook_require
 $(if $(strip $(value $(1))),$(call $(1)),$(error recipe does not implement $(2)))
 endef
 
-.PHONY: help setup fmt build test test\:lint test\:unit test\:security clean
+.PHONY: help setup fmt build test _cookbook-tests test\:lint test\:unit test\:security clean
 
 help:
 	@printf '%s\n' 'make help       List implemented commands' 'make setup      Prepare pinned tools and dependencies' 'make fmt        Apply formatting' 'make build      Compile, package and validate outputs' 'make test       Run implemented test groups without building' 'make test:lint  Check formatting, code and configuration' 'make test:unit  Run isolated behavior tests' 'make test:security  Run applicable security checks' 'make clean      Remove declared outputs; preserve retained data'
@@ -51,7 +51,14 @@ build:
 	$(call cookbook_require,cookbook_build,build)
 	$(call cookbook_require,cookbook_validate,build output validation)
 
-test: test\:lint test\:unit test\:security
+test:
+ifdef cookbook_test_all
+	$(call cookbook_test_all)
+else
+	@$(MAKE) --no-print-directory _cookbook-tests
+endif
+
+_cookbook-tests: test\:lint test\:unit test\:security
 
 test\:lint:
 	$(call cookbook_require,cookbook_test_lint,test:lint)
@@ -64,14 +71,14 @@ test\:security:
 
 ifneq ($(filter integration,$(COOKBOOK_TEST_SUITES)),)
 .PHONY: test\:integration
-test: test\:integration
+_cookbook-tests: test\:integration
 test\:integration:
 	$(call cookbook_require,cookbook_test_integration,test:integration)
 endif
 
 ifneq ($(filter e2e,$(COOKBOOK_TEST_SUITES)),)
 .PHONY: test\:e2e
-test: test\:e2e
+_cookbook-tests: test\:e2e
 test\:e2e:
 	$(call cookbook_require,cookbook_test_e2e,test:e2e)
 endif
