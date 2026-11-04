@@ -12,6 +12,13 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Validate selected caller tools
+      if: inputs.tools != ''
+      shell: bash
+      env:
+        CALLER_DIRECTORY: ${{ inputs.directory }}
+        CALLER_TOOLS: ${{ inputs.tools }}
+      run: python3 "$GITHUB_ACTION_PATH/../helpers/select-tools.py" --directory "$CALLER_DIRECTORY" --tools "$CALLER_TOOLS"
     - name: "Set up tools"
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       with:
