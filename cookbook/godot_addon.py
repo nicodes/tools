@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 
 from configuration import godot_pins, load, relative
 
@@ -61,7 +62,7 @@ def setup(root, config, env):
     run(command, root, env)
     for name in config.get('node', {}).get('packages', []):
         directory = relative(root, name, exists=True)
-        run(['npm', 'ci', '--prefix', str(directory), '--no-audit', '--no-fund'], root, env)
+        run(['mise', 'exec', '--', 'npm', 'ci', '--prefix', str(directory), '--no-audit', '--no-fund'], root, env)
     (root / '.artifacts/tmp').mkdir(exist_ok=True)
 
 
@@ -122,6 +123,21 @@ def main():
         if config['recipe'] != 'godot-addon':
             raise ValueError('Godot addon operations require the addon recipe')
         env = environment(root)
+        if args.operation not in {'setup', 'clean'} and (root / 'mise.toml').is_file():
+            tools = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
+            if tools.get('python') != '.'.join(map(str, sys.version_info[:3])):
+                raise ValueError('use the exact caller-pinned Python SDK; run make setup first')
+            required = ['python']
+            if args.operation == 'fmt':
+                required.append('pipx:gdtoolkit')
+            if args.operation in {'test', 'test:lint'} or (args.operation == '_test' and args.suite == 'lint'):
+                required.append('actionlint')
+            if config.get('node', {}).get('packages') and args.operation in {'test', 'test:security', '_test'}:
+                required.append('node')
+            for name in required:
+                if name not in tools:
+                    raise ValueError('declare the required SDK in mise.toml: ' + name)
+                subprocess.run(['mise', 'where', name], cwd=root, env=env, check=True, stdout=subprocess.DEVNULL)
         if args.operation == 'setup':
             setup(root, config, env)
         elif args.operation == 'fmt':
