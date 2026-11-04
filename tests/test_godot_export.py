@@ -35,3 +35,32 @@ class ExportIsolation(unittest.TestCase):
         import subprocess
         with patch.object(helper.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, 'ERROR: invalid asset\n')):
             with self.assertRaises(RuntimeError): helper.checked(['godot'])
+
+    def test_debug_and_linux_exports_keep_distinct_native_modes_and_destinations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'app'
+            source.mkdir()
+            (source / 'project.godot').write_text('[application]\nconfig/name="fixture"\n')
+            debug = root / 'debug/index.html'
+            linux = root / 'linux/game.x86_64'
+            commands = []
+            def run(command):
+                commands.append(command)
+                if '--export-debug' in command or '--export-release' in command:
+                    Path(command[-1]).write_bytes(b'native export')
+            helper.export(source, [('Web', debug, 'debug'), ('Linux', linux, 'release')], run=run)
+            self.assertEqual(commands[-2][-3:], ['--export-debug', 'Web', str(debug)])
+            self.assertEqual(commands[-1][-3:], ['--export-release', 'Linux', str(linux)])
+            self.assertTrue(debug.is_file())
+            self.assertTrue(linux.is_file())
+
+    def test_invalid_or_conflicting_export_identity_never_starts_the_engine(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'project.godot').write_text('[application]\n')
+            for presets in [[('Web', root / 'out', 'unknown')], [('Web', root / 'out'), ('Linux', root / 'out')]]:
+                commands = []
+                with self.assertRaises(ValueError):
+                    helper.export(root, presets, run=commands.append)
+                self.assertEqual(commands, [])
