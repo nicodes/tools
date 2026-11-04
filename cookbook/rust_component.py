@@ -1,5 +1,6 @@
 """Typed Cargo operations shared by recipes; caller data never supplies commands."""
 from pathlib import Path
+import os
 import re
 import tomllib
 
@@ -9,7 +10,8 @@ NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.+/-]*\Z')
 TARGET = re.compile(r'[a-z0-9_]+(?:-[a-z0-9_]+){2,}\Z')
 BASE_FIELDS = {'name', 'manifest', 'binaries', 'packages', 'features', 'all_features',
                'no_default_features', 'workspace', 'all_targets', 'release',
-               'targets', 'target', 'target_directory', 'profile', 'test', 'build', 'lint', 'environment'}
+               'targets', 'target', 'target_directory', 'profile', 'test', 'build', 'lint', 'environment',
+               'toolchain_environment', 'build_std', 'cwd', 'timeout'}
 SELECTORS = {'binaries', 'packages', 'features', 'all_features', 'no_default_features',
              'workspace', 'all_targets', 'release', 'profile', 'lib', 'tests', 'enabled',
              'test_targets', 'test_filter', 'test_arguments'}
@@ -70,6 +72,20 @@ def validate(component, root=None):
             relative(root, directory)
         elif not isinstance(directory, str) or Path(directory).is_absolute() or '..' in Path(directory).parts or '\\' in directory:
             raise ValueError('Cargo target directory must stay inside the checkout')
+    if 'cwd' in component:
+        if root is not None:
+            if not relative(root, component['cwd'], exists=True).is_dir():
+                raise ValueError('Cargo cwd must be a native source directory')
+        elif not isinstance(component['cwd'], str) or Path(component['cwd']).is_absolute() or '..' in Path(component['cwd']).parts:
+            raise ValueError('Cargo cwd must stay inside the checkout')
+    if 'timeout' in component and (type(component['timeout']) is not int or not 1 <= component['timeout'] <= 3600):
+        raise ValueError('Cargo timeouts must be bounded native data')
+    if type(component.get('build_std', False)) is not bool:
+        raise ValueError('Cargo build_std must be a boolean')
+    if component.get('toolchain_environment') and (not isinstance(component['toolchain_environment'], str) or not re.fullmatch('[A-Z][A-Z0-9_]*', component['toolchain_environment'])):
+        raise ValueError('nightly compiler must select a caller Mise environment pin')
+    if component.get('build_std') and not component.get('toolchain_environment'):
+        raise ValueError('building Rust std requires an explicitly pinned nightly SDK')
     environment = component.get('environment', {})
     if (not isinstance(environment, dict) or any(not re.fullmatch('[A-Z][A-Z0-9_]*', key)
             or not isinstance(value, str) or '\0' in value for key, value in environment.items())):
@@ -77,7 +93,7 @@ def validate(component, root=None):
     return component
 
 
-def cargo_args(component, operation, *, target=None):
+def cargo_args(component, operation, *, target=None, environment=None):
     validate(component)
     commands = {'fetch': 'fetch', 'fmt': 'fmt', 'fmt-check': 'fmt', 'lint': 'clippy', 'unit': 'test', 'build': 'build'}
     if operation not in commands:
@@ -88,10 +104,17 @@ def cargo_args(component, operation, *, target=None):
         # workspace or integration-test coverage.
         values = {key: value for key, value in values.items() if key != 'binaries'}
     argv = ['cargo', commands[operation]]
+    if component.get('toolchain_environment') and operation not in {'fmt', 'fmt-check'}:
+        pin = (environment or os.environ).get(component['toolchain_environment'])
+        if not isinstance(pin, str) or not re.fullmatch(r'nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}', pin):
+            raise ValueError('native Cargo requires the exact caller Mise nightly pin')
+        argv = ['rustup', 'run', pin, *argv]
     if operation not in {'fmt', 'fmt-check'}:
         argv.append('--locked')
         if operation != 'fetch':
             argv.append('--offline')
+    if component.get('build_std') and operation not in {'fmt', 'fmt-check'}:
+        argv.append('-Zbuild-std')
     argv += ['--manifest-path', component.get('manifest', 'Cargo.toml')]
     if operation in {'fmt', 'fmt-check'}:
         if values.get('workspace'):
@@ -142,8 +165,15 @@ def cargo_args(component, operation, *, target=None):
     return argv
 
 
-def component_environment(component, environment):
-    return {**environment, **component.get('environment', {})}
+def component_environment(component, environment, root=None):
+    values = {**environment, **component.get('environment', {}), 'RUSTUP_AUTO_INSTALL': '0'}
+    if component.get('toolchain_environment') and root is not None:
+        name = component['toolchain_environment']
+        pin = tomllib.loads((Path(root) / 'mise.toml').read_text()).get('env', {}).get(name)
+        if not isinstance(pin, str) or not re.fullmatch(r'nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}', pin) or values.get(name, pin) != pin:
+            raise ValueError('nightly SDK must match the exact caller Mise environment pin')
+        values[name] = pin
+    return values
 
 
 def invoke(root, components, environment, operation, run, *, target=None):
@@ -155,8 +185,20 @@ def invoke(root, components, environment, operation, run, *, target=None):
         validate(component, root)
         if component.get(selector, {}).get('enabled') is False:
             continue
-        run(cargo_args(component, operation, target=target), root,
-            component_environment(component, environment))
+        values = component_environment(component, environment, root)
+        argv = cargo_args(component, operation, target=target, environment=values)
+        cwd = relative(root, component.get('cwd', '.'), exists=True)
+        if cwd != root:
+            for flag in ['--manifest-path', '--target-dir']:
+                if flag in argv:
+                    index = argv.index(flag) + 1
+                    argv[index] = str(relative(root, argv[index], exists=flag == '--manifest-path'))
+            if values.get('CARGO_TARGET_DIR') and not Path(values['CARGO_TARGET_DIR']).is_absolute():
+                values['CARGO_TARGET_DIR'] = str(relative(root, values['CARGO_TARGET_DIR']))
+        if component.get('timeout') is not None and operation in {'build', 'unit', 'lint'}:
+            run(argv, cwd, values, timeout=component['timeout'])
+        else:
+            run(argv, cwd, values)
         count += 1
     if not count:
         raise ValueError('the Cargo operation has no applicable native components')
@@ -169,15 +211,30 @@ def setup(root, components, environment, run):
     if not isinstance(version, str) or not re.fullmatch(r'\d+\.\d+\.\d+', version):
         raise ValueError('Rust SDK must be exactly pinned in mise.toml')
     run(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt', 'clippy'], root, environment)
-    targets = {target for component in components for target in validate(component, root).get('targets', [])}
-    targets.update(component['target'] for component in components if component.get('target'))
+    stable = [component for component in components if not component.get('toolchain_environment')]
+    targets = {target for component in stable for target in validate(component, root).get('targets', [])}
+    targets.update(component['target'] for component in stable if component.get('target'))
     if environment.get('RUST_TARGET'):
         if not TARGET.fullmatch(environment['RUST_TARGET']):
             raise ValueError('invalid native CI Rust target')
         targets.add(environment['RUST_TARGET'])
-    targets = sorted(targets)
     if targets:
-        run(['rustup', 'target', 'add', '--toolchain', version, *targets], root, environment)
+        run(['rustup', 'target', 'add', '--toolchain', version, *sorted(targets)], root, environment)
+    installed = set()
+    for component in components:
+        validate(component, root)
+        if not component.get('toolchain_environment'):
+            continue
+        values = component_environment(component, environment, root)
+        nightly = values[component['toolchain_environment']]
+        if nightly not in installed:
+            run(['rustup', 'toolchain', 'install', nightly, '--profile', 'minimal', '--component', 'rust-src', '--component', 'rustfmt', '--component', 'clippy'], root, environment)
+            installed.add(nightly)
+        extra = set(component.get('targets', []))
+        if component.get('target'):
+            extra.add(component['target'])
+        if extra and not component.get('build_std'):
+            run(['rustup', 'target', 'add', '--toolchain', nightly, *sorted(extra)], root, environment)
     invoke(root, components, environment, 'fetch', run, target=environment.get('RUST_TARGET'))
 
 
