@@ -2,15 +2,18 @@
 """Build portable CLI archives and publish only complete, immutable payloads."""
 import argparse
 import hashlib
-import json
+import importlib.util
 import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tarfile
 import tempfile
-from urllib.parse import quote
 import zipfile
+
+spec = importlib.util.spec_from_file_location('tools_github_release', Path(__file__).resolve().parents[1] / 'helpers/github_release.py')
+github_release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(github_release)
 
 TARGETS = [('linux', 'amd64', 'Linux', 'x86_64'),
            ('linux', 'arm64', 'Linux', 'arm64'),
@@ -36,27 +39,12 @@ def binary_name(value):
 
 
 def release_tag(value):
-    if not re.fullmatch(r'(?:[a-z][a-z0-9-]*-)?v[0-9]+\.[0-9]+\.[0-9]+', value):
-        raise ValueError('expected a stable semantic release tag')
-    return value
+    return github_release.tag(value)
 
 
 def version(bump, prefix='v', root=Path('.')):
-    if bump not in ('patch', 'minor', 'major'):
-        raise ValueError('invalid version bump')
-    if not re.fullmatch(r'(?:[a-z][a-z0-9-]*-)?v', prefix):
-        raise ValueError('invalid tag prefix')
     tags = run('git', 'tag', '--list', cwd=root).splitlines()
-    versions = [tuple(map(int, tag[len(prefix):].split('.'))) for tag in tags
-                if re.fullmatch(re.escape(prefix) + r'[0-9]+\.[0-9]+\.[0-9]+', tag)]
-    if not versions:
-        parts = (0, 0, 1)
-    else:
-        major, minor, patch = max(versions)
-        parts = {'patch': (major, minor, patch + 1),
-                 'minor': (major, minor + 1, 0), 'major': (major + 1, 0, 0)}[bump]
-    number = '.'.join(map(str, parts))
-    return number, prefix + number
+    return github_release.version(bump, prefix, tags)
 
 
 def checksums(directory):
@@ -165,45 +153,13 @@ def build(binary, package, module_dir, directory, tag, source, version_symbol=''
 
 
 def absent(repo, endpoint):
-    result = subprocess.run(['gh', 'api', '--include', f'repos/{repo}/{endpoint}'],
-                            text=True, capture_output=True, check=False)
-    status = re.search(r'^HTTP/\S+ (\d+)', result.stdout, re.M)
-    if result.returncode == 0:
-        raise ValueError('release tags and releases must be new; existing objects are immutable')
-    if not status or status[1] != '404':
-        raise ValueError('could not establish that the release identity is unused')
+    return github_release.absent(repo, endpoint)
 
 
 def publish(directory, binary, tag, source, repo, extra_files=(), platforms='linux,darwin'):
-    release_tag(tag)
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo):
-        raise ValueError('invalid repository')
-    if not re.fullmatch(r'[a-f0-9]{40}', source) or source != os.environ.get('GITHUB_SHA'):
-        raise ValueError('publication must use this workflow source commit')
-    if os.environ.get('GITHUB_REF') != 'refs/heads/main' or os.environ.get('GITHUB_EVENT_NAME') != 'workflow_dispatch':
-        raise ValueError('publication requires an explicit main-branch dispatch')
     expected = validate(directory, binary, extra_files, platforms)
-    # The tag endpoint excludes drafts. Refuse draft identities as well, and
-    # inspect the new draft by its database ID after uploading its assets.
-    existing = run('gh', 'api', '--paginate', f'repos/{repo}/releases?per_page=100',
-                   '--jq', '.[].tag_name')
-    if tag in existing.splitlines():
-        raise ValueError('release identities must be new, including drafts')
-    absent(repo, 'git/ref/tags/' + quote(tag, safe=''))
-    absent(repo, 'releases/tags/' + quote(tag, safe=''))
-    files = [str(Path(directory) / name) for name in expected]
-    subprocess.run(['gh', 'release', 'create', tag, *files, '--repo', repo, '--target', source,
-                    '--draft', '--title', tag, '--notes', 'Prebuilt CLI binaries from source ' + source + '.'], check=True)
-    release_id = run('gh', 'release', 'view', tag, '--repo', repo,
-                     '--json', 'databaseId', '--jq', '.databaseId')
-    if not re.fullmatch(r'[1-9][0-9]*', release_id):
-        raise ValueError('GitHub did not identify the uploaded draft')
-    uploaded = json.loads(run('gh', 'api', f'repos/{repo}/releases/{release_id}'))
-    actual = {asset['name']: asset.get('digest') for asset in uploaded['assets']}
-    if (not uploaded['draft'] or uploaded['tag_name'] != tag or uploaded['target_commitish'] != source
-            or actual != {name: 'sha256:' + digest for name, digest in expected.items()}):
-        raise ValueError('uploaded draft differs from the verified payload; it remains unpublished')
-    subprocess.run(['gh', 'release', 'edit', tag, '--repo', repo, '--draft=false'], check=True)
+    github_release.publish(directory, expected, tag, source, repo,
+                           notes='Prebuilt CLI binaries from source ' + source + '.')
 
 
 def main():
