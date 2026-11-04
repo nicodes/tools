@@ -96,7 +96,8 @@ def required_tools(root, config, stage):
     if stage in {'unit', 'integration', 'e2e'} and rust_components(config):
         result.add('rust')
     if stage in {'full', 'security'}:
-        result.add('trivy')
+        if rust_components(config) or config.get('security', {}).get('images'):
+            result.add('trivy')
         if config.get('security', {}).get('go_images'):
             result |= {'go', 'go:golang.org/x/vuln/cmd/govulncheck'}
         if config.get('security', {}).get('spdx_images'):
@@ -214,6 +215,9 @@ def setup(root, config, environment):
 def lint(root, config, environment):
     run(['actionlint'], root, environment)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, environment)
+    if config.get('lint', {}).get('auth_policy'):
+        run(['bun', str(TOOLS / 'helpers/auth-boundary.mjs'), '--policy',
+             str(relative(root, config['lint']['auth_policy'], exists=True))], root, environment)
     node_component.lint(root, packages(config), environment, run)
     for value in packages(config):
         _, directory = node_component.validate(value, root)

@@ -73,7 +73,8 @@ trivy="0.74.0"
 mprocs="0.9.6"
 ''')
         self.assertEqual(recipe.required_tools(self.root, {}, 'fast'), ['actionlint', 'node', 'python'])
-        self.assertIn('trivy', recipe.required_tools(self.root, {}, 'security'))
+        self.assertIn('trivy', recipe.required_tools(self.root, {'security': {'images': ['gate']}}, 'security'))
+        self.assertNotIn('trivy', recipe.required_tools(self.root, {}, 'security'))
         self.assertNotIn('mprocs', recipe.required_tools(self.root, {}, 'full'))
 
     def test_expo_development_passes_selected_port_and_never_signals_listeners(self):
