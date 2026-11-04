@@ -155,6 +155,10 @@ def format(root, components, environment, run):
 
 def lint(root, components, environment, run, *, target=None):
     invoke(root, components, environment, 'fmt-check', run)
+
+
+def validate_build(root, components, environment, run, *, target=None):
+    """Compiler-backed validation runs after required product assets exist."""
     invoke(root, components, environment, 'lint', run, target=target)
 
 
