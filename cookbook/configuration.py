@@ -45,14 +45,24 @@ def load(root):
         if not isinstance(entries, list) or not entries:
             raise ValueError('declared test groups must contain real checks')
         for entry in entries:
-            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern'}:
+            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern', 'policy', 'python_environment'}:
                 raise ValueError('invalid native test entry')
             if entry.get('runner') not in RUNNERS:
                 raise ValueError('unsupported native test runner')
+            policy = entry.get('policy', {})
+            policy_keys = {'sentinel_regex', 'assertions_regex', 'allow_errors', 'editor', 'audio_driver', 'allow_error_version'}
+            if (not isinstance(policy, dict) or set(policy)-policy_keys
+                    or (policy and entry['runner'] not in {'godot', 'godot-check'})):
+                raise ValueError('native assertion policy is unsupported for this runner')
             if entry['runner'] in {'godot', 'godot-suite'}:
                 sentinel = entry.get('sentinel')
-                if not isinstance(sentinel, str) or not sentinel or '\n' in sentinel or '\r' in sentinel:
+                regex_signal = entry['runner'] == 'godot' and isinstance(policy.get('sentinel_regex'), str)
+                if not regex_signal and (not isinstance(sentinel, str) or not sentinel or '\n' in sentinel or '\r' in sentinel):
                     raise ValueError('Godot tests require one exact assertion sentinel')
+            if 'python_environment' in entry:
+                if entry['runner'] not in {'python', 'python-unittest'}:
+                    raise ValueError('Python environments apply only to native Python test runners')
+                relative(root, entry['python_environment'])
             program = relative(root, entry.get('path'), exists=True)
             discovery = entry['runner'] in {'godot-suite', 'python-unittest', 'node-test', 'bun-test'}
             if not (program.is_dir() if entry['runner'] == 'godot-suite' else

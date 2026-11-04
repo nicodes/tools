@@ -36,17 +36,25 @@ def run_entries(root, config, environment, suite, custom_runners=None):
             if kind == 'godot-suite':
                 native.suite(environment['GODOT_BIN'], cwd, program, entry['sentinel'], timeout, environment)
             else:
-                native.run(environment['GODOT_BIN'], cwd, program, entry['sentinel'], timeout, arguments, environment)
+                native.run(environment['GODOT_BIN'], cwd, program, entry.get('sentinel'), timeout, arguments, environment,
+                           **entry.get('policy', {}))
             continue
+        python = sys.executable
+        if entry.get('python_environment'):
+            declared = config.get('components', {}).get('python', [])
+            if entry['python_environment'] not in [item.get('venv') for item in declared]:
+                raise ValueError('native Python tests require a declared prepared environment')
+            directory = relative(root, entry['python_environment'], exists=True)
+            python = str(relative(root, (directory.relative_to(root) / ('Scripts/python.exe' if sys.platform == 'win32' else 'bin/python')).as_posix(), exists=True))
         if kind in {'python', 'node', 'bun', 'bash'}:
-            executable = {'python': sys.executable, 'node': 'node', 'bun': 'bun', 'bash': 'bash'}[kind]
+            executable = {'python': python, 'node': 'node', 'bun': 'bun', 'bash': 'bash'}[kind]
             command = [executable, str(program), *arguments]
         elif kind == 'python-unittest':
             directory = program if program.is_dir() else program.parent
             pattern = entry.get('pattern', 'test*.py' if program.is_dir() else program.name)
             if not list(directory.rglob(pattern)):
                 raise ValueError('Python test discovery matched no native test files')
-            command = [sys.executable, '-m', 'unittest', 'discover', '-s', str(directory), '-p', pattern, *arguments]
+            command = [python, '-m', 'unittest', 'discover', '-s', str(directory), '-p', pattern, *arguments]
         elif kind == 'node-test':
             files = sorted(program.rglob(entry.get('pattern', '*.test.*'))) if program.is_dir() else [program]
             if not files or any(path.is_symlink() or not path.is_file() for path in files):
