@@ -73,6 +73,11 @@ class RecipeConfiguration(unittest.TestCase):
         with self.assertRaises(ValueError):
             configuration.load(self.root)
 
+    def test_paths_cannot_inject_multiline_artifact_inputs_or_windows_stream_names(self):
+        for path in ['tests/first\nsecond', 'tests/file\rname', 'tests/file:stream', 'tests/null\0name']:
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                configuration.relative(self.root, path)
+
 
 if __name__ == '__main__':
     unittest.main()

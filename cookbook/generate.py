@@ -104,6 +104,9 @@ def makefile(root, revision):
     recipe = config['recipe']
     suites = ['lint', 'unit', 'security', *[s for s in ['integration', 'e2e'] if s in config.get('tests', {})]]
     digest = hashlib.sha256((root / 'cookbook.toml').read_bytes()).hexdigest()
+    capabilities = ['dev'] if config.get('dev') else []
+    capabilities += ['db:' + name for name in ['status', 'migrate', 'seed', 'reset']
+                     if name in config.get('database', {})]
     help_lines = ['make help', 'make setup', 'make fmt', 'make build', 'make test',
                   *['make test:' + suite for suite in suites], 'make clean']
     if config.get('dev'):
@@ -117,6 +120,7 @@ def makefile(root, revision):
              'COOKBOOK_RECIPE := ' + recipe,
              'COOKBOOK_ROOT ?= .artifacts/cookbook/$(COOKBOOK_REF)',
              'COOKBOOK_TEST_SUITES := ' + ' '.join(suites),
+             'COOKBOOK_CAPABILITIES := ' + ' '.join(capabilities),
              'COOKBOOK_EMPTY :=',
              'COOKBOOK_SPACE := $(COOKBOOK_EMPTY) $(COOKBOOK_EMPTY)',
              'cookbook_path = $(subst $(COOKBOOK_SPACE),\\$(COOKBOOK_SPACE),$(1))',

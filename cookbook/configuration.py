@@ -10,7 +10,8 @@ RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
 
 
 def relative(root, name, *, exists=False):
-    if not isinstance(name, str) or not name or '\\' in name:
+    if (not isinstance(name, str) or not name or '\\' in name or ':' in name
+            or any(ord(character) < 32 for character in name)):
         raise ValueError('recipe paths must be nonempty relative paths')
     path = Path(name)
     if path.is_absolute() or '..' in path.parts or '.git' in path.parts:
