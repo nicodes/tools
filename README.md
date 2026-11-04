@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 1e0377416d4a6faf2ec33328af683b71b15ed3d8ed2ea0512a5505571ca99337 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 9fd2d8bb2e443ca32f94a865d4f2dbd4361e261d2cb4e193cf5681d2794ee554 -->
 
 # tools
 
@@ -152,3 +152,12 @@ python3 "$TOOLS_ROOT/helpers/addon-package.py" verify \
 The manifest contains sorted, unique package-relative filenames. Packaging preserves their bytes and rejects unlisted files, traversal, source/archive symlinks and duplicate archive entries. Build validates the candidate archive before replacing the destination.
 
 `helpers/merge-candidate.py snapshot` records the pull request head, current main base, synthetic merge commit and exact tree. Its `verify` operation requires the same current identities and clean-source build/test proof. It refuses stale, conflicting, closed or draft candidates. The helper validates candidate identity; credentialed merge orchestration separately owns required job completion and merge authority.
+
+
+`cookbook/generate.py --root PROJECT --revision FULL_COMMIT` generates a small pinned `Makefile` from `cookbook.toml`. Before setup, bare `make` works offline and lists the available interface. `make setup` fetches that exact cookbook source; other commands never fetch it implicitly. CI can check generated content with `--check`. Mise remains the caller's SDK pin authority.
+
+The `godot-addon` adapter accepts a closed package source, manifest and archive; native test entrypoints under the caller's tests; required source paths; and explicit generated cleanup paths. It implements native formatting with the caller-pinned `gdformat`, archive packaging and checksum validation, fresh test-session evidence and tracked-source security checks. Integration and E2E groups require the existing build to match current source inputs and artifact hashes. Test failures invalidate the aggregate success receipt. Product assertions and fixtures stay in the caller's tests.
+
+A `godot-suite` test entry names a native test directory, an exact assertion prefix in `sentinel` and a per-test `timeout`. The shared runner discovers `*_test.gd` files, runs each in an isolated home and requires one exact `<sentinel> <test filename without extension>` line, a clean exit and no engine failure messages. Missing suites, missing/duplicate assertions and exceeded deadlines fail. Direct `godot` entries instead name one test file and its complete sentinel.
+
+Addon ZIP output is deterministic across checkout timestamps. `helpers/addon-package.py checksum --archive ARCHIVE` validates its exact one-line `.sha256` sidecar; `verify --checksums SIDECAR` also checks that sidecar without rewriting it. `helpers/source-secrets.py` scans tracked text for high-confidence credentials and reports fingerprints without printing values. Deliberate credential fixtures require reviewed exact-file hashes and reasons; this source check complements dependency and product security tests.

@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import stat
 import tempfile
@@ -35,6 +36,24 @@ class AddonPackage(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'differs'):
             package.build(self.source, self.manifest, self.archive)
         self.assertEqual(self.archive.read_bytes(), before)
+
+    def test_checkout_timestamps_do_not_change_archive_identity(self):
+        package.build(self.source, self.manifest, self.archive)
+        before = self.archive.read_bytes()
+        os.utime(self.source / 'plugin.cfg', (1_000_000_000, 1_000_000_000))
+        package.build(self.source, self.manifest, self.archive)
+        self.assertEqual(self.archive.read_bytes(), before)
+
+    def test_checksum_validation_refuses_mutated_or_ambiguous_identities(self):
+        digest = package.build(self.source, self.manifest, self.archive)
+        sidecar = self.archive.with_suffix('.zip.sha256')
+        sidecar.write_text(digest + '  addon.zip\n')
+        self.assertEqual(package.verify_checksum(self.archive), digest)
+        for value in ['0' * 64 + '  addon.zip\n', digest + '  other.zip\n',
+                      digest + '  addon.zip\n' + digest + '  addon.zip\n']:
+            sidecar.write_text(value)
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                package.verify_checksum(self.archive)
 
     def test_unsafe_and_duplicate_manifest_paths_are_refused(self):
         for value in ['../outside\n', '/outside\n', 'dir\\file\n', 'a/./b\n',

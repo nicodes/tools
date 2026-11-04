@@ -4,6 +4,7 @@ import argparse
 import hashlib
 from pathlib import Path, PurePosixPath
 import stat
+import re
 import tempfile
 import zipfile
 
@@ -36,6 +37,20 @@ def verify(archive, manifest):
     return hashlib.sha256(Path(archive).read_bytes()).hexdigest()
 
 
+def verify_checksum(archive, checksums=None):
+    archive = Path(archive)
+    checksums = Path(checksums) if checksums is not None else archive.with_suffix(archive.suffix + '.sha256')
+    if archive.is_symlink() or checksums.is_symlink():
+        raise ValueError('package checksum inputs may not be symlinks')
+    lines = checksums.read_text().splitlines()
+    if len(lines) != 1:
+        raise ValueError('package checksum requires one exact archive identity')
+    match = re.fullmatch(r'([a-f0-9]{64})  ' + re.escape(archive.name), lines[0])
+    if match is None or hashlib.sha256(archive.read_bytes()).hexdigest() != match[1]:
+        raise ValueError('package checksum mismatch')
+    return match[1]
+
+
 def build(source, manifest, archive):
     source, archive = Path(source), Path(archive)
     expected = manifest_files(manifest)
@@ -58,7 +73,11 @@ def build(source, manifest, archive):
         candidate = Path(temporary) / 'package.zip'
         with zipfile.ZipFile(candidate, 'w', compression=zipfile.ZIP_DEFLATED) as package:
             for name in expected:
-                package.write(source / name, name)
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.external_attr = (stat.S_IFREG | 0o644 | ((source / name).stat().st_mode & 0o111)) << 16
+                package.writestr(info, (source / name).read_bytes())
         digest = verify(candidate, manifest)
         candidate.replace(archive)
     return digest
@@ -66,14 +85,22 @@ def build(source, manifest, archive):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['build', 'verify'])
+    parser.add_argument('operation', choices=['build', 'verify', 'checksum'])
     parser.add_argument('--source', default='addon')
-    parser.add_argument('--manifest', required=True)
+    parser.add_argument('--manifest')
     parser.add_argument('--archive', required=True)
+    parser.add_argument('--checksums')
     args = parser.parse_args()
     try:
-        digest = (build(args.source, args.manifest, args.archive) if args.operation == 'build'
-                  else verify(args.archive, args.manifest))
+        if args.operation == 'checksum':
+            digest = verify_checksum(args.archive, args.checksums)
+        else:
+            if not args.manifest:
+                parser.error('build and verify require --manifest')
+            digest = (build(args.source, args.manifest, args.archive) if args.operation == 'build'
+                      else verify(args.archive, args.manifest))
+            if args.checksums:
+                verify_checksum(args.archive, args.checksums)
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         parser.exit(1, str(error) + '\n')
     print(digest + '  ' + args.archive)
