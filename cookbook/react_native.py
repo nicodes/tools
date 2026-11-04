@@ -365,7 +365,11 @@ def behavioral_tests(root, config, environment, suite):
     count = 0
     if suite == 'unit':
         count += node_component.test(root, packages(config), environment, run)
-    records = {record['manifest']: record for record in cargo_records(config, environment)}
+    records = {}
+    for record in cargo_records(config, environment):
+        # A later build-only fixture can compile the same native crate with
+        # different features. It must not replace the declared product test base.
+        records.setdefault(record['manifest'], record)
     for entry in config.get('components', {}).get('rust_tests', []):
         if entry.get('suite') == suite:
             if entry.get('manifest') not in records:

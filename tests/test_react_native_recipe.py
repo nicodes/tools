@@ -64,6 +64,19 @@ class ReactNativeRecipe(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'no real implemented checks'):
             recipe.behavioral_tests(self.root, {}, {}, 'unit')
 
+    def test_build_only_fixture_features_cannot_replace_product_test_component(self):
+        config = {'components': {'rust': [
+            {'manifest': 'api/Cargo.toml', 'features': [], 'environment': {}},
+            {'manifest': 'api/Cargo.toml', 'features': ['localdev'], 'test': {'enabled': False}, 'environment': {}}],
+            'rust_tests': [{'manifest': 'api/Cargo.toml', 'suite': 'unit', 'selectors': {'lib': True}}]}}
+        from unittest.mock import Mock
+        cargo = Mock()
+        with patch.object(recipe, 'cargo', return_value=cargo):
+            recipe.behavioral_tests(self.root, config, {}, 'unit')
+        selected = cargo.test.call_args.args[1][0]
+        self.assertEqual(selected['features'], [])
+        self.assertEqual(selected['test'], {'lib': True})
+
     def test_required_tools_select_only_current_lane_capabilities(self):
         (self.root / 'mise.toml').write_text('''[tools]
 python="3.13.11"
