@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import socket
 import sys
 import tempfile
 import unittest
@@ -74,6 +75,35 @@ mprocs="0.9.6"
         self.assertEqual(recipe.required_tools(self.root, {}, 'fast'), ['actionlint', 'node', 'python'])
         self.assertIn('trivy', recipe.required_tools(self.root, {}, 'security'))
         self.assertNotIn('mprocs', recipe.required_tools(self.root, {}, 'full'))
+
+    def test_expo_development_passes_selected_port_and_never_signals_listeners(self):
+        (self.root / 'app').mkdir()
+        calls = []
+        with patch.object(recipe, 'select_port', return_value=8181), patch.object(recipe, 'run', side_effect=lambda *args: calls.append(args)):
+            recipe.launch_development(self.root, {'dev': {'kind': 'expo', 'port': 8081}}, {})
+        self.assertEqual(calls[0][0], ['bun', '--no-env-file', 'run', '--cwd', str(self.root / 'app'), 'start', '--port', '8181'])
+        self.assertEqual(calls[0][2], {'EXPO_NO_DOTENV': '1'})
+        self.assertEqual(len(calls), 1)
+
+    def test_database_reset_isolated_to_local_identity_and_owned_checkout_lease(self):
+        (self.root / 'ghenv.json').write_text('{"version":1}')
+        calls = []
+        config = {'dev': {'kind': 'native'}, 'database': {'reset': {'runner': 'python', 'path': 'internal/dev/database.py'}}}
+        with patch.object(recipe, 'pinned_ghenv', return_value='/owned/sdk/ghenv'), patch.object(recipe, 'run', side_effect=lambda *args: calls.append(args)):
+            recipe.database(self.root, config, {'APP_VERSION': self.source}, 'db:reset')
+        command = calls[0][0]
+        self.assertIn('clean', command)
+        self.assertIn('/owned/sdk/ghenv', command)
+        self.assertIn('local', command)
+        self.assertEqual(command[-3:], ['_database', '--suite', 'reset'])
+
+    def test_port_selection_refuses_an_occupied_port_without_killing_its_owner(self):
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0))
+            port = listener.getsockname()[1]
+            with self.assertRaisesRegex(ValueError, 'no available'):
+                recipe.select_port(port, 1)
+            self.assertEqual(listener.getsockname()[1], port)
 
 
 if __name__ == '__main__':

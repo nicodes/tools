@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """React Native application operations behind the shared Make contract."""
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -47,7 +49,9 @@ def configure_environment(root, config):
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     values = {'APP_VERSION': revision, 'CI': '1', 'GOTOOLCHAIN': 'local',
               'TOOLS_ROOT': str(TOOLS), 'PYTHONDONTWRITEBYTECODE': '1',
-              'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright')}
+              'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright'),
+              'MISE_AUTO_INSTALL': 'false', 'MISE_EXEC_AUTO_INSTALL': 'false',
+              'MISE_TRUSTED_CONFIG_PATHS': str(root)}
     if os.environ.get('APP_VERSION') not in {None, '', revision}:
         raise ValueError('APP_VERSION must match this exact source checkout')
     app = config.get('components', {}).get('app', {})
@@ -366,7 +370,11 @@ def behavioral_tests(root, config, environment, suite):
             cargo().test(root, [record], environment, run)
             count += 1
     if config.get('tests', {}).get(suite):
-        run_entries(root, config, environment, suite)
+        if suite == 'e2e':
+            with images.gate_fixture(root, config, environment) as selected:
+                run_entries(root, config, selected, suite)
+        else:
+            run_entries(root, config, environment, suite)
         count += 1
     if not count:
         raise ValueError('native behavioral test group has no real implemented checks: ' + suite)
@@ -377,17 +385,125 @@ def check_sdks(root, config, operation, environment, suite=None):
     if pins.get('python') != '.'.join(map(str, sys.version_info[:3])):
         raise ValueError('use the exact caller-pinned Python SDK; run make setup first')
     stage = {'fmt': 'format', 'test:lint': 'fast', 'test:unit': 'unit',
-             'test:integration': 'integration', 'test:e2e': 'e2e', 'test:security': 'security'}.get(operation, 'full')
+             'test:integration': 'integration', 'test:e2e': 'e2e', 'test:security': 'security',
+             'dev': 'dev', '_dev': 'dev', '_database': 'dev',
+             **{name: 'dev' for name in ['db:status', 'db:migrate', 'db:seed', 'db:reset']}}.get(operation, 'full')
     if operation == '_test':
         stage = 'fast' if suite == 'lint' else suite
     for name in required_tools(root, config, stage):
         subprocess.run(['mise', 'where', name], cwd=root, env=environment, check=True, stdout=subprocess.DEVNULL)
 
 
+def development_project(root):
+    # Preserve the existing checkout identity; retained database volumes continue
+    # to belong to exactly the same development project after this migration.
+    return 'komizo-' + hashlib.sha256(os.path.normpath(str(root)).encode()).hexdigest()[:16]
+
+
+def select_port(preferred, attempts=100):
+    if type(preferred) is not int or type(attempts) is not int or not 1 <= preferred <= 65535 or not 1 <= attempts <= 1000:
+        raise ValueError('development port and bounded attempt count must be positive native integers')
+    for port in range(preferred, min(preferred + attempts, 65536)):
+        with socket.socket() as listener:
+            try:
+                listener.bind(('127.0.0.1', port))
+            except OSError:
+                continue
+            return port
+    raise ValueError('no available checkout development port')
+
+
+def launch_development(root, config, environment):
+    values = config.get('dev', {})
+    if values.get('kind') == 'expo':
+        directory = relative(root, values.get('directory', 'app'), exists=True)
+        port = select_port(values.get('port', 8081), values.get('port_attempts', 100))
+        print('Development app: http://127.0.0.1:' + str(port), flush=True)
+        run(['bun', '--no-env-file', 'run', '--cwd', str(directory), 'start', '--port', str(port)],
+            root, environment | {'EXPO_NO_DOTENV': '1'})
+    elif values.get('kind') == 'native' and values.get('program'):
+        native(root, [values['program']], environment)
+    else:
+        raise ValueError('development requires an implemented Expo or native product driver')
+
+
+def clean_outputs(root, config, environment):
+    if config.get('dev', {}).get('cleanup'):
+        native(root, [config['dev']['cleanup']], environment)
+    paths = config.get('clean', {}).get('paths', [])
+    if not paths:
+        raise ValueError('clean requires explicit generated output paths')
+    helper('clean').clean(root, paths)
+
+
+def isolated_operation(root, config, environment, operation):
+    selected = relative(root, config.get('dev', {}).get('identity', 'ghenv.json'), exists=True)
+    base = [pinned_ghenv(root, environment), 'local', '--', 'env', 'DEV_PROJECT=' + development_project(root),
+            'TOOLS_ROOT=' + str(TOOLS), sys.executable, str(Path(__file__).resolve()), operation]
+    if selected.name != 'ghenv.json' or selected.parent != root:
+        raise ValueError('application development identity uses the owned root ghenv.json')
+    return base
+
+
+def pinned_ghenv(root, environment):
+    pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
+    if 'github:nicodes/ghenv' not in pins:
+        raise ValueError('development identity requires an exact caller-owned ghenv SDK pin')
+    directory = Path(subprocess.check_output(['mise', 'where', 'github:nicodes/ghenv'],
+                     cwd=root, env=environment, text=True).strip()).resolve()
+    executable = Path(subprocess.check_output(['mise', 'which', 'ghenv'],
+                      cwd=root, env=environment, text=True).strip()).resolve()
+    if not executable.is_relative_to(directory) or not executable.is_file():
+        raise ValueError('ghenv must resolve inside its installed pinned SDK')
+    return str(executable)
+
+
+def development(root, config, environment, operation):
+    supervisor = [sys.executable, str(TOOLS / 'helpers/dev.py')]
+    if operation == 'dev:logs':
+        run([*supervisor, 'logs', '--state', '.local/dev'], root, environment)
+        return
+    if not config.get('dev'):
+        raise ValueError('application does not implement a development service')
+    if operation == 'dev:stop':
+        run([*supervisor, 'stop', '--state', '.local/dev'], root, environment)
+        cleanup = isolated_operation(root, config, environment, '_stop-services')
+        run([*supervisor, 'clean', '--state', '.local/dev', '--', *cleanup], root, environment)
+        return
+    cleanup = isolated_operation(root, config, environment, '_stop-services')
+    ghenv = pinned_ghenv(root, environment)
+    mode = environment.get('DEV_MODE', 'auto')
+    if mode not in {'auto', 'local', 'preview'}:
+        raise ValueError('development identity must be local, preview or the configured automatic mode')
+    command = [ghenv, 'dev', '--config', 'ghenv.json', '--mode', mode, '--', 'env',
+               'DEV_PROJECT=' + development_project(root), 'TOOLS_ROOT=' + str(TOOLS),
+               sys.executable, str(Path(__file__).resolve()), '_dev']
+    preparation = [ghenv, 'local', '--', 'env', 'COOKBOOK_STAGE=local', 'make', 'setup']
+    arguments = [*supervisor, 'run', '--state', '.local/dev', '--prepare', json.dumps(preparation),
+                 '--cleanup', json.dumps(cleanup), '--policy-input', 'mise.toml',
+                 '--policy-input', 'cookbook.toml', '--policy-input', 'ghenv.json']
+    if config['dev'].get('capture_output', False):
+        arguments += ['--log', '.local/dev/output.log']
+    run([*arguments, '--', *command], root, environment)
+
+
+def database(root, config, environment, operation):
+    name = operation.split(':', 1)[1]
+    entry = config.get('database', {}).get(name)
+    if not isinstance(entry, dict):
+        raise ValueError('database operation has no implemented native product entrypoint')
+    arguments = [*isolated_operation(root, config, environment, '_database'), '--suite', name]
+    if name == 'reset':
+        arguments = [sys.executable, str(TOOLS / 'helpers/dev.py'), 'clean', '--state', '.local/dev', '--', *arguments]
+    run(arguments, root, environment)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['setup', 'fmt', 'build', 'validate', '_build', 'test', '_test',
-        'test:lint', 'test:unit', 'test:integration', 'test:e2e', 'test:security', 'clean'])
+        'test:lint', 'test:unit', 'test:integration', 'test:e2e', 'test:security', 'clean',
+        'dev', 'dev:stop', 'dev:logs', '_dev', '_stop-services', '_clean', '_database',
+        'db:status', 'db:migrate', 'db:seed', 'db:reset'])
     parser.add_argument('--suite')
     args = parser.parse_args()
     root = Path.cwd().resolve()
@@ -396,7 +512,7 @@ def main():
         if config['recipe'] != 'react-native':
             raise ValueError('React Native operations require the application recipe')
         environment = configure_environment(root, config)
-        if args.operation not in {'setup', 'clean'}:
+        if args.operation not in {'setup', 'clean', '_clean', 'dev:stop', 'dev:logs', '_stop-services'}:
             check_sdks(root, config, args.operation, environment, args.suite)
         if args.operation == 'setup':
             setup(root, config, environment)
@@ -412,10 +528,24 @@ def main():
         elif args.operation == 'validate':
             current_build(root, config)
         elif args.operation == 'clean':
-            paths = config.get('clean', {}).get('paths', [])
-            if not paths:
-                raise ValueError('clean requires explicit generated output paths')
-            helper('clean').clean(root, paths)
+            if config.get('dev'):
+                run([sys.executable, str(TOOLS / 'helpers/dev.py'), 'clean', '--state', '.local/dev', '--',
+                     *isolated_operation(root, config, environment, '_clean')], root, environment)
+            else:
+                clean_outputs(root, config, environment)
+        elif args.operation == '_clean':
+            clean_outputs(root, config, environment)
+        elif args.operation in {'dev', 'dev:stop', 'dev:logs'}:
+            development(root, config, environment, args.operation)
+        elif args.operation == '_dev':
+            launch_development(root, config, environment)
+        elif args.operation == '_stop-services':
+            if config.get('dev', {}).get('cleanup'):
+                native(root, [config['dev']['cleanup']], environment)
+        elif args.operation.startswith('db:'):
+            database(root, config, environment, args.operation)
+        elif args.operation == '_database':
+            native(root, [config['database'][args.suite]], environment)
         else:
             verification = helper('verification')
             directory = Path('.artifacts/verification')

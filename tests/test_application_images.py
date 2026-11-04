@@ -1,10 +1,12 @@
 import importlib.util
+import contextlib
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 COOKBOOK = Path(__file__).resolve().parents[1] / 'cookbook'
@@ -117,6 +119,30 @@ class ApplicationImages(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'accepted native executable'):
                 images.rust_image(self.root, 'image:source', contract)
         self.assertEqual(removed, ['c' * 64, 'c' * 64])
+
+    def test_browser_fixture_uses_the_accepted_image_and_cleans_up_after_journey_failure(self):
+        directory = self.root / '.artifacts/verification'
+        directory.mkdir(parents=True)
+        reference = 'ghcr.io/owner/example-gate:' + 'a' * 40
+        (directory / 'build.json').write_text(json.dumps({'artifacts': {'image:' + reference: 'sha256:' + 'b' * 64}}))
+        commands = []
+        def docker(command, **_kwargs):
+            commands.append(command)
+            if command[1] == 'run':
+                Path(command[command.index('--cidfile') + 1]).write_text('c' * 64)
+                self.assertEqual(command[-1], 'sha256:' + 'b' * 64)
+            return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+        opener = SimpleNamespace(open=lambda request, timeout: contextlib.nullcontext(SimpleNamespace(status=200)))
+        config = {'components': {'browser_gate': {'hostname': 'app.example.invalid'}}}
+        with patch.object(images, 'definition', return_value=self.value), \
+                patch.object(images.subprocess, 'run', side_effect=docker), \
+                patch.object(images.subprocess, 'check_output', return_value='127.0.0.1:8181\n'), \
+                patch.object(images.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(ValueError, 'journey assertion'):
+                with images.gate_fixture(self.root, config, self.environment) as selected:
+                    self.assertEqual(selected['E2E_URL'], 'http://app.example.invalid:8181/')
+                    raise ValueError('journey assertion')
+        self.assertEqual(commands[-1], ['docker', 'rm', '-f', 'c' * 64])
 
 
 if __name__ == '__main__':

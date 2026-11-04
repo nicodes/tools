@@ -36,4 +36,36 @@ define cookbook_clean
 $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/react_native.py" clean
 endef
 
+ifneq ($(filter dev,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_dev
+$(COOKBOOK_REACT_NATIVE) dev
+endef
+define cookbook_dev_stop
+$(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/react_native.py" dev:stop
+endef
+define cookbook_dev_logs
+$(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/react_native.py" dev:logs
+endef
+endif
+ifneq ($(filter db:status,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_db_status
+$(COOKBOOK_REACT_NATIVE) db:status
+endef
+endif
+ifneq ($(filter db:migrate,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_db_migrate
+$(COOKBOOK_REACT_NATIVE) db:migrate
+endef
+endif
+ifneq ($(filter db:seed,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_db_seed
+$(COOKBOOK_REACT_NATIVE) db:seed
+endef
+endif
+ifneq ($(filter db:reset,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_db_reset
+$(COOKBOOK_REACT_NATIVE) db:reset
+endef
+endif
+
 include $(call cookbook_path,$(COOKBOOK_ROOT)/cookbook/common.mk)
