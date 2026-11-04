@@ -103,6 +103,53 @@ class ImmutablePublication(unittest.TestCase):
             with self.assertRaises(ValueError):
                 release.version(bump, prefix, [])
 
+    def test_same_head_native_version_resolution_preserves_safe_resume(self):
+        self.assertEqual(release.resolve_version('1.2.3', 'patch', {'v1.2.3': self.source}, self.source), ('1.2.3', 'v1.2.3'))
+        with self.assertRaisesRegex(ValueError, 'release head'):
+            release.resolve_version('1.2.3', 'patch', {'v1.2.3': 'c' * 40}, self.source)
+        with self.assertRaisesRegex(ValueError, 'next patch'):
+            release.resolve_version('1.2.3', 'patch', {'v1.0.0': self.source}, self.source)
+
+    def test_existing_release_checks_raw_downloaded_bytes_without_remote_mutation(self):
+        self.uploaded['draft'] = False
+        def api(*args, **options):
+            self.operations.append(args)
+            if '/git/ref/' in args[-1]:
+                return json.dumps(self.ref)
+            return json.dumps(self.uploaded)
+        def download(args, **options):
+            self.operations.append(tuple(args))
+            directory = Path(args[args.index('--dir') + 1])
+            (directory / 'addon.zip').write_bytes(b'accepted release bytes')
+            return subprocess.CompletedProcess(args, 0)
+        with patch.object(release, 'run', side_effect=api), patch.object(release.subprocess, 'run', side_effect=download):
+            recovered = release.download_existing(self.directory / 'recovered', 'owner/project', 'v1.2.3', self.source, self.expected)
+        self.assertEqual((recovered / 'addon.zip').read_bytes(), b'accepted release bytes')
+        self.assertFalse(any('POST' in args or 'create' in args or 'edit' in args for args in self.operations))
+        self.uploaded['assets'][0]['digest'] = 'sha256:' + 'c' * 64
+        with patch.object(release, 'run', side_effect=api), self.assertRaisesRegex(ValueError, 'digest'):
+            release.verify_existing('owner/project', 'v1.2.3', self.source, self.expected)
+
+    def test_existing_release_status_must_distinguish_not_found_from_denied(self):
+        for status in ['403', '500']:
+            result = subprocess.CompletedProcess([], 1, 'HTTP/2 ' + status + '\n\n{}', '')
+            with patch.object(release.subprocess, 'run', return_value=result), self.assertRaises(ValueError):
+                release.optional_release('owner/project', 'v1.2.3')
+        result = subprocess.CompletedProcess([], 1, 'HTTP/2 404\n\n{}', '')
+        with patch.object(release.subprocess, 'run', return_value=result):
+            self.assertIsNone(release.optional_release('owner/project', 'v1.2.3'))
+
+    def test_changed_admission_during_upload_leaves_draft_unpublished(self):
+        calls = []
+        def admit():
+            calls.append(1)
+            if len(calls) == 2:
+                raise ValueError('main changed during upload')
+        with patch.dict(os.environ, self.environment, clear=True), patch.object(release, 'run', side_effect=self.api), patch.object(release, 'absent'), patch.object(release.subprocess, 'run', side_effect=self.write):
+            with self.assertRaisesRegex(ValueError, 'main changed'):
+                release.publish(self.directory, self.expected, 'v1.2.3', self.source, 'owner/project', admit=admit)
+        self.assertFalse(any('--draft=false' in args for args in self.operations))
+
 
 if __name__ == '__main__':
     unittest.main()
