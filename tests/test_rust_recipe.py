@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,7 @@ class RustRecipe(unittest.TestCase):
         compiler.write_text('#!' + sys.executable + '\n' + r'''
 import json,os
 from pathlib import Path
+import platform
 import sys
 root=Path.cwd();output=root/'.artifacts';output.mkdir(exist_ok=True)
 with (output/'commands.jsonl').open('a') as stream:stream.write(json.dumps(sys.argv[1:])+'\n')
@@ -73,6 +75,10 @@ path="tests/other_boundary.py"
 [clean]
 paths=["dist", ".artifacts/build", ".artifacts/native-package"]
 ''')
+        native_os = platform.system()
+        native_arch = {'aarch64': 'arm64', 'amd64': 'x86_64'}.get(platform.machine().lower(), platform.machine().lower())
+        data = self.root / 'cookbook.toml'
+        data.write_text(data.read_text().replace('platform="Linux"', 'platform="' + native_os + '"').replace('arch="x86_64"', 'arch="' + native_arch + '"'))
         (self.root / 'Makefile').write_text(generate.makefile(self.root, 'a' * 40))
         for command in [['init', '-q'], ['add', '.'], ['-c', 'user.name=Native Recipe',
                         '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']]:
