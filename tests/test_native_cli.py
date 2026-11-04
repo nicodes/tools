@@ -41,6 +41,18 @@ class NativeArchive(unittest.TestCase):
                 extracted = native.inspect_archive(archive, self.package, record, self.root / ('installed' + system))
                 self.assertEqual(extracted.read_bytes(), self.binary.read_bytes())
 
+    def test_product_notices_keep_their_archive_name_with_safe_source_aliases(self):
+        notice = self.root / 'vendor/dependency/NOTICE'
+        notice.parent.mkdir(parents=True)
+        notice.write_bytes(b'product-owned third party license notice')
+        package = self.package | {'files': ['README.md', 'licenses.txt'], 'file_sources': {'licenses.txt': 'vendor/dependency/NOTICE'}}
+        archive = native.write_archive(self.root, self.binary, package, self.record('Linux'), self.root / 'dist')
+        with tarfile.open(archive) as contents:
+            self.assertEqual(contents.extractfile('licenses.txt').read(), notice.read_bytes())
+        for name in ['../outside', '/outside', 'vendor\\dependency/NOTICE']:
+            with self.assertRaises(ValueError):
+                native.write_archive(self.root, self.binary, package | {'file_sources': {'licenses.txt': name}}, self.record('Linux'), self.root / 'rejected')
+
     def test_unexpected_duplicate_or_nonregular_zip_entries_are_rejected(self):
         for scenario in ['unexpected', 'duplicate', 'symlink']:
             with self.subTest(scenario=scenario):

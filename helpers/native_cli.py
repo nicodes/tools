@@ -111,7 +111,17 @@ def write_archive(root, binary, package, record, destination):
     if binary.is_symlink() or not binary.is_file():
         raise ValueError('native binary must be a regular file')
     files = [(executable(package, record), binary)]
-    files += [(name, root / name) for name in package.get('files', [])]
+    sources = package.get('file_sources', {})
+    if not isinstance(sources, dict) or set(sources) - set(package.get('files', [])):
+        raise ValueError('native archive source aliases must match declared payload names')
+    for name in package.get('files', []):
+        source = sources.get(name, name)
+        if not isinstance(source, str) or Path(source).is_absolute() or '..' in Path(source).parts or '\\' in source:
+            raise ValueError('native archive source aliases must stay inside the checkout')
+        path = root / source
+        if not path.resolve().is_relative_to(root.resolve()) or any(value.is_symlink() for value in [path, *path.parents] if value.is_relative_to(root) and value != root):
+            raise ValueError('native archive sources cannot escape through links')
+        files.append((name, path))
     members(package, record)
     if any(path.is_symlink() or not path.is_file() for _, path in files):
         raise ValueError('native package sources must be regular files')

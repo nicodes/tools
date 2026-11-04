@@ -141,7 +141,7 @@ def package_data(root, config):
         raise ValueError('native target matrix must be nonempty and unique')
     relative(root, package['output'])
     for name in package.get('files', []):
-        relative(root, name, exists=True)
+        relative(root, package.get('file_sources', {}).get(name, name), exists=True)
     return package
 
 
