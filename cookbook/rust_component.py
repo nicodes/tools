@@ -11,7 +11,8 @@ BASE_FIELDS = {'name', 'manifest', 'binaries', 'packages', 'features', 'all_feat
                'no_default_features', 'workspace', 'all_targets', 'release',
                'targets', 'target', 'target_directory', 'profile', 'test', 'build', 'lint', 'environment'}
 SELECTORS = {'binaries', 'packages', 'features', 'all_features', 'no_default_features',
-             'workspace', 'all_targets', 'release', 'profile', 'lib', 'tests'}
+             'workspace', 'all_targets', 'release', 'profile', 'lib', 'tests', 'enabled',
+             'test_targets', 'test_filter', 'test_arguments'}
 
 
 def names(value, label):
@@ -37,16 +38,27 @@ def validate(component, root=None):
             raise ValueError('Cargo selectors must be tables of native options')
         if declaration is not component and set(declaration) - SELECTORS:
             raise ValueError('unsupported Cargo operation selector')
-        for field in ['binaries', 'packages', 'features']:
+        for field in ['binaries', 'packages', 'features', 'test_targets']:
             if field in declaration:
                 names(declaration[field], field)
-        for field in ['all_features', 'no_default_features', 'workspace', 'all_targets', 'release', 'lib', 'tests']:
+        for field in ['all_features', 'no_default_features', 'workspace', 'all_targets', 'release', 'lib', 'tests', 'enabled']:
             if field in declaration and type(declaration[field]) is not bool:
                 raise ValueError('Cargo switch values must be booleans')
         if declaration.get('profile', 'release') not in {'release', 'debug', 'dev'}:
             raise ValueError('Cargo profile must be release or native development/debug')
         if declaration.get('all_features') and declaration.get('features'):
             raise ValueError('select all features or explicit features, not both')
+        if 'test_filter' in declaration and (not isinstance(declaration['test_filter'], str)
+                or not re.fullmatch('[A-Za-z0-9_][A-Za-z0-9_:.+-]*', declaration['test_filter'])):
+            raise ValueError('Cargo test filter must be a literal native test name')
+        if 'test_arguments' in declaration:
+            arguments = declaration['test_arguments']
+            if not isinstance(arguments, list) or len(arguments) > 16:
+                raise ValueError('Cargo test arguments must be bounded native harness options')
+            for value in arguments:
+                if value not in {'--exact', '--ignored', '--include-ignored', '--nocapture', '--show-output'} and not (
+                        isinstance(value, str) and re.fullmatch(r'--test-threads=[1-9][0-9]{0,2}', value)):
+                    raise ValueError('unsupported native Rust test-harness option')
     for target in component.get('targets', []):
         if not isinstance(target, str) or not TARGET.fullmatch(target):
             raise ValueError('invalid Rust SDK target')
@@ -113,6 +125,12 @@ def cargo_args(component, operation, *, target=None):
         for field, flag in [('lib', '--lib'), ('tests', '--tests')]:
             if values.get(field):
                 argv.append(flag)
+        for name in values.get('test_targets', []):
+            argv += ['--test', name]
+        if values.get('test_filter'):
+            argv.append(values['test_filter'])
+        if values.get('test_arguments'):
+            argv += ['--', *values['test_arguments']]
     if operation == 'lint':
         argv += ['--', '-D', 'warnings']
     return argv
@@ -125,10 +143,18 @@ def component_environment(component, environment):
 def invoke(root, components, environment, operation, run, *, target=None):
     if not components:
         raise ValueError('a Rust operation requires at least one real Cargo component')
+    count = 0
+    selector = {'unit': 'test'}.get(operation, operation)
     for component in components:
         validate(component, root)
+        if component.get(selector, {}).get('enabled') is False:
+            continue
         run(cargo_args(component, operation, target=target), root,
             component_environment(component, environment))
+        count += 1
+    if not count:
+        raise ValueError('the Cargo operation has no applicable native components')
+    return count
 
 
 def setup(root, components, environment, run):

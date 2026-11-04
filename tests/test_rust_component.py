@@ -49,6 +49,15 @@ class NativeCargoComponent(unittest.TestCase):
         self.assertNotIn('--check', cargo.cargo_args(declaration, 'fmt'))
         self.assertEqual(cargo.cargo_args(declaration, 'lint')[-3:], ['--', '-D', 'warnings'])
 
+    def test_named_native_test_targets_and_ignored_acceptance_are_explicit(self):
+        argv = cargo.cargo_args({'test': {'test_targets': ['runtime', 'providers'],
+                                        'test_filter': 'http::tests::postgres_',
+                                        'test_arguments': ['--ignored', '--nocapture']}}, 'unit')
+        self.assertEqual(argv[argv.index('--test'):], ['--test', 'runtime', '--test', 'providers',
+                         'http::tests::postgres_', '--', '--ignored', '--nocapture'])
+        with self.assertRaises(ValueError):
+            cargo.cargo_args({'test': {'test_arguments': ['--list']}}, 'unit')
+
 
 if __name__ == '__main__':
     unittest.main()
