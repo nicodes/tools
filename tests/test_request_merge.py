@@ -1,0 +1,134 @@
+import importlib.util
+import os
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+
+spec = importlib.util.spec_from_file_location('cookbook_request_merge', Path(__file__).resolve().parents[1] / 'cookbook/request_merge.py')
+merge = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(merge)
+
+
+class RequestedMerge(unittest.TestCase):
+    def setUp(self):
+        self.environment = {'GITHUB_REPOSITORY': 'owner/project', 'GITHUB_RUN_ID': '123',
+                            'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_REF': 'refs/heads/main',
+                            'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                            'GITHUB_WORKFLOW_REF': 'owner/project/.github/workflows/request-merge.yml@refs/heads/main'}
+        self.receipt = {'version': 1, 'repository': 'owner/project', 'pull_request': 7,
+                        'head': 'b' * 40, 'base': 'a' * 40, 'candidate': 'c' * 40,
+                        'tree': 'd' * 40, 'cookbook_commit': 'e' * 40,
+                        'test_groups': ['lint', 'security', 'unit']}
+        self.proof = {'repository': 'owner/project', 'source_commit': 'c' * 40,
+                      'source_tree': 'd' * 40, 'head': 'b' * 40, 'base': 'a' * 40,
+                      'cookbook_commit': 'e' * 40, 'test_groups': self.receipt['test_groups'],
+                      'status': 'passed', 'tracked_source_clean': True,
+                      'build_verified': True, 'tests_verified': True, 'execution_context': self.environment}
+        self.run = {'id': 123, 'run_attempt': 1, 'event': 'workflow_dispatch',
+                    'head_branch': 'main', 'path': '.github/workflows/request-merge.yml',
+                    'repository': {'full_name': 'owner/project'}}
+        self.jobs = {'total_count': 3, 'jobs': [
+            {'name': 'Request / Snapshot current candidate', 'conclusion': 'success'},
+            {'name': 'Request / Validate candidate / Make full', 'conclusion': 'success'},
+            {'name': 'Request / Merge validated candidate', 'conclusion': None}]}
+        self.pull = {'number': 7, 'state': 'open', 'draft': False, 'mergeable': True,
+                     'head': {'sha': 'b' * 40}, 'base': {'sha': 'a' * 40, 'ref': 'main',
+                     'repo': {'full_name': 'owner/project'}}, 'merge_commit_sha': 'c' * 40}
+        self.commit = {'tree': {'sha': 'd' * 40}, 'parents': [{'sha': 'a' * 40}]}
+        self.base = 'a' * 40
+        self.calls = []
+
+    def api(self, path, method='GET', data=None):
+        self.calls.append((path, method, data))
+        if method == 'PUT':
+            return {'merged': True, 'sha': 'f' * 40}
+        if method == 'POST':
+            return None
+        if '/jobs?' in path:
+            return self.jobs
+        if '/actions/runs/' in path:
+            return self.run
+        if '/pulls/' in path:
+            return self.pull
+        if '/branches/main' in path:
+            return {'commit': {'sha': self.base}}
+        if '/git/commits/' in path:
+            return self.commit
+        raise AssertionError(path)
+
+    def finish(self, result='success'):
+        with patch.dict(os.environ, self.environment), patch.object(merge, 'api', side_effect=self.api):
+            return merge.finish(self.receipt, self.proof, result)
+
+    def test_success_merges_expected_head_and_requests_exact_final_source_validation(self):
+        accepted = self.finish()
+        mutation = next(data for _, method, data in self.calls if method == 'PUT')
+        self.assertEqual(mutation, {'sha': 'b' * 40, 'merge_method': 'squash'})
+        dispatch = next(data for path, _, data in self.calls if path.endswith('/dispatches'))
+        self.assertEqual(dispatch['inputs'], {'source': 'f' * 40, 'tools': 'e' * 40})
+        self.assertEqual(accepted['final_source_ci'], 'requested')
+        self.assertFalse(accepted['candidate_artifacts_promoted'])
+
+    def test_changed_head_or_base_never_requests_a_merge(self):
+        for changed in ['head', 'base']:
+            with self.subTest(changed=changed):
+                self.calls.clear()
+                if changed == 'head':
+                    self.pull['head']['sha'] = '9' * 40
+                else:
+                    self.pull['head']['sha'] = 'b' * 40
+                    self.base = '9' * 40
+                with self.assertRaises(ValueError):
+                    self.finish()
+                self.assertFalse(any(method == 'PUT' for _, method, _ in self.calls))
+
+    def test_skipped_or_cancelled_validation_cannot_be_success(self):
+        for result in ['skipped', 'cancelled', 'failure']:
+            with self.subTest(result=result):
+                self.calls.clear()
+                with self.assertRaises(ValueError):
+                    self.finish(result)
+                self.assertFalse(any(method == 'PUT' for _, method, _ in self.calls))
+                self.assertEqual(self.calls[-1][2]['state'], 'failure')
+
+    def test_actual_job_completion_is_checked_independently_of_aggregate_result(self):
+        for result in ['skipped', 'failure', None]:
+            with self.subTest(result=result):
+                self.jobs['jobs'][1]['conclusion'] = result
+                with self.assertRaisesRegex(ValueError, 'actually succeed'):
+                    self.finish()
+                self.assertFalse(any(method == 'PUT' for _, method, _ in self.calls))
+
+    def test_other_run_attempt_or_missing_groups_cannot_authorize_merge(self):
+        for field, value in [('execution_context', self.environment | {'GITHUB_RUN_ATTEMPT': '2'}),
+                             ('test_groups', ['unit'])]:
+            with self.subTest(field=field):
+                proof = self.proof | {field: value}
+                with self.assertRaises(ValueError):
+                    merge.workflow_acceptance(self.receipt, proof, self.run, self.jobs, self.environment)
+
+    def test_changed_merge_result_blocks_downstream_dispatch(self):
+        self.commit['tree']['sha'] = '8' * 40
+        with self.assertRaisesRegex(ValueError, 'no downstream dispatch'):
+            self.finish()
+        self.assertFalse(any(path.endswith('/dispatches') for path, _, _ in self.calls))
+
+    def test_only_main_branch_owner_dispatch_is_eligible(self):
+        merge.dispatch_context('owner/project', self.environment)
+        for override in [{'GITHUB_REF': 'refs/heads/feature'}, {'GITHUB_EVENT_NAME': 'pull_request'},
+                         {'GITHUB_REPOSITORY': 'other/project'}]:
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                merge.dispatch_context('owner/project', self.environment | override)
+
+    def test_recipe_source_pin_must_be_exact_and_supported(self):
+        declaration = {'version': 1, 'recipe': 'godot-addon', 'tests': {'unit': [{}], 'integration': [{}]}}
+        pin, groups = merge.recipe_pin('COOKBOOK_REF := ' + 'e' * 40, declaration)
+        self.assertEqual(pin, 'e' * 40)
+        self.assertEqual(groups, ['integration', 'lint', 'security', 'unit'])
+        for makefile in ['COOKBOOK_REF := main', 'COOKBOOK_REF := ' + 'e' * 40 + '\nCOOKBOOK_REF := ' + 'e' * 40]:
+            with self.assertRaises(ValueError):
+                merge.recipe_pin(makefile, declaration)
+
+
+if __name__ == '__main__':
+    unittest.main()

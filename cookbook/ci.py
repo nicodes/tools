@@ -9,7 +9,7 @@ import re
 import subprocess
 
 from configuration import load, relative
-from generate import makefile
+from generate import makefile, workflow_files
 
 TOOLS = Path(__file__).resolve().parents[1]
 SHA = re.compile(r'[a-f0-9]{40}\Z')
@@ -29,6 +29,9 @@ def identity(root, source, tools):
             raise ValueError('CI requires clean tracked source and cookbook code')
     if (root / 'Makefile').read_text() != makefile(root, tools):
         raise ValueError('Makefile differs from the pinned recipe generator')
+    for name, expected in workflow_files(root, tools).items():
+        if (root / name).read_text() != expected:
+            raise ValueError('workflow differs from the pinned recipe generator: ' + name)
     return git(root, 'rev-parse', 'HEAD^{tree}')
 
 
@@ -68,7 +71,9 @@ def proof(root, source, tools, config):
             'execution_context': context, 'artifacts': build['artifacts']}
 
 
-def run(root, mode, source, tools, release_bump=''):
+def run(root, mode, source, tools, release_bump='', head='', base=''):
+    if (head or base) and (not SHA.fullmatch(head) or not SHA.fullmatch(base)):
+        raise ValueError('merge validation requires exact head and base identities together')
     config = load(root)
     identity(root, source, tools)
     if config['recipe'] != 'godot-addon':
@@ -92,6 +97,8 @@ def run(root, mode, source, tools, release_bump=''):
         subprocess.run(command, cwd=root, env=environment, check=True)
         return
     accepted = proof(root, source, tools, config)
+    if head:
+        accepted.update(head=head, base=base)
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps(accepted, indent=2) + '\n')
 
@@ -102,9 +109,11 @@ def main():
     parser.add_argument('--source', required=True)
     parser.add_argument('--tools', required=True)
     parser.add_argument('--release-bump', default='')
+    parser.add_argument('--head', default='')
+    parser.add_argument('--base', default='')
     args = parser.parse_args()
     try:
-        run(Path.cwd().resolve(), args.mode, args.source, args.tools, args.release_bump)
+        run(Path.cwd().resolve(), args.mode, args.source, args.tools, args.release_bump, args.head, args.base)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, str(error) + '\n')
 
