@@ -81,6 +81,19 @@ class BunUpdates(unittest.TestCase):
         self.assertEqual([r['application'] for r in rows], ['app', 'e2e', 'web'])
         self.assertEqual(set(changes), {'app/bun.lock', 'web/bun.lock', 'e2e/bun.lock'})
 
+    def test_nested_locked_components_remain_in_maintenance_inventory(self):
+        files = '\0'.join([
+            'app/package.json', 'app/bun.lock',
+            'internal/renderer/package.json', 'internal/renderer/bun.lock',
+            'internal/unlocked/package.json',
+            'tests/fixtures/package.json', 'tests/fixtures/bun.lock',
+            'vendor/sample/package.json', 'vendor/sample/bun.lock']) + '\0'
+        with patch.object(update, 'run', return_value=files), \
+                patch.object(update, 'prepare_application', return_value=([], {})) as prepare:
+            update.prepare(Path('/repo'))
+        self.assertEqual([call.args[1] for call in prepare.call_args_list],
+                         ['app', 'internal/renderer'])
+
     def test_the_products_own_package_directory_is_discovered(self):
         # example-games/samplegame tracks no `app/`; its Bun application is `playwright/`.
         files = 'playwright/package.json\0playwright/bun.lock\0'
