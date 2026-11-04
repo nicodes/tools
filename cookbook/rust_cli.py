@@ -16,6 +16,7 @@ import tomllib
 from configuration import load, relative
 import rust_component
 import node_component
+import ui_component
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -363,6 +364,8 @@ def main():
             helper('clean').clean(root, config['clean']['paths'])
         elif args.operation == '_build':
             node_component.build(root, config.get('node', {}).get('packages', []), env, run)
+            ui_component.validate_build(root, config.get('components', {}).get('ui', []),
+                                        config.get('node', {}).get('packages', []), env, run)
             if not env.get('NATIVE_CLI_ARCHIVES'):
                 rust_component.build(root, components(config), env, run, target=env.get('RUST_TARGET'))
             assemble(root, config, env)
