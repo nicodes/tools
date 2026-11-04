@@ -137,7 +137,7 @@ class ReleaseTests(unittest.TestCase):
         for ref, event, source in [('refs/pull/1/merge', 'pull_request', self.source),
                                    ('refs/heads/main', 'push', self.source),
                                    ('refs/heads/main', 'workflow_dispatch', 'b' * 40)]:
-            with patch.dict(os.environ, GITHUB_SHA=self.source, GITHUB_REF=ref, GITHUB_EVENT_NAME=event), \
+            with patch.dict(os.environ, GITHUB_SHA=self.source, GITHUB_REF=ref, GITHUB_EVENT_NAME=event, GITHUB_REPOSITORY="example/cli"), \
                     patch.object(release.subprocess, 'run') as command:
                 with self.assertRaises(ValueError):
                     release.publish(self.root, 'example', 'v0.0.1', source, 'example/cli')
@@ -153,9 +153,10 @@ class ReleaseTests(unittest.TestCase):
                 if tamper:
                     candidate['assets'][0]['digest'] = 'sha256:' + '0' * 64
                 with patch.dict(os.environ, GITHUB_SHA=self.source, GITHUB_REF='refs/heads/main',
-                                GITHUB_EVENT_NAME='workflow_dispatch'), \
-                        patch.object(release, 'absent') as absent, \
-                        patch.object(release, 'run', side_effect=['', '42', json.dumps(candidate)]) as query, \
+                                GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='example/cli'), \
+                        patch.object(release.github_release, 'absent') as absent, \
+                        patch.object(release.github_release, 'run', side_effect=['', '{}', '42', json.dumps(candidate),
+                            json.dumps({'object': {'type': 'commit', 'sha': self.source}})]) as query, \
                         patch.object(release.subprocess, 'run') as command:
                     if tamper:
                         with self.assertRaisesRegex(ValueError, 'remains unpublished'):
@@ -163,15 +164,17 @@ class ReleaseTests(unittest.TestCase):
                     else:
                         release.publish(self.root, 'example', 'v0.0.1', self.source, 'example/cli')
                     self.assertEqual(absent.call_count, 2)
-                    self.assertEqual(query.call_args.args, ('gh', 'api', 'repos/example/cli/releases/42'))
+                    self.assertEqual(query.call_args_list[-2].args, ('gh', 'api', 'repos/example/cli/releases/42'))
+                    self.assertEqual(query.call_args.args, ('gh', 'api', 'repos/example/cli/git/ref/tags/v0.0.1'))
+                    self.assertIn('sha=' + self.source, query.call_args_list[1].args)
                     self.assertIn('--draft', command.call_args_list[0].args[0])
                     self.assertEqual(command.call_count, 1 if tamper else 2)
 
     def test_existing_draft_is_refused_before_creating_a_release(self):
         self.payload()
         with patch.dict(os.environ, GITHUB_SHA=self.source, GITHUB_REF='refs/heads/main',
-                        GITHUB_EVENT_NAME='workflow_dispatch'), \
-                patch.object(release, 'run', return_value='v0.0.1'), \
+                        GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REPOSITORY='example/cli'), \
+                patch.object(release.github_release, 'run', return_value='v0.0.1'), \
                 patch.object(release.subprocess, 'run') as command:
             with self.assertRaisesRegex(ValueError, 'including drafts'):
                 release.publish(self.root, 'example', 'v0.0.1', self.source, 'example/cli')
