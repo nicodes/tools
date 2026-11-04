@@ -44,6 +44,10 @@ def package_inputs(root, config):
 
 
 def setup(root, config, env):
+    if os.environ.get('COOKBOOK_STAGE') == 'fast':
+        # Source/configuration checks do not need an editor or export templates.
+        run(['mise', 'install', 'python', 'actionlint'], root, env)
+        return
     run(['mise', 'install'], root, env)
     pins = godot_pins(root)
     command = [sys.executable, str(TOOLS / 'helpers/godot-setup.py'),
@@ -51,8 +55,7 @@ def setup(root, config, env):
                '--binary-checksum', pins['GODOT_BINARY_CHECKSUM'],
                '--templates-checksum', pins['GODOT_TEMPLATES_CHECKSUM'],
                '--origin', 'godot-builds', '--root', str(root / '.artifacts/godot')]
-    if os.environ.get('COOKBOOK_STAGE') != 'fast':
-        command.append('--templates')
+    command.append('--templates')
     (root / '.artifacts').mkdir(exist_ok=True)
     (root / '.artifacts/.gdignore').touch()
     run(command, root, env)
@@ -72,6 +75,7 @@ def lint(root, config, env):
         raise ValueError('addon source differs from the closed package manifest')
     if (root / '.github/workflows').is_dir():
         run(['actionlint'], root, env)
+    run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, env)
     if 'lint' in config.get('tests', {}):
         test_entries(root, config, env, 'lint')
 

@@ -1,0 +1,64 @@
+name: Cookbook validation
+'on':
+  workflow_call:
+    inputs:
+      tools-ref:
+        type: string
+        required: true
+      source:
+        type: string
+        required: true
+      mode:
+        type: string
+        required: true
+      release-bump:
+        type: string
+        default: ''
+permissions: {}
+jobs:
+  validate:
+    name: Make ${{ inputs.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.tools-ref }}
+      COOKBOOK_MODE: ${{ inputs.mode }}
+      RELEASE_BUMP: ${{ inputs.release-bump }}
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out pinned cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: .artifacts/cookbook-source
+          persist-credentials: false
+      - name: Set up pinned SDKs
+        uses: ./.artifacts/cookbook-source/setup
+        with:
+          tools: ${{ inputs.mode == 'fast' && 'python actionlint' || '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Run Make gate
+        run: python3 .artifacts/cookbook-source/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --release-bump "$RELEASE_BUMP"
+      - name: Upload accepted outputs and fresh evidence
+        if: inputs.mode == 'full'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-full-${{ inputs.source }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/
+            .artifacts/verification/
+            .artifacts/cookbook-validation.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7

@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -20,6 +21,11 @@ class AddonRecipe(unittest.TestCase):
         self.root = Path(temporary.name)
         (self.root / 'addon').mkdir()
         (self.root / 'tests').mkdir()
+        (self.root / '.github').mkdir()
+        readme = '# Fixture addon\nNative test fixture.\n'
+        (self.root / 'README.md').write_text(readme)
+        (self.root / '.github/readme-source.json').write_text(json.dumps({
+            'version': 1, 'sha256': hashlib.sha256(readme.encode()).hexdigest()}))
         (self.root / 'addon/plugin.cfg').write_text('[plugin]\nversion="0.0.1"\n')
         (self.root / 'package.files').write_text('plugin.cfg\n')
         (self.root / 'tests/test_behavior.py').write_text('assert 2 + 2 == 4\n')
