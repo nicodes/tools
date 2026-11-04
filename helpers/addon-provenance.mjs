@@ -19,7 +19,11 @@ export function loadPolicy(root) {
     if (typeof policy[key] !== "string" || !policy[key]) throw new Error("missing native package provenance: " + key);
   const allowlist = JSON.parse(readFileSync(owned(root, policy.allowlist), "utf8"));
   if (!Number.isSafeInteger(allowlist.zip_entries) || allowlist.zip_entries < 2) throw new Error("invalid closed package entry count");
-  return { ...policy, zip_entries: allowlist.zip_entries };
+  const parts = policy.forbidden_token_parts || [];
+  if (!Array.isArray(parts) || parts.some((token) => !Array.isArray(token) || !token.length || token.some((part) => typeof part !== "string" || !part)))
+    throw new Error("invalid candidate boundary token policy");
+  return { ...policy, zip_entries: allowlist.zip_entries,
+    forbidden_tokens: [...(policy.forbidden_tokens || []), ...parts.map((token) => token.join(""))] };
 }
 
 export function loadProvenance(root, policy = loadPolicy(root)) {
