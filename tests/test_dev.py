@@ -12,6 +12,50 @@ SCRIPT = str(Path(__file__).parents[1]/'helpers/dev.py')
 
 
 class OwnedDevelopment(unittest.TestCase):
+    def test_explicit_child_capture_and_checkout_owned_log_reading(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            result = subprocess.run([sys.executable, SCRIPT, 'run', '--log', '.artifacts/dev/editor.log', '--',
+                                     sys.executable, '-c', 'print("native child output", flush=True)'],
+                                    cwd=root, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('native child output', result.stdout)
+            logs = subprocess.run([sys.executable, SCRIPT, 'logs'], cwd=root,
+                                  capture_output=True, text=True, timeout=5)
+            self.assertEqual(logs.returncode, 0, logs.stderr)
+            self.assertIn('native child output', logs.stdout)
+            self.assertIn('development child started', logs.stdout)
+            self.assertIn('development child exited status=0', logs.stdout)
+            path = root/'.local/dev/logs.json'
+            metadata = json.loads(path.read_text())
+            metadata['checkout'] = str(root/'foreign-checkout')
+            path.write_text(json.dumps(metadata))
+            refused = subprocess.run([sys.executable, SCRIPT, 'logs'], cwd=root,
+                                     capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertNotIn('native child output', refused.stdout)
+
+    def test_default_child_stdio_is_preserved_and_log_symlinks_do_not_launch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            result = subprocess.run([sys.executable, SCRIPT, 'run', '--', sys.executable,
+                                     '-c', 'print("inherited output", flush=True)'],
+                                    cwd=root, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('inherited output', result.stdout)
+            (root/'.artifacts/dev').mkdir(parents=True)
+            untouched = root/'untouched'
+            untouched.write_text('owned fixture')
+            (root/'.artifacts/dev/editor.log').symlink_to(untouched)
+            result = subprocess.run([sys.executable, SCRIPT, 'run', '--log', '.artifacts/dev/editor.log', '--',
+                                     sys.executable, '-c', 'from pathlib import Path; Path("launched").touch()'],
+                                    cwd=root, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(untouched.read_text(), 'owned fixture')
+            self.assertFalse((root/'launched').exists())
+
     def test_preparation_cannot_change_policy_before_the_application_launches(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
