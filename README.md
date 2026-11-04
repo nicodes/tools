@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 9fd2d8bb2e443ca32f94a865d4f2dbd4361e261d2cb4e193cf5681d2794ee554 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: e9354a7b034f31daf4a9985afbd720ffa901c7ed56212cb622e35b952abb4235 -->
 
 # tools
 
@@ -161,3 +161,8 @@ The `godot-addon` adapter accepts a closed package source, manifest and archive;
 A `godot-suite` test entry names a native test directory, an exact assertion prefix in `sentinel` and a per-test `timeout`. The shared runner discovers `*_test.gd` files, runs each in an isolated home and requires one exact `<sentinel> <test filename without extension>` line, a clean exit and no engine failure messages. Missing suites, missing/duplicate assertions and exceeded deadlines fail. Direct `godot` entries instead name one test file and its complete sentinel.
 
 Addon ZIP output is deterministic across checkout timestamps. `helpers/addon-package.py checksum --archive ARCHIVE` validates its exact one-line `.sha256` sidecar; `verify --checksums SIDECAR` also checks that sidecar without rewriting it. `helpers/source-secrets.py` scans tracked text for high-confidence credentials and reports fingerprints without printing values. Deliberate credential fixtures require reviewed exact-file hashes and reasons; this source check complements dependency and product security tests.
+
+
+The reusable `cookbook-validation.yml` workflow runs the addon adapter with `mode: fast` or `mode: full`. Fast validation checks the pinned generated Make entrypoint, source/configuration, documentation history policy and tracked-source credentials, without downloading Godot. Full validation calls `make setup`, `make build` and `make test`, then verifies complete current-run source and artifact evidence. Both the caller source and cookbook use exact commits. This initial workflow supports Godot addons; other recipe gates remain in place while their adapters are migrated.
+
+`cookbook-addon-release.yml` performs full read-only validation, then publishes its accepted archive and checksum in a separate job. Publication checks exact source, tree, cookbook, workflow execution and downloaded artifact hashes. The shared GitHub publisher claims the exact immutable tag, uploads a draft, checks every uploaded digest and tag source, and only then publishes it. Addon registry publication follows through the existing pinned publisher action. Publication requires an explicit dispatch from `main`; source checks do not receive publication credentials. Caller recipe data selects the tag prefix and initial-version convention, and the committed plugin version must match the computed next release.
