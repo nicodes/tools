@@ -9,9 +9,9 @@ from configuration import relative
 
 def deadlines(data):
     values=data.get('step_timeouts',{})
-    names={'checkout','prepare','deploy','readiness','diagnostics','artifact'}
+    names={'checkout','setup','plan','registry','inspect','prepare','deploy','readiness','diagnostics','artifact','upload'}
     if not isinstance(values,dict) or set(values)-names:raise ValueError('delivery step deadlines require implemented native phases')
-    result={name:values.get(name,min(3,data['deploy_timeout']) if name in {'readiness','diagnostics'} else min(10,data['deploy_timeout']) if name=='artifact' else data['deploy_timeout']) for name in names}
+    result={name:values.get(name,min(3,data['deploy_timeout']) if name in {'readiness','diagnostics','registry'} else min(5,data['deploy_timeout']) if name in {'setup','plan'} else min(10,data['deploy_timeout']) if name in {'artifact','upload'} else data['deploy_timeout']) for name in names}
     if any(type(value) is not int or not 1<=value<=data['deploy_timeout'] for value in result.values()):
         raise ValueError('delivery step deadlines must stay within the original job budget')
     return result
@@ -21,16 +21,24 @@ def report_settings(data,key):
     defaults={'report':dict(runner='ubuntu-slim',timeout_minutes=10,step_timeouts={'checkout':10,'setup':5,'report':10}),
         'notification':dict(runner='ubuntu-slim',timeout_minutes=2,step_timeouts={'checkout':2,'notify':1})}
     value=data.get(key,defaults[key])
-    if (not isinstance(value,dict) or set(value)-{'runner','timeout_minutes','step_timeouts'}
+    if key=='report' and value is False:value=defaults[key]
+    if (not isinstance(value,dict) or set(value)-({'runner','timeout_minutes','step_timeouts'}|({'environment'} if key=='notification' else set()))
             or not isinstance(value.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',value['runner'])
             or type(value.get('timeout_minutes')) is not int or not 1<=value['timeout_minutes']<=45):
         raise ValueError('delivery reporting requires its native runner and job deadline')
+    if key=='notification' and value.get('environment',data.get('environment','production')) not in ('production','Production'):
+        raise ValueError('notification retains its original protected environment')
     stages=value.get('step_timeouts',{})
     names=set(defaults[key]['step_timeouts'])
     if (not isinstance(stages,dict) or set(stages)-names
             or any(type(v) is not int or not 1<=v<=value['timeout_minutes'] for v in stages.values())):
         raise ValueError('delivery reporting preserves bounded native step deadlines')
     return dict(value,step_timeouts={name:stages.get(name,value['timeout_minutes']) for name in names})
+
+
+def historical_deadlines(data):
+    values=deadlines(data)
+    return {name:values[name] for name in ['checkout','setup','plan','registry','inspect','deploy','diagnostics']}
 
 
 def declaration(root, config):
@@ -45,7 +53,7 @@ def declaration(root, config):
             'deploy_runner', 'deploy_timeout', 'health_urls', 'secrets', 'variables',
             'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined', 'mode', 'static',
             'environment','step_timeouts','readiness_operation','notify','report','notification','optional_secrets',
-            'service_env_profile','expected_generation'}
+            'service_env_profile','expected_generation','validation_timeout_minutes','historical_deploy'}
     if not isinstance(data, dict) or set(data) - keys or data.get('version') != 1:
         raise ValueError('unsupported delivery declaration')
     mode = data.get('mode', 'application-images')
@@ -64,6 +72,9 @@ def declaration(root, config):
     for key in ['publish_timeout', 'deploy_timeout']:
         if type(data.get(key)) is not int or not 1 <= data[key] <= 180:
             raise ValueError('delivery requires bounded existing job budgets')
+    if 'validation_timeout_minutes' in data and (type(data['validation_timeout_minutes']) is not int or not 1<=data['validation_timeout_minutes']<=180):
+        raise ValueError('delivery verification retains its own bounded native deadline')
+    if type(data.get('historical_deploy',False)) is not bool:raise ValueError('historical deployment requires its explicit native capability')
     if data.get('environment','production') not in ('production','Production'):raise ValueError('delivery retains its native protected environment')
     deadlines(data)
     for key in ['report','notification']:report_settings(data,key)
@@ -99,6 +110,8 @@ def declaration(root, config):
             raise ValueError('scoped delivery retains one native profile generation without transporting profile values')
     elif generation or 'service_env_profile' in data or 'expected_generation' in data:
         raise ValueError('a scoped delivery generation requires its explicit native profile')
+    if data.get('historical_deploy') and (mode!='application-images' or not profile):
+        raise ValueError('manual historical application deployment requires its original fixed scoped profile')
     for key in ['backup', 'readiness']:
         if data.get(key):
             relative(Path(root), data[key], exists=True)
@@ -118,7 +131,10 @@ def jobs(root, config, tools):
         import godot_static_workflows
         return godot_static_workflows.jobs(root, config, tools)
     ref=data['komizo_ref'];limits=deadlines(data);combined=data.get('combined',False)
-    condition="github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (inputs.source == '' || inputs.source == github.sha)"
+    source_condition="github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (inputs.source == '' || inputs.source == github.sha)"
+    condition=source_condition
+    historical=data.get('historical_deploy',False)
+    if historical:condition+=" && (inputs.version == '' || inputs.version == github.sha)"
     lines=[]
     if not combined:
         lines+=['  publish:','    name: Publish accepted images','    needs: validate','    if: '+condition,
@@ -145,6 +161,10 @@ def jobs(root, config, tools):
         '          KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}',
         '          KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}','          KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}']
     if data.get('upload_backup'):
+        lines+=['      - uses: nicodes/komizo-actions/application-backup-upload@'+ref,
+            "        if: steps.delivery.outputs.has-export == 'true'",'        timeout-minutes: '+str(limits['upload']),
+            '        with:','          project: '+data['project'],'        env:',
+            '          BACKUP_ALLOWED_SLUGS: '+json.dumps(json.dumps([data['project']]))]
         for key in ['ACCESS_KEY','SECRET_KEY']:lines+=['          BACKUP_S3_'+key+': ${{ secrets.BACKUP_S3_'+key+' }}']
         for key in ['HOSTNAME','BUCKET']:lines+=['          BACKUP_S3_'+key+': ${{ vars.BACKUP_S3_'+key+' }}']
     if data.get('backup'):
@@ -181,18 +201,37 @@ def jobs(root, config, tools):
             '        timeout-minutes: '+str(limits['diagnostics']),'        shell: bash',
             '        env:','          PROJECT: '+data['project'],
             '        run: ssh -o BatchMode=yes -o ConnectTimeout=15 deploy-target doas "/usr/local/bin/diagnose-$PROJECT" 200']
+    if historical:
+        lines+=['  rollback:',
+            "    if: github.event_name == 'workflow_dispatch' && ("+source_condition+") && inputs.version != '' && inputs.version != github.sha",
+            '    uses: nicodes/komizo-actions/.github/workflows/cookbook-historical-deploy.yml@'+ref,
+            '    permissions:','      contents: read','      actions: read','      packages: read','      attestations: read',
+            '    with:','      tools-ref: '+tools,'      komizo-ref: '+ref,
+            '      declaration: '+json.dumps(config['delivery']['definition']),'      version: ${{ inputs.version }}',
+            '      runner: '+data['deploy_runner'],'      timeout-minutes: '+str(data['deploy_timeout']),
+            '      environment: '+data.get('environment','production'),
+            '      step-timeouts: '+json.dumps(json.dumps(historical_deadlines(data),sort_keys=True)),
+            '    secrets:','      KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}']
+    reporting=data.get('report',{}) is not False
+    notifying=data.get('notify',True)
+    if not reporting and not notifying:return '\n'.join(lines)+'\n'
     report=report_settings(data,'report');notification=report_settings(data,'notification')
-    lines+=['  report:','    needs: '+('[validate, deploy]' if combined else '[validate, publish, deploy]'),
-        '    if: always() && !cancelled() && ('+condition+')',
-        '    uses: nicodes/komizo-actions/.github/workflows/cookbook-report.yml@'+ref,
-        '    permissions:','      contents: read','      issues: write','    with:','      tools-ref: '+tools,
+    needs=['validate',*([] if combined else ['publish']),'deploy',*(['rollback'] if historical else [])]
+    deployment="needs.rollback.result == 'success' && 'success' || needs.rollback.result == 'failure' && 'failure' || needs.deploy.result" if historical else 'needs.deploy.result'
+    lines+=['  report:','    needs: ['+', '.join(needs)+']',
+        '    if: always() && !cancelled() && ('+source_condition+')',
+        '    uses: nicodes/komizo-actions/.github/workflows/cookbook-'+('report' if reporting else 'notify')+'.yml@'+ref,
+        '    permissions:','      contents: read']
+    if reporting:lines+=['      issues: write']
+    lines+=['    with:','      tools-ref: '+tools,
         '      komizo-ref: '+ref,'      validation: ${{ needs.validate.result }}',
         '      publication: ${{ needs.'+('deploy' if combined else 'publish')+'.result }}',
-        '      deployment: ${{ needs.deploy.result }}','      deployment-url: '+json.dumps(data['notification_url']),
-        '      notify: '+str(data.get('notify',True)).lower(),'      environment: '+data.get('environment','production'),
+        '      deployment: ${{ '+deployment+' }}','      deployment-url: '+json.dumps(data['notification_url']),
+        '      notify: '+str(notifying).lower(),'      environment: '+notification.get('environment',data.get('environment','production')),
         '      report-runner: '+report['runner'],'      report-timeout: '+str(report['timeout_minutes']),
         '      report-step-timeouts: '+json.dumps(json.dumps(report['step_timeouts'],sort_keys=True)),
         '      notify-runner: '+notification['runner'],'      notify-timeout: '+str(notification['timeout_minutes']),
         '      notify-step-timeouts: '+json.dumps(json.dumps(notification['step_timeouts'],sort_keys=True))]
-    if data.get('notify',True):lines+=['    secrets:','      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}']
+    if historical:lines+=['      revision: ${{ needs.rollback.outputs.version || github.sha }}']
+    if notifying:lines+=['    secrets:','      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}']
     return '\n'.join(lines)+'\n'

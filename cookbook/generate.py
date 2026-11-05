@@ -100,6 +100,18 @@ jobs:
         production = production.replace('  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n', '')
         production = production.replace('group: ci-${{ github.ref }}-', 'group: deploy-source-${{ github.sha }}-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
         production = production.replace("merge-gate: ${{ vars.COOKBOOK_REQUEST_MERGE == 'enabled' }}", 'merge-gate: false')
+        delivery=delivery_workflows.declaration(root,config)
+        if delivery.get('historical_deploy'):
+            production=production.replace('\npermissions: {}', '''
+      version:
+        description: Full commit of an already-published release; empty builds this source
+        type: string
+        default: ''
+permissions: {}''',1)
+            production=production.replace('  validate:\n',"  validate:\n    if: inputs.version == '' || inputs.version == github.sha\n",1)
+        if delivery.get('validation_timeout_minutes'):
+            production=production.replace('      timeout-minutes: '+str(ci['timeout_minutes'])+'\n',
+                '      timeout-minutes: '+str(delivery['validation_timeout_minutes'])+'\n',1)
         files['.github/workflows/cd.yml'] = production + delivery_workflows.jobs(root, config, revision)
         if delivery_workflows.declaration(root, config).get('mode') == 'godot-static':
             import godot_static_workflows

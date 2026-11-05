@@ -60,6 +60,9 @@ class DeliveryWorkflows(unittest.TestCase):
         self.assertIn('BACKUP_S3_ACCESS_KEY: ${{ secrets.BACKUP_S3_ACCESS_KEY }}', result)
         before_deploy = result.split('  deploy:')[0]
         self.assertNotIn('secrets.', before_deploy)
+        preparation,upload=result.split('      - uses: nicodes/komizo-actions/application-backup-upload@',1)
+        self.assertNotIn('BACKUP_S3_ACCESS_KEY',preparation)
+        self.assertIn('BACKUP_S3_ACCESS_KEY',upload)
 
     def test_production_retains_host_cd_identity_without_duplicate_main_builds(self):
         self.write()
@@ -138,6 +141,43 @@ class DeliveryWorkflows(unittest.TestCase):
             self.data=original|changes;self.write()
             with self.subTest(changes=changes),self.assertRaises(ValueError):
                 delivery.declaration(self.root,self.config)
+
+    def test_delivery_verification_and_notification_keep_distinct_native_policy(self):
+        self.data.update(validation_timeout_minutes=60,notification=dict(runner='ubuntu-slim',timeout_minutes=2,
+            step_timeouts={'notify':1},environment='Production'))
+        self.write()
+        (self.root/'tests').mkdir()
+        (self.root/'tests/unit.py').write_text('assert 2+2==4\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\ntimeout_minutes=45\n[delivery]\ndefinition="delivery.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        files=generate.workflow_files(self.root,'b'*40)
+        self.assertIn('      timeout-minutes: 45',files['.github/workflows/ci.yml'])
+        self.assertIn('      timeout-minutes: 60',files['.github/workflows/cd.yml'])
+        self.assertIn('      environment: Production',files['.github/workflows/cd.yml'])
+
+    def test_historical_dispatch_skips_new_builds_and_keeps_scoped_host_and_notification_policy(self):
+        self.data.update(historical_deploy=True,service_env_profile='serving-postgres-v2',expected_generation='c'*32,
+                         secrets={},variables={},report=False)
+        self.write()
+        (self.root/'tests').mkdir()
+        (self.root/'tests/unit.py').write_text('assert 2+2==4\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        files=generate.workflow_files(self.root,'b'*40)
+        text=files['.github/workflows/cd.yml']
+        self.assertIn('      version:',text)
+        self.assertNotIn('      version:',files['.github/workflows/ci.yml'])
+        self.assertIn("    if: inputs.version == '' || inputs.version == github.sha",text)
+        normal,rollback=text.split('\n  rollback:',1)
+        self.assertIn("&& (inputs.version == '' || inputs.version == github.sha)",normal)
+        self.assertIn("inputs.version != '' && inputs.version != github.sha",rollback)
+        self.assertIn('cookbook-historical-deploy.yml@',rollback)
+        self.assertIn('cookbook-notify.yml@',text)
+        self.assertNotIn('issues: write',text)
+        self.assertIn('needs.rollback.outputs.version || github.sha',text)
+        self.assertEqual(set(delivery.historical_deadlines(self.data)),
+                         {'checkout','setup','plan','registry','inspect','deploy','diagnostics'})
+        self.data.pop('service_env_profile');self.data.pop('expected_generation');self.write()
+        with self.assertRaisesRegex(ValueError,'fixed scoped profile'):
+            delivery.declaration(self.root,self.config)
 
 
 if __name__ == '__main__':
