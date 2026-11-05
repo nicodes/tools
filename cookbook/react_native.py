@@ -27,7 +27,7 @@ ENVIRONMENT = re.compile('[A-Z][A-Z0-9_]*\\Z')
 PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
                          'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE',
                          'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
-PHASES = {'setup', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
+PHASES = {'setup', 'lint', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
 
 
 def helper(name):
@@ -259,6 +259,7 @@ def lint(root, config, environment):
     images.validate_compose(root, config, environment, run)
     if config.get('tests', {}).get('lint'):
         run_entries(root, config, environment, 'lint')
+    phase(root, config, environment, 'lint')
 
 
 def build(root, config, environment):
