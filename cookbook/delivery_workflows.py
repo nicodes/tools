@@ -17,7 +17,7 @@ def declaration(root, config):
     data = json.loads(path.read_text())
     keys = {'version', 'project', 'komizo_ref', 'publish_runner', 'publish_timeout',
             'deploy_runner', 'deploy_timeout', 'health_urls', 'secrets', 'variables',
-            'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url'}
+            'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined'}
     if not isinstance(data, dict) or set(data) - keys or data.get('version') != 1:
         raise ValueError('unsupported delivery declaration')
     if not re.fullmatch('[a-z][a-z0-9-]{0,62}', data.get('project', '')):
@@ -33,7 +33,14 @@ def declaration(root, config):
     urls = data.get('health_urls')
     if not isinstance(urls, list) or not 1 <= len(urls) <= 20:
         raise ValueError('delivery requires explicit health URLs')
-    for url in [*urls, data.get('notification_url', '')]:
+    for entry in urls:
+        if isinstance(entry, dict):
+            if (set(entry) != {'url', 'contains'} or not isinstance(entry['contains'], str)
+                    or not 1 <= len(entry['contains']) <= 512 or any(ord(c) < 32 for c in entry['contains'])):
+                raise ValueError('health body assertions require an explicit bounded expected value')
+        elif not isinstance(entry, str):
+            raise ValueError('health entries must be URLs or explicit body assertions')
+    for url in [*[entry['url'] if isinstance(entry, dict) else entry for entry in urls], data.get('notification_url', '')]:
         parsed = urlsplit(url)
         if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or any(ord(c) < 33 for c in url):
             raise ValueError('delivery URLs must be explicit public HTTPS URLs')
@@ -48,9 +55,11 @@ def declaration(root, config):
     for key in ['backup', 'readiness']:
         if data.get(key):
             relative(Path(root), data[key], exists=True)
-    for key in ['upload_backup', 'diagnostics']:
+    for key in ['upload_backup', 'diagnostics', 'combined']:
         if type(data.get(key, False)) is not bool:
             raise ValueError('delivery options must be literal booleans')
+    if data.get('combined') and (data['publish_runner'] != data['deploy_runner'] or data['publish_timeout'] != data['deploy_timeout']):
+        raise ValueError('combined publication and delivery retain one existing runner and total job deadline')
     return data
 
 
@@ -99,4 +108,17 @@ def jobs(root, config, tools):
               '      publication: ${{ needs.publish.result }}', '      deployment: ${{ needs.deploy.result }}',
               '      deployment-url: ' + quote(data['notification_url']), '    secrets:',
               '      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}']
-    return '\n'.join(lines) + '\n'
+    result = '\n'.join(lines) + '\n'
+    if data.get('combined'):
+        result = '  deploy:\n' + result.split('  deploy:\n', 1)[1]
+        result = result.replace('    needs: publish\n', '    needs: validate\n', 1)
+        result = result.replace('      packages: read\n', '      packages: write\n', 1)
+        first_delivery = '      - uses: nicodes/komizo-actions/application-delivery@'
+        publication = ('      - uses: nicodes/komizo-actions/application-publication@' + ref + '\n'
+                       + '        with:\n          tools-ref: ' + tools + '\n          komizo-ref: ' + ref
+                       + '\n          source: ${{ github.sha }}\n          project: ' + data['project']
+                       + '\n        env:\n          GH_TOKEN: ${{ github.token }}\n')
+        result = result.replace(first_delivery, publication + first_delivery, 1)
+        result = result.replace('needs: [validate, publish, deploy]', 'needs: [validate, deploy]')
+        result = result.replace('needs.publish.result', 'needs.deploy.result')
+    return result

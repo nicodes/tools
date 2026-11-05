@@ -78,10 +78,18 @@ jobs:
     files['.github/workflows/ci.yml'] += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
     if config.get('delivery'):
-        if config['recipe'] != 'react-native':
+        if config['recipe'] not in {'react-native', 'godot-game'}:
             raise ValueError('this delivery composition is enrolled for application images only')
         import delivery_workflows
-        files['.github/workflows/ci.yml'] += delivery_workflows.jobs(root, config, revision)
+        # Host admission authenticates the caller's cd.yml workflow identity.
+        # Production validates once here; PR and requested candidates use ci.yml.
+        original = files['.github/workflows/ci.yml']
+        files['.github/workflows/ci.yml'] = original.replace('  push:\n    branches: [main]\n', '')
+        production = original.replace('name: Build & Test\n', 'name: Deploy\n', 1)
+        production = production.replace('  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n', '')
+        production = production.replace('group: ci-', 'group: deploy-source-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
+        production = production.replace("merge-gate: ${{ vars.COOKBOOK_REQUEST_MERGE == 'enabled' }}", 'merge-gate: false')
+        files['.github/workflows/cd.yml'] = production + delivery_workflows.jobs(root, config, revision)
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):

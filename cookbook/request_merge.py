@@ -162,7 +162,8 @@ def finish(receipt, proof, validation_result):
         raise ValueError('merge result differs from the validated candidate; no downstream dispatch')
     # Token-created merges do not ordinarily trigger push workflows. Exact final
     # source CI is explicit; candidate bytes are never relabeled as final source.
-    api(f'repos/{repository}/actions/workflows/ci.yml/dispatches', 'POST',
+    final_workflow = 'cd.yml' if receipt.get('declaration', {}).get('delivery') else 'ci.yml'
+    api(f'repos/{repository}/actions/workflows/{final_workflow}/dispatches', 'POST',
         {'ref': 'main', 'inputs': {'source': source, 'tools': receipt['cookbook_commit']}})
     return {**receipt, 'merged_source': source, 'merged_tree': commit['tree']['sha'],
             'final_source_ci': 'requested', 'candidate_artifacts_promoted': False}
