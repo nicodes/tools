@@ -113,6 +113,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      attestations: read
     uses: nicodes/tools/.github/workflows/cookbook-cli-publish.yml@PIN
     with:
       tools-ref: PIN

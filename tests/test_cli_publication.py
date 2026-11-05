@@ -168,6 +168,27 @@ class CliPublication(unittest.TestCase):
             self.config['publication']['acceptance']['files'] = files
             with self.subTest(files=files), self.assertRaises(ValueError): release.policy(self.config)
 
+    def test_existing_native_signer_verification_keeps_exact_workflow_source_and_ref(self):
+        self.config['publication']['attestation_platforms'] = ['Linux/x86_64']
+        original = release.subprocess.run
+        calls = []
+        def execute(argv, *args, **kwargs):
+            if argv[0] == 'gh':
+                calls.append(argv)
+                return release.subprocess.CompletedProcess(argv, 0)
+            return original(argv, *args, **kwargs)
+        with patch.object(release.subprocess, 'run', side_effect=execute):
+            self.accept()
+        self.assertEqual(len(calls), 1)
+        argv = calls[0]
+        self.assertEqual(argv[:3], ['gh', 'attestation', 'verify'])
+        self.assertIn('https://github.com/owner/project/.github/workflows/release.yml@refs/heads/main', argv)
+        self.assertEqual(argv[argv.index('--source-digest') + 1], self.fixture.source)
+        self.assertEqual(argv[argv.index('--signer-digest') + 1], self.fixture.source)
+        self.assertIn('--deny-self-hosted-runners', argv)
+        self.config['publication']['attestation_platforms'] = ['undeclared/native']
+        with self.assertRaises(ValueError): release.policy(self.config)
+
 
 if __name__ == '__main__':
     unittest.main()

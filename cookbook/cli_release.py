@@ -26,7 +26,7 @@ spec.loader.exec_module(github_release)
 
 def policy(config):
     values = config.get('publication', {})
-    allowed = {'tag_prefix', 'initial', 'initial_version', 'version_identity', 'cargo_manifest', 'acceptance_timeout', 'validation_timeout', 'acceptance'}
+    allowed = {'tag_prefix', 'initial', 'initial_version', 'version_identity', 'cargo_manifest', 'acceptance_timeout', 'validation_timeout', 'acceptance', 'attestation_platforms'}
     if config.get('recipe') != 'rust-cli' or not isinstance(values, dict) or set(values)-allowed:
         raise ValueError('CLI publication requires native semantic release policy')
     result = {'tag_prefix': 'v', 'initial': 'first', 'version_identity': 'number', 'acceptance_timeout': 10, **values}
@@ -43,6 +43,11 @@ def policy(config):
         value = result['cargo_manifest']
         if not isinstance(value, str) or not value.endswith('Cargo.toml') or Path(value).is_absolute() or '..' in Path(value).parts:
             raise ValueError('CLI package version must select its native Cargo manifest')
+    platforms = result.get('attestation_platforms', [])
+    known = {value['platform'] + '/' + value['arch'] for value in config.get('package', {}).get('native_targets', [])}
+    if (not isinstance(platforms, list) or len(platforms) != len(set(platforms))
+            or any(not isinstance(value, str) or value not in known for value in platforms)):
+        raise ValueError('release provenance must select actual declared native archive platforms')
     acceptance = result.get('acceptance')
     if acceptance is not None:
         if (not isinstance(acceptance, dict) or not {'checks', 'verification', 'files'} <= set(acceptance)
@@ -177,6 +182,16 @@ def accepted_payload(root, config, proof, source, tools, tag, environment=None, 
         native.inspect_archive(root / 'dist' / native.archive_name(package, target), package, target)
     if (root / 'dist/checksums.txt').read_text() != native.checksums(root / 'dist', [name for name in names if name not in {'checksums.txt', 'release.json'}]):
         raise ValueError('CLI release checksums differ from the complete native archive set')
+    if not before_acceptance:
+        repository = environment['GITHUB_REPOSITORY']
+        for target in package['native_targets']:
+            if target['platform'] + '/' + target['arch'] not in values.get('attestation_platforms', []):
+                continue
+            subprocess.run(['gh', 'attestation', 'verify', str(root / 'dist' / native.archive_name(package, target)),
+                '--repo', repository, '--cert-identity', 'https://github.com/' + repository + '/.github/workflows/release.yml@refs/heads/main',
+                '--cert-oidc-issuer', 'https://token.actions.githubusercontent.com', '--signer-digest', source,
+                '--source-digest', source, '--source-ref', 'refs/heads/main', '--deny-self-hosted-runners'],
+                check=True, timeout=300)
     return expected
 
 
