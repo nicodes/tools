@@ -92,6 +92,8 @@ jobs:
       timeout-minutes: ${{ inputs.timeout-minutes }}
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
+      preview-number: ${{ inputs.preview-number }}
+      preview-environment: ${{ inputs.preview-number != '' && 'Preview' || '' }}
   unsupported:
     name: Require implemented recipe orchestration
     if: (github.event_name != 'pull_request' || !inputs.merge-gate) && !contains(fromJSON('["godot-addon","react-native","rust-cli","godot-game"]'), inputs.recipe)
