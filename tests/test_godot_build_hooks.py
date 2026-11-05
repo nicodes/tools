@@ -41,17 +41,18 @@ class GodotBuildHooks(unittest.TestCase):
         self.assertNotEqual(before,verification.artifacts(scope))
 
     def test_static_blueprint_is_staged_after_images_and_before_closed_image_packaging(self):
-        self.config['components']['images']=[{'name':'gate'}]
+        self.config['components']['images']=[{'name':'gate'},{'name':'config'}]
         events=[]
         with patch.object(game.godot_sdk,'activate',return_value={}),patch.object(game,'build_rust'),\
              patch.object(game.godot_package,'extensions'),patch.object(game.godot_package,'author'),\
              patch.object(game.godot_package,'runtime'),patch.object(game.godot_package,'packs'),\
              patch.object(game.godot_package,'package'),patch.object(game,'helper'),patch.object(game,'validate_outputs'),\
+             patch.object(game,'run',side_effect=lambda argv,*args,**kwargs:events.append(('native',argv))),\
              patch.object(game.images,'build',side_effect=lambda *args,**kwargs:events.append('images')),\
              patch.object(game.godot_static,'stage',side_effect=lambda *args:events.append('blueprint')),\
              patch.object(game.images,'package',side_effect=lambda *args:events.append('package')):
             game.compile_outputs(self.root,self.config,{'GODOT_BIN':'native-fixture'})
-        self.assertEqual(events,['images','blueprint','package'])
+        self.assertEqual(events,[('native',['bun',str(game.TOOLS/'helpers/hostnames.mjs')]),'images','blueprint','package'])
 
     def test_imported_products_verify_static_blueprint_without_preparing_sdk_or_recompiling(self):
         self.outputs()

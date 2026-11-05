@@ -575,6 +575,8 @@ def compile_outputs(root, config, env):
     if config.get('components', {}).get('images'):
         if config.get('components', {}).get('compose'):
             images.validate_compose(root, config, env, run)
+        if any(record.get('name')=='config' for record in config['components']['images']):
+            run(['bun',str(TOOLS/'helpers/hostnames.mjs')],root,env)
         images.build(root, config, env, run, native=native)
         godot_static.stage(root, config, env, run)
         image_fixtures.package(root,config,env,run)
