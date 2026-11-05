@@ -52,7 +52,7 @@ def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
                'import_ignored_patterns', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
-               'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web'}
+               'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web', 'extensions'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
     if values.get('origin', 'godot') not in {'godot', 'godot-builds'}:
@@ -67,10 +67,17 @@ def validate_config(root, config):
         raise ValueError('native imports belong to explicit setup or build stages')
     seen = set()
     for export in values.get('exports', []):
-        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility'}:
+        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility', 'project', 'timeout', 'import_timeout', 'import_arguments'}:
             raise ValueError('unsupported native Godot export setting')
         if export.get('kind', 'release') not in {'release', 'debug'} or export.get('platform', 'web') not in {'web', 'linux', 'windows', 'macos'}:
             raise ValueError('unsupported Godot export kind or platform')
+        native_project = relative(root, export.get('project', values.get('project', 'app')), exists=True)
+        if not (native_project / 'project.godot').is_file():
+            raise ValueError('native exports require an owned Godot project')
+        if native_project != directory and not native_project.is_relative_to(root / 'tests'):
+            raise ValueError('additional native Godot export projects belong to owned test fixtures')
+        helper('godot-export').native_options(export.get('import_arguments', values.get('import_arguments', [])),
+            export.get('timeout', 600), export.get('import_timeout', values.get('import_timeout', 180)))
         output = relative(root, export['output'])
         if output in seen:
             raise ValueError('Godot export destinations must be distinct')
@@ -287,6 +294,7 @@ def compile_outputs(root, config, env):
         helper('godot-addons').verify(directory)
     if config.get('components', {}).get('rust'):
         rust_component.build(root, config['components']['rust'], env, run)
+    godot_package.extensions(root, config, env)
     godot_package.author(root, config, env, run, 'prepare')
     if settings.get('import_stage', 'setup') == 'build':
         import_native(root, config, env)
@@ -295,10 +303,15 @@ def compile_outputs(root, config, env):
         raise ValueError('build requires at least one real native export')
     # The shared exporter performs strict isolated imports and preserves authored
     # input files. No product tests or dependency installation occur here.
-    presets = []
+    groups = {}
     for export in exports:
-        presets.append((export['preset'], relative(root, export['output']), export.get('kind', 'release')))
-    helper('godot-export').export(directory, presets, binary=env['GODOT_BIN'])
+        native = relative(root, export.get('project', settings.get('project', 'app')), exists=True)
+        arguments = tuple(export.get('import_arguments', settings.get('import_arguments', [])))
+        key = (native, arguments, export.get('timeout', 600), export.get('import_timeout', settings.get('import_timeout', 180)))
+        groups.setdefault(key, []).append((export['preset'], relative(root, export['output']), export.get('kind', 'release')))
+    for (native, arguments, timeout, import_timeout), presets in groups.items():
+        helper('godot-export').export(native, presets, binary=env['GODOT_BIN'],
+            import_arguments=arguments, timeout=timeout, import_timeout=import_timeout)
     godot_package.runtime(root, config)
     godot_package.packs(root, config, env)
     godot_package.author(root, config, env, run, 'postprocess')

@@ -1,5 +1,6 @@
 """Native authoring components and closed Godot serving-root packaging."""
 import importlib.util
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -50,7 +51,7 @@ def entry(root, record):
 
 def validate(root, config, artifacts):
     values = settings(config)
-    for name in ['prepare', 'postprocess', 'packs', 'web_releases']:
+    for name in ['prepare', 'postprocess', 'packs', 'web_releases', 'extensions']:
         if not isinstance(values.get(name, []), list) or len(values.get(name, [])) > 128:
             raise ValueError('native build declarations must be bounded component lists')
     for phase in ['prepare', 'postprocess']:
@@ -73,6 +74,21 @@ def validate(root, config, artifacts):
             if not any(manifest.is_relative_to(relative(root, name)) for name in artifacts):
                 raise ValueError('native pack metadata must belong to the verified build artifact scope')
             helper('clean').planned(root, [record['manifest']])
+    for record in values.get('extensions', []):
+        if (not isinstance(record, dict) or set(record) - {'source', 'destination', 'format', 'record', 'target', 'profile'}
+                or not {'source', 'destination', 'format'} <= set(record)
+                or record['format'] not in {'elf', 'wasm'}):
+            raise ValueError('native extension copies require declared compiled inputs and formats')
+        source, destination = relative(root, record['source']), relative(root, record['destination'])
+        if source == destination or destination in outputs:
+            raise ValueError('native extension destinations must be distinct from compiled inputs')
+        outputs.add(destination)
+        paths = [record['source'], record['destination'], *([record['record']] if record.get('record') else [])]
+        for name in paths:
+            output = relative(root, name)
+            if not any(output.is_relative_to(relative(root, path)) for path in artifacts):
+                raise ValueError('native extension bytes and evidence must belong to the verified artifact scope')
+        helper('clean').planned(root, [record['destination'], *([record['record']] if record.get('record') else [])])
     for record in values.get('web_releases', []):
         allowed = {'source', 'output', 'max_wasm_bytes', 'max_transfer_bytes', 'brotli', 'relative_urls',
                    'versioned_only', 'root_files', 'policy', 'revision_metadata'}
@@ -146,6 +162,33 @@ def packs(root, config, environment):
             manifest.parent.mkdir(parents=True, exist_ok=True)
             manifest.write_text(json.dumps({'file': output.name, 'bytes': output.stat().st_size,
                 'sha256': hashlib.sha256(output.read_bytes()).hexdigest()}) + '\n')
+
+
+def extensions(root, config, environment):
+    for record in settings(config).get('extensions', []):
+        source = relative(root, record['source'], exists=True)
+        if not source.is_file() or source.is_symlink():
+            raise ValueError('native extension input must be a regular compiled file')
+        data = source.read_bytes()
+        if record['format'] == 'elf':
+            valid = len(data) >= 20 and data[:5] == b'\x7fELF\x02' and int.from_bytes(data[18:20], 'little') == 62
+        else:
+            valid = data.startswith(b'\0asm\x01\0\0\0')
+        if not valid:
+            raise ValueError('native extension has the wrong compiled binary format')
+        destination = relative(root, record['destination'])
+        helper('clean').clean(root, [record['destination']])
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        if destination.read_bytes() != data:
+            raise ValueError('installed native extension differs from the compiled bytes')
+        if record.get('record'):
+            evidence = relative(root, record['record'])
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text(json.dumps({'schema': 1, 'source_commit': environment['SOURCE_COMMIT'],
+                'source': record['source'], 'destination': record['destination'],
+                'format': record['format'], 'target': record.get('target'), 'profile': record.get('profile'),
+                'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}, sort_keys=True) + '\n')
 
 
 def runtime(root, config):

@@ -64,3 +64,18 @@ class ExportIsolation(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     helper.export(root, presets, run=commands.append)
                 self.assertEqual(commands, [])
+
+    def test_native_import_flags_and_distinct_deadlines_preserve_existing_controls(self):
+        from unittest.mock import patch
+        import subprocess
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'project.godot').write_text('[application]\n')
+            with patch.object(helper.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '')) as execute:
+                helper.export(root, [('Web', root / 'out/index.html')],
+                              import_arguments=['--frame-delay', '1000'], timeout=1200, import_timeout=90)
+            self.assertEqual([call.kwargs['timeout'] for call in execute.call_args_list], [90, 1200])
+            self.assertEqual(execute.call_args_list[0].args[0][-2:], ['--frame-delay', '1000'])
+            for arguments in [['--export-release', 'Web'], ['--script', 'hidden-build.gd'], ['--frame-delay']]:
+                with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                    helper.export(root, [('Web', root / 'out/index.html')], import_arguments=arguments)
