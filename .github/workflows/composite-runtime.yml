@@ -1,0 +1,28 @@
+name: Composite runtime admission
+'on':
+  pull_request:
+    paths:
+      - docker-ci/**
+      - helpers/composite-actions.py
+      - .github/workflows/composite-runtime.yml
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  load:
+    name: Load the Docker composite on Ubuntu 22
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Declare the fixture's absent image capability
+        run: printf '%s\n' '[components]' 'images=[]' > cookbook.toml
+      - name: Admit every composite step before evaluating optional capability conditions
+        uses: ./docker-ci
