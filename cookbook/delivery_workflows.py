@@ -127,9 +127,11 @@ def declaration(root, config):
 
 def jobs(root, config, tools):
     data = declaration(root, config)
+    import dependency_security
+    validation_needs = '[validate, dependency-security]' if dependency_security.declaration(config) else 'validate'
     if data.get('mode') == 'godot-static':
         import godot_static_workflows
-        return godot_static_workflows.jobs(root, config, tools)
+        return godot_static_workflows.jobs(root, config, tools).replace('    needs: validate\n', '    needs: ' + validation_needs + '\n', 1)
     ref=data['komizo_ref'];limits=deadlines(data);combined=data.get('combined',False)
     source_condition="github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && (inputs.source == '' || inputs.source == github.sha)"
     condition=source_condition
@@ -137,13 +139,13 @@ def jobs(root, config, tools):
     if historical:condition+=" && (inputs.version == '' || inputs.version == github.sha)"
     lines=[]
     if not combined:
-        lines+=['  publish:','    name: Publish accepted images','    needs: validate','    if: '+condition,
+        lines+=['  publish:','    name: Publish accepted images','    needs: '+validation_needs,'    if: '+condition,
             '    uses: nicodes/komizo-actions/.github/workflows/cookbook-publish.yml@'+ref,
             '    permissions:','      contents: read','      actions: read','      packages: write','      attestations: read',
             '    with:','      tools-ref: '+tools,'      komizo-ref: '+ref,'      source: ${{ github.sha }}',
             '      project: '+data['project'],'      runner: '+data['publish_runner'],
             '      timeout-minutes: '+str(data['publish_timeout'])]
-    lines+=['  deploy:','    name: Deploy accepted images','    needs: '+('validate' if combined else 'publish'),
+    lines+=['  deploy:','    name: Deploy accepted images','    needs: '+(validation_needs if combined else 'publish'),
         '    if: '+condition,'    runs-on: '+data['deploy_runner'],'    timeout-minutes: '+str(data['deploy_timeout']),
         '    environment: '+data.get('environment','production'),'    concurrency:','      group: deploy-production',
         '      cancel-in-progress: false','    permissions:','      contents: read','      actions: read',

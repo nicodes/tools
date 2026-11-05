@@ -88,6 +88,9 @@ jobs:
             files['.github/workflows/ci.yml'] += '      preview-environment: ' + ci['preview_environment'] + '\n'
     files['.github/workflows/ci.yml'] += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
+    if config.get('ci', {}).get('dependency_security') is not None:
+        import dependency_security
+        files['.github/workflows/ci.yml'] += dependency_security.job(root, config, revision)
     if config.get('delivery'):
         if config['recipe'] not in {'react-native', 'godot-game'}:
             raise ValueError('this delivery composition is enrolled for application images only')
@@ -109,6 +112,8 @@ jobs:
         default: ''
 permissions: {}''',1)
             production=production.replace('  validate:\n',"  validate:\n    if: inputs.version == '' || inputs.version == github.sha\n",1)
+            if config.get('ci', {}).get('dependency_security') is not None:
+                production=production.replace('  dependency-security:\n',"  dependency-security:\n    if: inputs.version == '' || inputs.version == github.sha\n",1)
         if delivery.get('validation_timeout_minutes'):
             production=production.replace('      timeout-minutes: '+str(ci['timeout_minutes'])+'\n',
                 '      timeout-minutes: '+str(delivery['validation_timeout_minutes'])+'\n',1)
