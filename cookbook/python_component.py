@@ -1,10 +1,12 @@
 """Explicit setup of hash-locked, checkout-local Python dependencies."""
 import hashlib
 import json
+import os
+from pathlib import Path
 import subprocess
 import sys
 
-from configuration import relative
+from configuration import load, relative
 
 
 def inputs(root, value):
@@ -50,3 +52,13 @@ def interpreter(root, config, name):
     if json.loads(receipt.read_text()) != identity:
         raise ValueError('Python dependencies are stale; run make setup')
     return str(relative(root, python.relative_to(root).as_posix(), exists=True))
+
+
+if __name__ == '__main__':
+    if sys.argv[1:] != ['setup']:
+        raise SystemExit('usage: python_component.py setup')
+    try:
+        root = Path.cwd().resolve()
+        setup(root, load(root), dict(os.environ))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise SystemExit(str(error)) from None
