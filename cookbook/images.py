@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 
 from configuration import relative
+import buildkit
 
 TOOLS = Path(__file__).resolve().parents[1]
 NAME = re.compile(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z')
@@ -167,7 +168,7 @@ def build(root, config, environment, run, *, native=None):
         raise ValueError('image builds require typed Dockerfile component records')
     built, plans = [], []
     for record in records:
-        if set(record) - {'name', 'dockerfile', 'context', 'target', 'cache_key', 'pull', 'build_arguments', 'native'}:
+        if set(record) - {'name', 'dockerfile', 'context', 'target', 'cache_key', 'pull', 'build_arguments', 'native', 'release_cache_before', 'release_cache_after'}:
             raise ValueError('unknown image component setting')
         name = record.get('name')
         if not isinstance(name, str) or not NAME.fullmatch(name):
@@ -178,6 +179,8 @@ def build(root, config, environment, run, *, native=None):
             raise ValueError('native image preparation has no owning recipe runner')
         if 'pull' in record and type(record['pull']) is not bool:
             raise ValueError('image pull policy must be boolean')
+        if any(key in record and type(record[key]) is not bool for key in ['release_cache_before', 'release_cache_after']):
+            raise ValueError('image compiler-store release policy must be boolean')
         dockerfile = relative(root, record.get('dockerfile', 'deploy/images/' + name + '.Dockerfile'), exists=True)
         context = relative(root, record.get('context', '.'), exists=True)
         command = ['docker', 'buildx', 'build', '--load']
@@ -206,9 +209,13 @@ def build(root, config, environment, run, *, native=None):
     if not set(components(value)) <= set(built):
         raise ValueError('not every declared shipping image has a build component')
     for record, command in plans:
+        if record.get('release_cache_before'):
+            buildkit.release_cache(root, environment, run)
         if record.get('native'):
             native(root, record['native'], environment)
         run(command, root, environment)
+        if record.get('release_cache_after'):
+            buildkit.release_cache(root, environment, run)
 
 
 def package(root, config, environment, run):

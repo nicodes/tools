@@ -19,6 +19,7 @@ import node_component
 import postgres_fixture
 import expo_exports
 import source_policy
+import application_fixtures
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -402,6 +403,8 @@ def behavioral_tests(root, config, environment, suite):
 
 def native_behavioral_tests(root, config, environment, suite):
     count = 0
+    if suite == 'integration' and application_fixtures.recovery(root, config, environment, run):
+        count += 1
     if suite == 'unit':
         count += node_component.test(root, packages(config), environment, run)
     records = {}
