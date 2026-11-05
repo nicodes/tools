@@ -132,6 +132,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Create protected checkout outputs
         run: python3 -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Restore native Cargo compiler intermediates
+        uses: ./_cookbook/compiler-cache
+        with:
+          target: ${{ matrix.target }}
       - name: Install static Linux linker
         if: runner.os == 'Linux' && contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
@@ -147,6 +151,11 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      - name: Save successful native Cargo compiler intermediates
+        uses: ./_cookbook/compiler-cache
+        with:
+          mode: save
+          target: ${{ matrix.target }}
   native_two:
     name: Native 2 (${{ matrix.platform }}-${{ matrix.arch }})
     needs: [plan, native_one]
@@ -199,6 +208,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Create protected checkout outputs
         run: python3 -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Restore native Cargo compiler intermediates
+        uses: ./_cookbook/compiler-cache
+        with:
+          target: ${{ matrix.target }}
       - name: Install static Linux linker
         if: runner.os == 'Linux' && contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
@@ -214,6 +227,11 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      - name: Save successful native Cargo compiler intermediates
+        uses: ./_cookbook/compiler-cache
+        with:
+          mode: save
+          target: ${{ matrix.target }}
   full_host:
     name: Full host validation
     needs: [plan, native_one, native_two]

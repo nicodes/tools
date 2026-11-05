@@ -123,6 +123,8 @@ jobs:
         run: python3 -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
       - name: Prepare declared image capabilities
         uses: ./_cookbook/docker-ci
+      - name: Restore bounded native compiler intermediates
+        uses: ./_cookbook/compiler-cache
       - name: Run shared Make worker
         env:
           GH_TOKEN: ${{ github.token }}
@@ -135,6 +137,10 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
+      - name: Save successful native compiler intermediates
+        uses: ./_cookbook/compiler-cache
+        with:
+          mode: save
   units:
     name: Godot unit (${{ matrix.shard }})
     needs: [plan, build]
