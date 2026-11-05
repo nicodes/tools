@@ -42,6 +42,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     uses: nicodes/tools/.github/workflows/cookbook-native.yml@PIN
     with:
       tools-ref: PIN

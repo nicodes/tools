@@ -43,6 +43,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     with:
       tools-ref: ${{ inputs.tools || 'PIN' }}
       source: ${{ inputs.source || github.sha }}
