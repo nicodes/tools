@@ -11,9 +11,16 @@ ENV=re.compile('[A-Z][A-Z0-9_]{0,79}')
 ROLES={'backup','recovery','security','production'}
 RESERVED_ENV={'GH_TOKEN','GITHUB_TOKEN','TOOLS_ROOT','KOMIZO_ACTIONS_ROOT','OPENROUTER_API_KEY',
     'TOOLS_REF','KOMIZO_REF','DECLARATION','OPERATION','OPERATION_CHECK','OPERATION_RUNNER',
-    'OPERATION_TIMEOUT','OPERATION_ENVIRONMENT','OPERATION_REPORT_TIMEOUT','APP_VERSION',
+    'OPERATION_TIMEOUT','OPERATION_ENVIRONMENT','OPERATION_REPORT_TIMEOUT','OPERATION_STEP_TIMEOUTS','APP_VERSION',
     'EXPECTED_REVISION','PLAYWRIGHT_BROWSERS_PATH','PATH','PYTHONPATH','PYTHONHOME','BASH_ENV',
     'ENV','NODE_OPTIONS','LD_PRELOAD','LD_LIBRARY_PATH'}
+STEP_NAMES={
+    'backup':{'checkout','setup','plan','connect','frame','proof','capture','upload','artifact','cleanup','report_checkout','report_setup','report'},
+    'recovery':{'checkout','setup','plan','verify','artifact'},
+    'security':{'checkout','setup','plan','source','registry','deployed','artifact','report_checkout','report_setup','report'},
+    'production':{'checkout','setup','plan','prepare','run','artifact'},
+    'paid':{'checkout','setup','plan','prepare','run','artifact'},
+}
 
 
 def bounded(value,maximum,label):
@@ -28,6 +35,20 @@ def source(root,name,prefixes=('deploy/','tests/','api/','internal/')):
 def records(value,maximum,label):
     if not isinstance(value,list) or len(value)>maximum:raise ValueError(label+' must be a bounded list')
     return value
+
+
+def step_timeouts(operation,record):
+    values=record.get('step_timeouts',{})
+    if not isinstance(values,dict) or set(values)-STEP_NAMES[operation]:
+        raise ValueError('step deadlines select only implemented native operational stages')
+    result={}
+    for name in sorted(STEP_NAMES[operation]):
+        maximum=record.get('report_timeout',5) if name.startswith('report') else record['timeout_minutes']
+        default=min(5,maximum) if name=='plan' else maximum
+        value=values.get(name,default)
+        bounded(value,maximum,'native '+name+' step')
+        result[name]=value
+    return result
 
 
 def entry(root,value,paid=False,budget=900):
@@ -75,13 +96,16 @@ def declaration(root,config):
     for role in ROLES:
         if role not in value:continue
         record=value[role]
-        fields={'backup':{'config','gate_variable'},'recovery':set(),'security':{'report_timeout','checks','prepare','deployed_policy'},'production':{'checks','prepare'}}
-        if not isinstance(record,dict) or set(record)-({'runner','timeout_minutes','environment','schedule','concurrency','queue','evidence'}|fields[role]):
+        fields={'backup':{'config','gate_variable','report_timeout'},'recovery':set(),'security':{'report_timeout','checks','prepare','deployed_policy'},'production':{'checks','prepare'}}
+        if not isinstance(record,dict) or set(record)-({'runner','timeout_minutes','environment','schedule','concurrency','queue','evidence','step_timeouts'}|fields[role]):
             raise ValueError('unsupported native '+role+' data')
         if not isinstance(record.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',record['runner']):raise ValueError('operation requires its original runner')
         bounded(record.get('timeout_minutes'),110 if role=='security' else 45,role)
         if 'report_timeout' in record:bounded(record['report_timeout'],11,'failure report')
+        step_timeouts(role,record)
         if record.get('environment') not in (None,'production','Production'):raise ValueError('preserve the original protected production environment')
+        if role=='security' and record.get('environment') is not None:raise ValueError('source/deployed audits have no protected host environment')
+        if role in {'backup','recovery'} and record.get('environment') not in ('production','Production'):raise ValueError('backup and recovery retain their protected environment')
         schedule=record.get('schedule',[])
         if not isinstance(schedule,list) or len(schedule)>4 or any(not isinstance(v,str) or not re.fullmatch('[0-9*/,-]+(?: [0-9*/,-]+){4}',v) for v in schedule):raise ValueError('operational schedule must be bounded literal cron')
         if role in {'backup','recovery'} and 'checks' in record:raise ValueError('credentialed backup and transport recovery execute only pinned shared code')
@@ -115,11 +139,12 @@ def declaration(root,config):
     if not isinstance(paid,list) or len(paid)>4:raise ValueError('paid checks require bounded explicit opt-in declarations')
     seen=set()
     for check in paid:
-        if not isinstance(check,dict) or set(check)-{'id','description','runner','timeout_minutes','environment','prepare','check','deployment_required','skip_default'}:
+        if not isinstance(check,dict) or set(check)-{'id','description','runner','timeout_minutes','environment','prepare','check','deployment_required','skip_default','step_timeouts'}:
             raise ValueError('unsupported paid native check')
         name=check.get('id','')
         if not isinstance(name,str) or not NAME.fullmatch(name) or name in seen or name in ROLES|{'paid','verify','report'}:raise ValueError('paid checks require distinct native dispatch inputs')
         seen.add(name);bounded(check.get('timeout_minutes'),45,'paid check')
+        step_timeouts('paid',check)
         if check.get('environment') not in ('production','Production'):raise ValueError('paid checks retain their protected approval environment')
         if not isinstance(check.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',check['runner']):raise ValueError('paid check requires its existing runner')
         if not isinstance(check.get('description'),str) or not 1<=len(check['description'])<=256:raise ValueError('paid checks require a useful bounded dispatch description')
@@ -192,9 +217,10 @@ def workflow_files(root,revision,config=None):
             lines+=['  '+job+':','    if: '+expression(condition),'    uses: nicodes/komizo-actions/.github/workflows/'+callee+'.yml@'+pin,'    permissions:']
             for key,value in permissions[role].items():lines+=['      '+key+': '+value]
             lines+=['    with:','      tools-ref: '+revision,'      komizo-ref: '+pin,'      declaration: '+json.dumps(data['definition']),
-                    '      runner: '+settings['runner'],'      timeout-minutes: '+str(settings['timeout_minutes'])]
+                    '      runner: '+settings['runner'],'      timeout-minutes: '+str(settings['timeout_minutes']),
+                    '      step-timeouts: '+json.dumps(json.dumps(step_timeouts(operation,settings),sort_keys=True))]
             if operation in {'security','production','paid'}:lines+=['      operation: '+operation,'      check: '+json.dumps(paid_id or '')]
-            if role=='security':lines+=['      report-timeout: '+str(record.get('report_timeout',5))]
+            if role in {'backup','security'}:lines+=['      report-timeout: '+str(record.get('report_timeout',5))]
             if settings.get('environment'):lines+=['      environment: '+settings['environment']]
             if role=='recovery':
                 for key in ['source-run-id','artifact-id']:lines+=['      '+key+': '+expression('inputs.'+key)]

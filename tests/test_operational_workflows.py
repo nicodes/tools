@@ -142,6 +142,22 @@ class OperationalWorkflows(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'symlinks'):
             self.declaration()
 
+    def test_source_deployed_and_report_steps_keep_distinct_original_deadlines(self):
+        self.data['security'].update(report_timeout=11,
+            step_timeouts={'source':30,'deployed':55,'report_checkout':3,'report_setup':5,'report':3})
+        self.declaration()
+        values=operations.step_timeouts('security',self.data['security'])
+        self.assertEqual(values['source'],30)
+        self.assertEqual(values['deployed'],55)
+        self.assertEqual(values['report'],3)
+        self.assertEqual(values['report_setup'],5)
+        self.assertEqual(values['checkout'],110)
+        for changes in [{'command':3},{'deployed':111},{'source':True},{'report':12}]:
+            record=copy.deepcopy(self.data['security'])
+            record['step_timeouts'].update(changes)
+            with self.subTest(changes=changes),self.assertRaises(ValueError):
+                operations.step_timeouts('security',record)
+
 
 if __name__ == '__main__':
     unittest.main()
