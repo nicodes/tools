@@ -107,8 +107,14 @@ window.godotLoadFailure = function () {
 </script>'''
 
 
-def stage_version(root, files, relative_urls=False):
+def stage_version(root, files, relative_urls=False, recovery_id='godot-release-recovery',
+                  failure_function='godotLoadFailure', release_root=None, strip_cache_query=False):
     root = Path(root)
+    if not re.fullmatch(r'[a-z][a-z0-9-]{0,79}', recovery_id):
+        raise ValueError('recovery element identity must be a literal HTML identifier')
+    for identifier in [failure_function, *([release_root] if release_root else [])]:
+        if not isinstance(identifier, str) or not re.fullmatch(r'[A-Za-z_$][A-Za-z0-9_$]{0,79}', identifier):
+            raise ValueError('release shell callbacks must be literal JavaScript identifiers')
     payload = {name: info['sha256'] for name, info in files.items() if name != 'index.html'}
     release_id = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     prefix = f'{"" if relative_urls else "/"}releases/{release_id}/'
@@ -119,19 +125,32 @@ def stage_version(root, files, relative_urls=False):
         raise ValueError('Expected the reviewed Godot shell configuration')
     config = json.loads(match[1])
     config['executable'] = prefix + 'index'
-    config['fileSizes'] = {prefix + Path(name).name: size for name, size in config['fileSizes'].items()}
+    if 'gdextensionLibs' in config:
+        libraries = config['gdextensionLibs']
+        if not isinstance(libraries, list) or any(not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9_.-]+\.wasm', name) or name not in payload for name in libraries):
+            raise ValueError('every extension library must be a versioned release payload')
+    config['fileSizes'] = {prefix + Path(name.split('?', 1)[0] if strip_cache_query else name).name: size for name, size in config['fileSizes'].items()}
     html = html[:match.start(1)] + json.dumps(config, separators=(',', ':')) + html[match.end(1):]
+    if strip_cache_query:
+        html = re.sub(r'(src="index\.js)\?v=[0-9]+', r'\1', html)
     for name in payload:
         html = html.replace(f'src="{name}"', f'src="{prefix}{name}"')
         html = html.replace(f'href="{name}"', f'href="{prefix}{name}"')
-    if 'id="godot-release-recovery"' not in html:
-        html = html.replace('<script src=', RECOVERY + '\n<script src=', 1)
-        html = html.replace(f'src="{prefix}index.js"', f'src="{prefix}index.js" onerror="godotLoadFailure()"')
+    recovery = RECOVERY.replace('godot-release-recovery', recovery_id).replace('godotLoadFailure', failure_function)
+    if release_root:
+        recovery = recovery.replace('window.' + failure_function + ' = function',
+                                    f'window.{release_root} = "";\nwindow.{failure_function} = function')
+    if 'id="' + recovery_id + '"' not in html:
+        html = html.replace('<script src=', recovery + '\n<script src=', 1)
+        html = html.replace(f'src="{prefix}index.js"', f'src="{prefix}index.js" onerror="{failure_function}()"')
         html = html.replace('const engine = new Engine(GODOT_CONFIG);',
                             "const engine = typeof Engine === 'function' ? new Engine(GODOT_CONFIG) : null;")
-        html = html.replace('(function () {', '(function () {\n\tif (!engine) { godotLoadFailure(); return; }', 1)
+        html = html.replace('(function () {', f'(function () {{\n\tif (!engine) {{ {failure_function}(); return; }}', 1)
         html = html.replace('function displayFailureNotice(err) {',
-                            'function displayFailureNotice(err) {\n\t\tgodotLoadFailure();', 1)
+                            'function displayFailureNotice(err) {\n\t\t' + failure_function + '();', 1)
+    if release_root:
+        html = re.sub(r'window\.' + re.escape(release_root) + r' = "[^"]*";',
+                      f'window.{release_root} = "{prefix}";', html)
     (root / 'index.html').write_text(html)
     releases = root / 'releases'
     if releases.is_symlink():
@@ -142,11 +161,13 @@ def stage_version(root, files, relative_urls=False):
         raise ValueError('Version output cannot be a symlink')
     destination.mkdir(exist_ok=True)
     for name in payload:
-        shutil.copy2(root / name, destination / name)
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / name, target)
         for suffix in ('.gz', '.br'):
             sidecar = root / (name + suffix)
             if sidecar.exists():
-                shutil.copy2(sidecar, destination / sidecar.name)
+                shutil.copy2(sidecar, target.with_name(sidecar.name))
     # This is generated output, not a historical artifact store. Old shells
     # fail explicitly and offer reload instead of fetching a different pack.
     for entry in releases.iterdir():

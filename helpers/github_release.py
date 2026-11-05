@@ -35,6 +35,22 @@ def version(bump, prefix, tags, initial='first'):
     return number, prefix + number
 
 
+def resolve_version(plugin, bump, tags, head):
+    """Preserve a native version's same-head retry before selecting its next bump."""
+    plugin_tag = 'v' + plugin
+    tag(plugin_tag)
+    if not re.fullmatch(r'[a-f0-9]{40}', head):
+        raise ValueError('release head must be an exact commit')
+    if plugin_tag in tags:
+        if tags[plugin_tag] != head:
+            raise ValueError(plugin_tag + ' does not point to release head')
+        return plugin, plugin_tag
+    expected, selected = version(bump, 'v', tags, 'bump')
+    if plugin != expected:
+        raise ValueError('plugin version ' + plugin + ' does not match next ' + bump + ' version ' + expected)
+    return expected, selected
+
+
 def absent(repo, endpoint):
     result = subprocess.run(['gh', 'api', '--include', f'repos/{repo}/{endpoint}'],
                             text=True, capture_output=True, check=False)
@@ -78,19 +94,26 @@ def payload(directory, expected):
     return directory.resolve()
 
 
-def publish(directory, expected, release_tag, source, repo, notes=None):
+def publish(directory, expected, release_tag, source, repo, notes=None, *, tag_exists=False, admit=None):
     validate_request(repo, source, release_tag)
     directory = payload(directory, expected)
     existing = run('gh', 'api', '--paginate', f'repos/{repo}/releases?per_page=100', '--jq', '.[].tag_name')
     if release_tag in existing.splitlines():
         raise ValueError('release identities must be new, including drafts')
     endpoint = 'git/ref/tags/' + quote(release_tag, safe='')
-    absent(repo, endpoint)
+    if tag_exists:
+        if remote_tag_commit(repo, release_tag) != source:
+            raise ValueError('existing tag differs from the accepted source')
+    else:
+        absent(repo, endpoint)
     absent(repo, 'releases/tags/' + quote(release_tag, safe=''))
     # Claim the exact source ref atomically. Never let release creation attach to
     # a tag that another publisher created between the absence check and upload.
-    run('gh', 'api', '--method', 'POST', f'repos/{repo}/git/refs',
-        '-f', 'ref=refs/tags/' + release_tag, '-f', 'sha=' + source)
+    if admit:
+        admit()
+    if not tag_exists:
+        run('gh', 'api', '--method', 'POST', f'repos/{repo}/git/refs',
+            '-f', 'ref=refs/tags/' + release_tag, '-f', 'sha=' + source)
     files = [str(directory / name) for name in sorted(expected)]
     subprocess.run(['gh', 'release', 'create', release_tag, *files, '--repo', repo,
                     '--target', source, '--verify-tag', '--draft', '--title', release_tag,
@@ -101,10 +124,67 @@ def publish(directory, expected, release_tag, source, repo, notes=None):
         raise ValueError('GitHub did not identify the uploaded draft')
     uploaded = json.loads(run('gh', 'api', f'repos/{repo}/releases/{release_id}'))
     ref = json.loads(run('gh', 'api', f'repos/{repo}/{endpoint}'))
+    same_source = (remote_tag_commit(repo, release_tag) == source if tag_exists else
+                   ref.get('object', {}).get('type') == 'commit' and ref['object']['sha'] == source)
     actual = {asset['name']: asset.get('digest') for asset in uploaded['assets']}
     if (not uploaded['draft'] or uploaded['tag_name'] != release_tag or uploaded['target_commitish'] != source
             or len(actual) != len(uploaded['assets'])
             or actual != {name: 'sha256:' + digest for name, digest in expected.items()}
-            or ref.get('object', {}).get('type') != 'commit' or ref['object']['sha'] != source):
+            or not same_source):
         raise ValueError('uploaded draft differs from the verified payload; it remains unpublished')
+    if admit:
+        admit()
     subprocess.run(['gh', 'release', 'edit', release_tag, '--repo', repo, '--draft=false'], check=True)
+
+
+def remote_tag_commit(repo, release_tag):
+    tag(release_tag)
+    value = json.loads(run('gh', 'api', f'repos/{repo}/git/ref/tags/' + quote(release_tag, safe='')))['object']
+    for _ in range(8):
+        if value.get('type') == 'commit' and re.fullmatch('[a-f0-9]{40}', value.get('sha', '')):
+            return value['sha']
+        if value.get('type') != 'tag' or not re.fullmatch('[a-f0-9]{40}', value.get('sha', '')):
+            break
+        value = json.loads(run('gh', 'api', f"repos/{repo}/git/tags/{value['sha']}"))['object']
+    raise ValueError('release tag did not resolve to one immutable commit')
+
+
+def optional_release(repo, release_tag):
+    result = subprocess.run(['gh', 'api', '--include', f'repos/{repo}/releases/tags/' + quote(tag(release_tag), safe='')],
+                            capture_output=True, text=True, check=False)
+    statuses = re.findall(r'^HTTP/\S+ (\d+)', result.stdout, re.M)
+    if result.returncode == 0 and statuses and statuses[-1] == '200':
+        return json.loads(re.split(r'\r?\n\r?\n', result.stdout, maxsplit=1)[1])
+    if result.returncode != 0 and statuses and statuses[-1] == '404':
+        return None
+    raise ValueError('could not establish immutable existing release status')
+
+
+def verify_existing(repo, release_tag, source, expected):
+    """Read an existing release without changing tags, assets or publication state."""
+    if not expected or remote_tag_commit(repo, release_tag) != source:
+        raise ValueError('existing release tag differs from its permitted source')
+    value = json.loads(run('gh', 'api', f'repos/{repo}/releases/tags/' + quote(release_tag, safe='')))
+    assets = value.get('assets', [])
+    indexed = {asset.get('name'): asset for asset in assets}
+    if (value.get('draft') is not False or value.get('tag_name') != release_tag
+            or value.get('target_commitish') != source or len(indexed) != len(assets)):
+        raise ValueError('existing GitHub release identity is invalid')
+    for name, digest in expected.items():
+        if (not re.fullmatch(r'[A-Za-z0-9@][A-Za-z0-9@._-]*', name) or not re.fullmatch('[a-f0-9]{64}', digest)
+                or indexed.get(name, {}).get('digest') != 'sha256:' + digest):
+            raise ValueError('existing release asset digest differs from the permitted immutable bytes')
+    return value
+
+
+def download_existing(directory, repo, release_tag, source, expected):
+    """Recover each exact accepted asset; metadata never substitutes for raw-byte hashing."""
+    verify_existing(repo, release_tag, source, expected)
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=False)
+    for name in expected:
+        subprocess.run(['gh', 'release', 'download', release_tag, '--repo', repo,
+                        '--pattern', name, '--dir', str(directory)], check=True)
+    payload(directory, expected)
+    verify_existing(repo, release_tag, source, expected)
+    return directory

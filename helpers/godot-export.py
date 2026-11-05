@@ -20,6 +20,19 @@ def export(project, presets, binary='godot', run=checked):
     project = Path(project).resolve()
     if not (project / 'project.godot').is_file():
         raise ValueError('Expected a Godot project')
+    normalized, destinations = [], set()
+    for declaration in presets:
+        if not isinstance(declaration, (tuple, list)) or len(declaration) not in {2, 3}:
+            raise ValueError('Godot export requires preset, output and optional native kind')
+        preset, output = declaration[:2]
+        kind = declaration[2] if len(declaration) == 3 else 'release'
+        if kind not in {'release', 'debug'}:
+            raise ValueError('Godot export kind must be release or debug')
+        output = Path(output).resolve()
+        if output in destinations:
+            raise ValueError('Godot export destinations must be distinct')
+        destinations.add(output)
+        normalized.append((preset, output, kind))
     with tempfile.TemporaryDirectory(prefix='godot-export-') as directory:
         copied = Path(directory) / 'project'
         shutil.copytree(project, copied, ignore=shutil.ignore_patterns('.godot', 'build', 'gdam.link.json'))
@@ -34,10 +47,9 @@ def export(project, presets, binary='godot', run=checked):
             finally:
                 config.write_bytes(original)
         run(command)
-        for preset, output in presets:
-            output = Path(output).resolve()
+        for preset, output, kind in normalized:
             output.parent.mkdir(parents=True, exist_ok=True)
-            run([binary, '--headless', '--path', str(copied), '--export-release', preset, str(output)])
+            run([binary, '--headless', '--path', str(copied), '--export-' + kind, preset, str(output)])
 
 
 def main():

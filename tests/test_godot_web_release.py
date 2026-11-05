@@ -8,7 +8,7 @@ import unittest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/"helpers"))
 from godot_web_release import pack_paths, prepare
-from godot_version_release import compact_payloads, restore_export_inputs
+from godot_version_release import compact_payloads, restore_export_inputs, stage_version
 import gzip
 import json
 import hashlib
@@ -141,6 +141,127 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'parent'):
                 restore_export_inputs(root)
             self.assertFalse((outside / 'runtime.js').exists())
+
+    def test_nested_sdk_and_extension_payloads_keep_versioned_identity_and_native_callback_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            (root / 'sdk').mkdir()
+            (root / 'sdk/runtime.js').write_bytes(b'native SDK chunk')
+            (root / 'sdk/runtime.js.gz').write_bytes(gzip.compress(b'native SDK chunk', mtime=0))
+            (root / 'extension.wasm').write_bytes(b'extension')
+            html = (root / 'index.html').read_text().replace('src="index.js"', 'src="index.js?v=42"')
+            config = {'executable': 'index', 'fileSizes': {'index.wasm?cache=42': 7, 'index.pck': 8},
+                      'gdextensionLibs': ['extension.wasm']}
+            html = re.sub(r'const GODOT_CONFIG = (\{[^\n]+\});', 'const GODOT_CONFIG = ' + json.dumps(config) + ';', html)
+            (root / 'index.html').write_text(html)
+            names = ['index.html', 'index.js', 'index.wasm', 'index.pck', 'sdk/runtime.js', 'extension.wasm']
+            files = {name: {'sha256': hashlib.sha256((root / name).read_bytes()).hexdigest()} for name in names}
+            release = stage_version(root, files, recovery_id='fixture-release-recovery',
+                failure_function='fixtureLoadFailure', release_root='fixtureReleaseRoot', strip_cache_query=True)
+            staged = root / 'releases' / release
+            self.assertEqual((staged / 'sdk/runtime.js').read_bytes(), b'native SDK chunk')
+            self.assertEqual(gzip.decompress((staged / 'sdk/runtime.js.gz').read_bytes()), b'native SDK chunk')
+            html = (root / 'index.html').read_text()
+            self.assertIn(f'window.fixtureReleaseRoot = "/releases/{release}/";', html)
+            self.assertIn('window.fixtureLoadFailure = function', html)
+            self.assertNotIn('index.js?v=', html)
+            self.assertIn(f'/releases/{release}/index.wasm', html)
+
+    def test_undeclared_extension_or_nonliteral_callback_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            files = {name: {'sha256': hashlib.sha256((root / name).read_bytes()).hexdigest()}
+                     for name in ['index.html', 'index.js', 'index.wasm', 'index.pck']}
+            with self.assertRaises(ValueError):
+                stage_version(root, files, failure_function='callback(); injected(')
+            original = (root / 'index.html').read_text()
+            config = {'executable': 'index', 'fileSizes': {}, 'gdextensionLibs': ['missing.wasm']}
+            (root / 'index.html').write_text(re.sub(r'const GODOT_CONFIG = (\{[^\n]+\});',
+                'const GODOT_CONFIG = ' + json.dumps(config) + ';', original))
+            with self.assertRaisesRegex(ValueError, 'extension library'):
+                stage_version(root, files)
+
+    def test_nested_native_payloads_remain_closed_and_versioned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            (root / 'sdk').mkdir(); (root / 'sdk/bridge.js').write_bytes(b'bridge')
+            (root / 'native.side.wasm').write_bytes(b'extension')
+            prepare(root, 'a' * 40, versioned_only=True,
+                    policy={'payload_directories': ['sdk'], 'recovery_id': 'native-recovery',
+                            'failure_function': 'nativeLoadFailure', 'release_root': 'nativeReleaseRoot'})
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            self.assertEqual(set(manifest['files']), {'index.html', 'index.js', 'index.wasm', 'index.pck', 'sdk/bridge.js', 'native.side.wasm'})
+            for name, value in manifest['files'].items():
+                target = root / value['path']
+                self.assertEqual(hashlib.sha256(target.read_bytes()).hexdigest(), value['sha256'])
+                if name != 'index.html':
+                    self.assertFalse((root / name).exists())
+                    self.assertEqual(gzip.decompress(target.with_name(target.name + '.gz').read_bytes()), target.read_bytes())
+            self.assertIn('window.nativeReleaseRoot = "/releases/' + manifest['release_id'], (root / 'index.html').read_text())
+
+    def test_caller_pack_policy_preserves_required_and_forbidden_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            (root / 'index.pck').write_bytes(self.pack(['res://internal/debug.gdc']))
+            with self.assertRaisesRegex(ValueError, 'Development resources'):
+                prepare(root, policy={'forbidden_prefixes': ['internal/']})
+            (root / 'index.pck').write_bytes(self.pack(['res://main.scn']))
+            with self.assertRaisesRegex(ValueError, 'required native resources'):
+                prepare(root, policy={'required_pack_paths': ['native/config.res']})
+            prepare(root, policy={'required_pack_paths': ['main.scn']})
+
+    def test_deferred_payload_has_separate_exact_initial_budget_accounting(self):
+        import random
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            (root / 'optional.pck').write_bytes(random.Random(7).randbytes(4096))
+            prepare(root, max_transfer_bytes=2000,
+                    policy={'deferred_payloads': {'optional.pck': 'after_interactive'}})
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            self.assertLess(manifest['transfer_bytes'], 2000)
+            self.assertGreater(manifest['full_transfer_bytes'], 4096)
+            self.assertEqual(manifest['deferred_transfer_bytes'], manifest['files']['optional.pck']['transfer_bytes'])
+            self.assertEqual(manifest['transfer_bytes'] + manifest['deferred_transfer_bytes'], manifest['full_transfer_bytes'])
+            self.assertEqual(manifest['files']['optional.pck']['load_phase'], 'after_interactive')
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            with self.assertRaisesRegex(ValueError, 'deferred payload is missing'):
+                prepare(root, policy={'deferred_payloads': {'missing.pck': 'later'}})
+
+    def test_payload_policy_rejects_unknown_paths_and_hosting_overflow(self):
+        for policy, error in [({'unknown': True}, 'Unknown'),
+                              ({'payload_directories': ['../outside']}, 'canonical'),
+                              ({'max_file_bytes': 1}, 'hosting byte limit'),
+                              ({'max_tree_bytes': 1}, 'hosting byte limit')]:
+            with self.subTest(policy=policy), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory); self.export(root)
+                with self.assertRaisesRegex(ValueError, error):
+                    prepare(root, policy=policy)
+
+    def test_brotli_defaults_and_native_wasm_bytes_remain_compatible(self):
+        import subprocess
+        helper = Path(__file__).resolve().parents[1] / 'helpers/brotli.mjs'
+        source = b'\0asm' + bytes(range(256)) * 16
+        # Recorded from the previous shared/default and reviewed native/Wasm helpers.
+        for mode, expected in [('compress', '2d308edee2317a74f4130bf9affd9428d4f934b1ff1bdf2e9390a6c6f4414223'),
+                               ('compress-wasm', '9b2d5c64351d6d8d373912cb7450bf9d8ad3ae3d9fdeb768b41da4ec39e9bef4')]:
+            with self.subTest(mode=mode):
+                encoded = subprocess.run(['node', str(helper), mode], input=source, capture_output=True, check=True, timeout=10).stdout
+                self.assertEqual(hashlib.sha256(encoded).hexdigest(), expected)
+                decoded = subprocess.run(['node', str(helper), 'decompress'], input=encoded, capture_output=True, check=True, timeout=10).stdout
+                self.assertEqual(decoded, source)
+
+    def test_extra_pack_metadata_is_derived_from_real_payloads_and_cannot_override_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            (root / 'optional.pck').write_bytes(self.pack(['res://optional.scn']))
+            prepare(root, policy={'pack_metadata': {'optional_pack_entries': 'optional.pck'}})
+            manifest = json.loads((root / 'release-manifest.json').read_text())
+            self.assertEqual(manifest['optional_pack_entries'], 1)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); self.export(root)
+            with self.assertRaisesRegex(ValueError, 'existing native resource pack'):
+                prepare(root, policy={'pack_metadata': {'source_commit': 'index.pck'}})
 
     @staticmethod
     def pack(names, flags=0, version=2):

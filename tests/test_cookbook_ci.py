@@ -49,6 +49,7 @@ class ValidationEvidence(unittest.TestCase):
         os.chdir(self.root)
         self.addCleanup(os.chdir, self.previous)
         self.config = ci.load(self.root)
+        self.config['publication'] = {'tag_prefix': 'v', 'initial': 'first'}
 
     def accept(self):
         self.succeeded('build')
@@ -77,7 +78,7 @@ class ValidationEvidence(unittest.TestCase):
         with patch.dict(os.environ, {'GITHUB_RUN_ID': '999'}), self.assertRaisesRegex(ValueError, 'another workflow'):
             publication.validate_proof(self.root, self.config, accepted, self.source)
         (self.root / 'dist/addon.zip').write_bytes(b'replaced after testing')
-        with self.assertRaisesRegex(ValueError, 'accepted build bytes'):
+        with self.assertRaisesRegex(ValueError, 'accepted build scope'):
             publication.validate_proof(self.root, self.config, accepted, self.source)
 
     def test_plugin_version_and_release_inputs_are_checked_before_publication(self):
@@ -88,8 +89,14 @@ class ValidationEvidence(unittest.TestCase):
         with self.assertRaises(ValueError):
             publication.identity(self.root, self.config, 'unknown')
         (self.root / 'addon/plugin.cfg').write_text('[plugin]\nversion="0.0.9"\n')
-        with self.assertRaisesRegex(ValueError, 'plugin version'):
+        with self.assertRaisesRegex(ValueError, 'unchanged tracked source'):
             publication.identity(self.root, self.config, 'patch')
+        subprocess.run(['git', 'add', 'addon/plugin.cfg'], cwd=self.root, check=True)
+        subprocess.run(['git', '-c', 'user.name=CI Controls', '-c', 'user.email=ci@example.invalid',
+                        'commit', '-qm', 'native version mismatch'], cwd=self.root, check=True)
+        with patch.dict(os.environ, {'GITHUB_SHA': ci.git(self.root, 'rev-parse', 'HEAD')}):
+            with self.assertRaisesRegex(ValueError, 'plugin version'):
+                publication.identity(self.root, self.config, 'patch')
 
 
 if __name__ == '__main__':

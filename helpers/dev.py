@@ -140,13 +140,67 @@ def policy_identity(root, names):
     return result
 
 
+def private_stream(root, name, *, write=False, append=False):
+    relative = Path(name)
+    if (relative.is_absolute() or '..' in relative.parts
+            or any(character in str(name) for character in ['\0', '\r', '\n'])):
+        raise RuntimeError('development logs must stay inside this checkout')
+    path = root/relative
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
+        raise RuntimeError('development logs must not follow symlinks')
+    if write:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for parent in path.parents:
+        if parent == root:
+            break
+        info = parent.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise RuntimeError('development log directories must be owned and not writable by others')
+    flags = os.O_NOFOLLOW | (os.O_WRONLY | os.O_CREAT if write else os.O_RDONLY)
+    if append:
+        flags |= os.O_APPEND
+    descriptor = os.open(path, flags, 0o600)
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        os.close(descriptor)
+        raise RuntimeError('development logs must be owned private regular files')
+    if write:
+        if not append:
+            os.ftruncate(descriptor, 0)
+        return os.fdopen(descriptor, 'a' if append else 'w', encoding='utf-8', buffering=1)
+    return os.fdopen(descriptor, 'rb')
+
+
+def show_logs(root, selected):
+    try:
+        with private_stream(root, selected/'logs.json') as source:
+            raw = source.read(16385)
+    except FileNotFoundError:
+        print('No development logs have been recorded for this checkout.')
+        return
+    if len(raw) > 16384:
+        raise RuntimeError('development log metadata exceeds its bound')
+    metadata = json.loads(raw)
+    if (metadata.get('version') != 1 or metadata.get('checkout') != str(root.resolve())
+            or set(metadata) != {'version', 'checkout', 'paths'}
+            or not isinstance(metadata['paths'], list) or not 1 <= len(metadata['paths']) <= 2):
+        raise RuntimeError('development logs belong to another checkout or invalid session')
+    for name in metadata['paths']:
+        with private_stream(root, name) as source:
+            source.seek(max(0, os.fstat(source.fileno()).st_size - 65536))
+            content = source.read(65536).decode('utf-8', errors='replace')
+        print('== ' + name + ' ==')
+        print('\n'.join(content.splitlines()[-200:]))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['run', 'stop', 'clean'])
+    parser.add_argument('operation', choices=['run', 'stop', 'clean', 'logs'])
     parser.add_argument('--state', default='.local/dev')
     parser.add_argument('--cleanup', type=json.loads, help='explicit cleanup argv, run after owned descendants exit')
     parser.add_argument('--prepare', type=json.loads, help='explicit isolated preparation argv, before launching the session')
     parser.add_argument('--policy-input', action='append', default=[], help='caller-owned source to revalidate after preparation')
+    parser.add_argument('--log', help='explicit noninteractive child output log under .artifacts or .local; otherwise preserve inherited stdio')
     options, command = sys.argv[1:], []
     if '--' in options:
         separator = options.index('--')
@@ -166,6 +220,9 @@ def main():
     for value in (args.cleanup,args.prepare):
         if value is not None and (not isinstance(value,list) or not 1<=len(value)<=64 or any(not isinstance(v,str) or not v or '\0' in v for v in value)):
             parser.error('preparation and cleanup must be bounded explicit argv lists')
+    if args.operation == 'logs':
+        show_logs(root, selected)
+        return
     os.chdir(state)  # Relative Unix socket names also work in long checkout paths.
     if args.operation == 'stop':
         try:
@@ -181,7 +238,7 @@ def main():
         return
     if not command:
         parser.error('run requires a command after --')
-    with checkout_lease(root):
+    with checkout_lease(root), contextlib.ExitStack() as streams:
         if args.operation == 'clean':
             subprocess.run(command,cwd=root,check=True)
             return
@@ -190,6 +247,23 @@ def main():
             subprocess.run(args.prepare,cwd=root,check=True,timeout=1800)
             if policy_identity(root,args.policy_input)!=before:
                 raise RuntimeError('development policy changed during preparation; review it before launch')
+        paths = [str(selected/'events.log')]
+        events = streams.enter_context(private_stream(root, paths[0], write=True, append=True))
+        captured = None
+        if args.log:
+            path = Path(args.log)
+            reserved = {selected/name for name in ['events.log', 'logs.json', 'token', 'control.sock']}
+            if not path.parts or path.parts[0] not in {'.artifacts', '.local'} or path in reserved:
+                parser.error('captured output requires a separate generated .artifacts/.local log path')
+            tracked = subprocess.run(['git', 'ls-files', '--error-unmatch', '--', str(path)], cwd=root,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if tracked.returncode != 1:
+                raise RuntimeError('captured output must not overwrite tracked source')
+            captured = streams.enter_context(private_stream(root, args.log, write=True, append=True))
+            paths.append(args.log)
+        with private_stream(root, selected/'logs.json', write=True) as output:
+            json.dump({'version': 1, 'checkout': str(root.resolve()), 'paths': paths}, output)
+            output.write('\n')
         Path('control.sock').unlink(missing_ok=True)
         token = secrets.token_hex(32)
         Path('token').write_text(token)
@@ -205,7 +279,9 @@ def main():
             server.bind('control.sock')
             server.listen(4)
             owns_descendants = adopt_descendants()
-            child = subprocess.Popen(command, cwd=root, start_new_session=True)
+            child = subprocess.Popen(command, cwd=root, start_new_session=True,
+                                     stdout=captured, stderr=subprocess.STDOUT if captured else None)
+            events.write(time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()) + ' development child started pid=' + str(child.pid) + '\n')
             clients = []
             try:
                 while child.poll() is None and not stopping:
@@ -245,6 +321,7 @@ def main():
                 Path('token').unlink(missing_ok=True)
                 if args.cleanup:
                     subprocess.run(args.cleanup,cwd=root,check=True,timeout=60)
+                events.write(time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()) + ' development child exited status=' + str(child.returncode) + '\n')
             if not stopping and child.returncode:
                 raise SystemExit(child.returncode if child.returncode > 0 else 128-child.returncode)
 

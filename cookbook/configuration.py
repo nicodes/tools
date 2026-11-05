@@ -9,8 +9,20 @@ RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
            'bash', 'godot', 'godot-suite', 'godot-check'}
 
 
+def ci_settings(data):
+    values = data.get('ci', {})
+    if not isinstance(values, dict) or set(values)-{'runner', 'timeout_minutes'}:
+        raise ValueError('CI settings require literal runner and existing bounded job budget')
+    result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30, **values}
+    if (not isinstance(result['runner'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', result['runner'])
+            or type(result['timeout_minutes']) is not int or not 1 <= result['timeout_minutes'] <= 180):
+        raise ValueError('CI runner and job budget must be bounded source data')
+    return result
+
+
 def relative(root, name, *, exists=False):
-    if not isinstance(name, str) or not name or '\\' in name:
+    if (not isinstance(name, str) or not name or '\\' in name or ':' in name
+            or any(ord(character) < 32 for character in name)):
         raise ValueError('recipe paths must be nonempty relative paths')
     path = Path(name)
     if path.is_absolute() or '..' in path.parts or '.git' in path.parts:
@@ -32,11 +44,12 @@ def load(root):
         raise ValueError('recipe configuration must be a bounded regular source file')
     data = tomllib.loads(path.read_text())
     allowed = {'version', 'recipe', 'package', 'tests', 'lint', 'format', 'clean',
-               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication'}
+               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication', 'ci'}
     if set(data) - allowed or data.get('version') != 1 or data.get('recipe') not in RECIPES:
         raise ValueError('unsupported cookbook configuration')
     if 'tasks' in data or 'commands' in data:
         raise ValueError('recipe data cannot define another task implementation')
+    ci_settings(data)
     tests = data.get('tests', {})
     if set(tests) - SUITES:
         raise ValueError('unknown test suite')
@@ -44,14 +57,24 @@ def load(root):
         if not isinstance(entries, list) or not entries:
             raise ValueError('declared test groups must contain real checks')
         for entry in entries:
-            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern'}:
+            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern', 'policy', 'python_environment'}:
                 raise ValueError('invalid native test entry')
             if entry.get('runner') not in RUNNERS:
                 raise ValueError('unsupported native test runner')
+            policy = entry.get('policy', {})
+            policy_keys = {'sentinel_regex', 'assertions_regex', 'allow_errors', 'editor', 'audio_driver', 'allow_error_version'}
+            if (not isinstance(policy, dict) or set(policy)-policy_keys
+                    or (policy and entry['runner'] not in {'godot', 'godot-check'})):
+                raise ValueError('native assertion policy is unsupported for this runner')
             if entry['runner'] in {'godot', 'godot-suite'}:
                 sentinel = entry.get('sentinel')
-                if not isinstance(sentinel, str) or not sentinel or '\n' in sentinel or '\r' in sentinel:
+                regex_signal = entry['runner'] == 'godot' and isinstance(policy.get('sentinel_regex'), str)
+                if not regex_signal and (not isinstance(sentinel, str) or not sentinel or '\n' in sentinel or '\r' in sentinel):
                     raise ValueError('Godot tests require one exact assertion sentinel')
+            if 'python_environment' in entry:
+                if entry['runner'] not in {'python', 'python-unittest'}:
+                    raise ValueError('Python environments apply only to native Python test runners')
+                relative(root, entry['python_environment'])
             program = relative(root, entry.get('path'), exists=True)
             discovery = entry['runner'] in {'godot-suite', 'python-unittest', 'node-test', 'bun-test'}
             if not (program.is_dir() if entry['runner'] == 'godot-suite' else

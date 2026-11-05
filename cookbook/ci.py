@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run the shared Make gate and bind its result to this exact Actions execution."""
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -10,6 +11,7 @@ import subprocess
 
 from configuration import load, relative
 from generate import makefile, workflow_files
+import recipe
 
 TOOLS = Path(__file__).resolve().parents[1]
 SHA = re.compile(r'[a-f0-9]{40}\Z')
@@ -54,30 +56,36 @@ def proof(root, source, tools, config):
                 or record.get('tracked_source_clean') is not True
                 or record.get('execution_context') != context):
             raise ValueError('build/test receipt belongs to another source or execution')
-    suites = {'lint', 'unit', 'security', *[s for s in ['integration', 'e2e'] if s in config.get('tests', {})]}
+    suites = set(recipe.test_suites(root, config))
     if set(test.get('test_receipts', {})) != suites or test.get('tested_commit') != source:
         raise ValueError('not every implemented group passed in this execution')
     if build['identity'] != test.get('input_identity') or build['provenance']['input_identity'] != build['identity']:
         raise ValueError('build and tests did not accept the same source inputs')
-    if config['recipe'] != 'godot-addon':
-        raise ValueError('CI artifact scope for this recipe is not implemented yet')
-    declaration = verify.scope(artifacts=[str(Path(config['package']['archive']).parent)])
+    declaration = recipe.adapter(config).verification_scope(root, config)
     if verify.identity(declaration) != build['identity'] or verify.artifacts(declaration) != build['artifacts']:
         raise ValueError('source or artifact bytes changed after acceptance')
+    evidence = {}
+    module = recipe.adapter(config)
+    for name in module.evidence_paths(root, config) if hasattr(module, 'evidence_paths') else []:
+        path = relative(root, name, exists=True)
+        if not path.is_file():
+            raise ValueError('post-test evidence must be a regular declared artifact')
+        evidence[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     return {'version': 1, 'repository': os.environ.get('GITHUB_REPOSITORY'),
             'source_commit': source, 'source_tree': tree, 'cookbook_commit': tools,
             'status': 'passed', 'tracked_source_clean': True,
             'build_verified': True, 'tests_verified': True, 'test_groups': sorted(suites),
-            'execution_context': context, 'artifacts': build['artifacts']}
+            'execution_context': context, 'artifacts': build['artifacts'], 'evidence': evidence}
 
 
 def run(root, mode, source, tools, release_bump='', head='', base=''):
     if (head or base) and (not SHA.fullmatch(head) or not SHA.fullmatch(base)):
         raise ValueError('merge validation requires exact head and base identities together')
     config = load(root)
+    recipe.configure_environment(root, config)
     identity(root, source, tools)
     if config['recipe'] != 'godot-addon':
-        raise ValueError('this shared CI adapter currently supports the addon recipe')
+        raise ValueError('complete native platform orchestration for this recipe is not enrolled yet')
     if release_bump:
         if mode != 'full':
             raise ValueError('release acceptance requires full validation')
@@ -96,11 +104,23 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
             command += ['--fixtures', str(relative(root, config['security']['fixtures'], exists=True))]
         subprocess.run(command, cwd=root, env=environment, check=True)
         return
+    candidate = head or os.environ.get('COOKBOOK_CANDIDATE_COMMIT') or source
+    if not SHA.fullmatch(candidate):
+        raise ValueError('candidate provenance requires an exact source head')
+    module = recipe.adapter(config)
+    if hasattr(module, 'post_test_evidence'):
+        module.post_test_evidence(root, config, environment, candidate)
     accepted = proof(root, source, tools, config)
     if head:
         accepted.update(head=head, base=base)
     receipt.parent.mkdir(parents=True, exist_ok=True)
     receipt.write_text(json.dumps(accepted, indent=2) + '\n')
+    paths = [*module.artifact_paths(root, config), '.artifacts/verification/', '.artifacts/cookbook-validation.json']
+    for name in paths:
+        relative(root, name)
+    if os.environ.get('GITHUB_OUTPUT'):
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('artifact-paths<<COOKBOOK_ARTIFACT_PATHS\n' + '\n'.join(paths) + '\nCOOKBOOK_ARTIFACT_PATHS\n')
 
 
 def main():

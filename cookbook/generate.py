@@ -5,13 +5,14 @@ import hashlib
 from pathlib import Path
 import re
 
-from configuration import load
+from configuration import load, ci_settings
 
 
 def workflow_files(root, revision):
     if not re.fullmatch('[a-f0-9]{40}', revision):
         raise ValueError('cookbook workflows require a full source pin')
     config = load(root)
+    ci = ci_settings(config)
     if config['recipe'] != 'godot-addon':
         raise ValueError('workflow callers for this recipe are not implemented yet')
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
@@ -68,31 +69,11 @@ jobs:
       tools-ref: PIN
       pull-request: ${{ inputs.pull-request }}
 '''.replace('PIN', revision)}
+    files['.github/workflows/ci.yml'] += ('      runner: ' + ci['runner'] + '\n'
+        + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
     if config.get('publication'):
-        files['.github/workflows/release.yml'] = header + '''name: Release
-'on':
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: Version bump; plugin.cfg must already match
-        type: choice
-        default: patch
-        options: [patch, minor, major]
-permissions: {}
-concurrency:
-  group: release-${{ github.repository }}
-  cancel-in-progress: false
-jobs:
-  release:
-    uses: nicodes/tools/.github/workflows/cookbook-addon-release.yml@PIN
-    permissions:
-      contents: write
-    with:
-      tools-ref: PIN
-      bump: ${{ inputs.bump }}
-    secrets:
-      gdam-key: ${{ secrets.GDAM_API_KEY }}
-'''.replace('PIN', revision)
+        import publication_workflows
+        files.update(publication_workflows.workflow_files(root, revision))
     return files
 
 
@@ -104,6 +85,9 @@ def makefile(root, revision):
     recipe = config['recipe']
     suites = ['lint', 'unit', 'security', *[s for s in ['integration', 'e2e'] if s in config.get('tests', {})]]
     digest = hashlib.sha256((root / 'cookbook.toml').read_bytes()).hexdigest()
+    capabilities = ['dev'] if config.get('dev') else []
+    capabilities += ['db:' + name for name in ['status', 'migrate', 'seed', 'reset']
+                     if name in config.get('database', {})]
     help_lines = ['make help', 'make setup', 'make fmt', 'make build', 'make test',
                   *['make test:' + suite for suite in suites], 'make clean']
     if config.get('dev'):
@@ -117,6 +101,7 @@ def makefile(root, revision):
              'COOKBOOK_RECIPE := ' + recipe,
              'COOKBOOK_ROOT ?= .artifacts/cookbook/$(COOKBOOK_REF)',
              'COOKBOOK_TEST_SUITES := ' + ' '.join(suites),
+             'COOKBOOK_CAPABILITIES :=' + (' ' + ' '.join(capabilities) if capabilities else ''),
              'COOKBOOK_EMPTY :=',
              'COOKBOOK_SPACE := $(COOKBOOK_EMPTY) $(COOKBOOK_EMPTY)',
              'cookbook_path = $(subst $(COOKBOOK_SPACE),\\$(COOKBOOK_SPACE),$(1))',

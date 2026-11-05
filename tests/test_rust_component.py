@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import unittest
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 spec = importlib.util.spec_from_file_location('rust_component_controls', Path(__file__).resolve().parents[1] / 'cookbook/rust_component.py')
@@ -48,6 +49,68 @@ class NativeCargoComponent(unittest.TestCase):
         self.assertIn('--check', cargo.cargo_args(declaration, 'fmt-check'))
         self.assertNotIn('--check', cargo.cargo_args(declaration, 'fmt'))
         self.assertEqual(cargo.cargo_args(declaration, 'lint')[-3:], ['--', '-D', 'warnings'])
+
+    def test_named_native_test_targets_and_ignored_acceptance_are_explicit(self):
+        argv = cargo.cargo_args({'test': {'test_targets': ['runtime', 'providers'],
+                                        'test_filter': 'http::tests::postgres_',
+                                        'test_arguments': ['--ignored', '--nocapture']}}, 'unit')
+        self.assertEqual(argv[argv.index('--test'):], ['--test', 'runtime', '--test', 'providers',
+                         'http::tests::postgres_', '--', '--ignored', '--nocapture'])
+        with self.assertRaises(ValueError):
+            cargo.cargo_args({'test': {'test_arguments': ['--list']}}, 'unit')
+
+    def test_nightly_std_build_is_pin_bound_offline_and_keeps_native_cargo_cwd(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / 'app/rust').mkdir(parents=True)
+            (root / 'app/rust/Cargo.toml').write_text('[package]\nname="native"\nversion="0.0.1"\n')
+            (root / 'mise.toml').write_text('[tools]\nrust="1.94.0"\n[env]\nRUST_NIGHTLY="nightly-2026-03-06"\n')
+            component = {'manifest': 'app/rust/Cargo.toml', 'cwd': 'app/rust', 'toolchain_environment': 'RUST_NIGHTLY',
+                         'build_std': True, 'target': 'wasm32-unknown-emscripten', 'target_directory': '.artifacts/web-target', 'timeout': 1200}
+            calls = []
+            def run(argv, cwd, environment, **options):
+                calls.append((argv, cwd, environment, options))
+            cargo.build(root, [component], {}, run)
+            argv, cwd, environment, options = calls[0]
+            self.assertEqual(argv[:5], ['rustup', 'run', 'nightly-2026-03-06', 'cargo', 'build'])
+            self.assertIn('-Zbuild-std', argv)
+            self.assertIn('--offline', argv)
+            self.assertEqual(argv[argv.index('--manifest-path')+1], str(root / 'app/rust/Cargo.toml'))
+            self.assertEqual(argv[argv.index('--target-dir')+1], str(root / '.artifacts/web-target'))
+            self.assertEqual(cwd, root / 'app/rust')
+            self.assertEqual(options, {'timeout': 1200})
+            self.assertEqual(environment['RUSTUP_AUTO_INSTALL'], '0')
+            with self.assertRaisesRegex(ValueError, 'match the exact'):
+                cargo.build(root, [component], {'RUST_NIGHTLY': 'nightly-2026-03-07'}, run)
+            self.assertEqual(len(calls), 1)
+
+    def test_only_setup_installs_nightly_rust_sources_without_unneeded_prebuilt_std(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            (root / 'Cargo.toml').write_text('[package]\nname="native"\nversion="0.0.1"\n')
+            (root / 'mise.toml').write_text('[tools]\nrust="1.94.0"\n[env]\nRUST_NIGHTLY="nightly-2026-03-06"\n')
+            component = {'toolchain_environment': 'RUST_NIGHTLY', 'build_std': True, 'target': 'wasm32-unknown-emscripten', 'timeout': 1200, 'lint': {'enabled': False}}
+            calls = []
+            cargo.setup(root, [component], {}, lambda argv, *_args: calls.append(argv))
+            installs = [argv for argv in calls if argv[:3] == ['rustup', 'toolchain', 'install']]
+            self.assertEqual(len(installs), 1)
+            self.assertIn('rust-src', installs[0])
+            self.assertNotIn('rustfmt', installs[0])
+            self.assertNotIn('clippy', installs[0])
+            self.assertFalse(any(argv[:3] == ['rustup', 'target', 'add'] for argv in calls))
+            self.assertEqual(calls[-1][:5], ['rustup', 'run', 'nightly-2026-03-06', 'cargo', 'fetch'])
+            self.assertIn('-Zbuild-std', calls[-1])
+            self.assertEqual(cargo.cargo_args(component, 'fmt-check')[:2], ['cargo', 'fmt'])
+            with self.assertRaises(ValueError):
+                cargo.cargo_args(component, 'build', environment={'RUST_NIGHTLY': 'nightly'})
+            with self.assertRaises(ValueError):
+                cargo.cargo_args({'build_std': True}, 'build')
+
+    def test_distributable_binary_selection_does_not_drop_library_or_workspace_tests(self):
+        component = {'binaries': ['example'], 'workspace': True}
+        self.assertIn('--bin', cargo.cargo_args(component, 'build'))
+        self.assertNotIn('--bin', cargo.cargo_args(component, 'unit'))
+        self.assertNotIn('--bin', cargo.cargo_args(component, 'lint'))
 
 
 if __name__ == '__main__':

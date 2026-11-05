@@ -2,8 +2,10 @@ import importlib.util
 import os
 from pathlib import Path
 import unittest
+import sys
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 spec = importlib.util.spec_from_file_location('cookbook_request_merge', Path(__file__).resolve().parents[1] / 'cookbook/request_merge.py')
 merge = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(merge)
