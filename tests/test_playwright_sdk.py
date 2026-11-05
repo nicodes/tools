@@ -3,9 +3,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'cookbook'))
 import playwright_sdk as browsers
+import godot_ci
+import godot_game
 
 
 class PlainBrowserSDK(unittest.TestCase):
@@ -46,6 +49,25 @@ class PlainBrowserSDK(unittest.TestCase):
         manifest.symlink_to(external)
         with self.assertRaises(ValueError):browsers.setup(self.root,self.config,{},lambda *args,**kwargs:calls.append(args))
         self.assertEqual(calls,[])
+
+    def test_bun_browser_workers_require_and_prepare_the_same_pinned_node_interpreter(self):
+        entry={'kind':'test','setup':'browser','packages':['tests/browser'],'cases':[]}
+        environment={'COOKBOOK_GODOT_ENTRY':'browser-control'}
+        pins=self.root/'mise.toml'
+        pins.write_text('[tools]\npython="3.13.11"\nbun="1.4.1"\n')
+        with patch.object(godot_ci,'declaration_entry',return_value=entry):
+            with self.assertRaisesRegex(ValueError,'exact caller pins'):
+                godot_ci.worker_tools(self.root,self.config,environment)
+            pins.write_text(pins.read_text()+'node="24.18.1"\n')
+            self.assertEqual(godot_ci.worker_tools(self.root,self.config,environment),['bun','node','python'])
+        class Prepared(Exception):pass
+        calls=[]
+        def stop_after_selection(argv,*args):
+            calls.append(argv)
+            raise Prepared()
+        with patch.object(godot_game,'run',side_effect=stop_after_selection),self.assertRaises(Prepared):
+            godot_ci.setup_worker(self.root,self.config,environment,entry)
+        self.assertEqual(calls,[['mise','install','bun','node','python']])
 
 
 if __name__=='__main__':unittest.main()

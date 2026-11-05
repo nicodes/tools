@@ -235,6 +235,8 @@ def required_tools(root, config, stage='full'):
             mandatory.add('go')
         if components.get('godot', {}).get('art_sources'):
             mandatory.add('bun')
+        if components.get('playwright'):
+            mandatory.add('node')
         for value in packages(config):
             mandatory.add('bun' if value.get('manager', 'npm') == 'bun' else 'node')
         for entries in config.get('tests', {}).values():

@@ -617,6 +617,8 @@ def worker_tools(root, config, environment):
     if entry['kind'] == 'build':
         return game.required_tools(root, config, 'full')
     tools = {'python'}
+    if entry.get('setup')=='browser' or (entry['kind']=='host' and config.get('components',{}).get('playwright')):
+        tools.add('node')
     if entry['kind'] == 'host':
         tools.update(game.required_tools(root, config, 'security'))
         tools.update(game.required_tools(root, config, 'fast'))
@@ -648,6 +650,8 @@ def setup_worker(root, config, environment, entry):
         return
     packages = game.packages(config) if role == 'host' else [value for value in game.packages(config) if value['directory'] in entry.get('packages', [])]
     tools = {'python'}
+    if entry.get('setup')=='browser' or (role=='host' and config.get('components',{}).get('playwright')):
+        tools.add('node')
     if role == 'host':
         tools.update(game.required_tools(root, config, 'security'))
         tools.update(game.required_tools(root, config, 'fast'))
