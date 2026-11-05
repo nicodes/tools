@@ -18,7 +18,14 @@ import configuration
 import dependency_security as gate
 import delivery_workflows
 import generate
-import yaml
+import source_policy
+
+
+def read_yaml(body):
+    parser = source_policy.interpreter(TOOLS)
+    return json.loads(subprocess.check_output([parser, '-I', '-c',
+        'import json,sys,yaml;print(json.dumps(yaml.safe_load(sys.stdin.read())))'],
+        input=body, text=True, timeout=30))
 
 
 class DependencySecurityControls(unittest.TestCase):
@@ -186,7 +193,7 @@ path="tests/unit.py"
     def test_canonical_independent_pr_and_main_gates_bound_source_publish_and_combined_delivery(self):
         for combined in [False, True]:
             files = self.rendering(combined)
-            ci, cd = (yaml.safe_load(files['.github/workflows/' + name]) for name in ['ci.yml', 'cd.yml'])
+            ci, cd = (read_yaml(files['.github/workflows/' + name]) for name in ['ci.yml', 'cd.yml'])
             self.assertIn('pull_request', ci['on']); self.assertNotIn('push', ci['on'])
             self.assertIn('push', cd['on']); self.assertNotIn('pull_request', cd['on'])
             for workflow in [ci, cd]:
@@ -205,14 +212,14 @@ path="tests/unit.py"
         (self.root / 'cookbook.toml').write_text(source)
         files = generate.workflow_files(self.root, 'b'*40)
         self.assertNotIn('dependency-security:', files['.github/workflows/ci.yml'])
-        self.assertEqual(yaml.safe_load(files['.github/workflows/cd.yml'])['jobs']['deploy']['needs'], 'validate')
+        self.assertEqual(read_yaml(files['.github/workflows/cd.yml'])['jobs']['deploy']['needs'], 'validate')
 
     def test_leaf_has_only_readonly_source_steps_and_no_validation_or_host_capabilities(self):
-        leaf = yaml.safe_load((TOOLS / '.github/workflows/cookbook-dependency-security.yml').read_text())
+        leaf = read_yaml((TOOLS / '.github/workflows/cookbook-dependency-security.yml').read_text())
         job = leaf['jobs']['audit']
         self.assertEqual(job['permissions'], {'contents': 'read', 'attestations': 'read'})
         self.assertEqual(job['timeout-minutes'], "${{ inputs['timeout-minutes'] }}")
-        action = yaml.safe_load((TOOLS / 'dependency-security/action.yml').read_text())
+        action = read_yaml((TOOLS / 'dependency-security/action.yml').read_text())
         commands = '\n'.join(step.get('run', '') for step in [*job['steps'], *action['runs']['steps']])
         self.assertIn('dependency_security.py" setup', commands); self.assertIn('dependency_security.py audit', commands)
         for absent in ['make ', 'docker ', 'build', 'release.py', 'publish', 'secrets.', 'upload-artifact']:
@@ -220,13 +227,13 @@ path="tests/unit.py"
         self.assertNotIn('environment', job)
 
     def test_one_outer_setup_deadline_covers_bootstrap_admission_and_every_sdk_install(self):
-        leaf = yaml.safe_load((TOOLS / '.github/workflows/cookbook-dependency-security.yml').read_text())
+        leaf = read_yaml((TOOLS / '.github/workflows/cookbook-dependency-security.yml').read_text())
         steps = leaf['jobs']['audit']['steps']
         bounded = [step for step in steps if 'timeout-minutes' in step]
         self.assertEqual(len(bounded), 1)
         self.assertEqual(bounded[0]['uses'], './_dependency_security_tools/dependency-security')
         self.assertEqual(bounded[0]['timeout-minutes'], "${{ inputs['setup-timeout-minutes'] }}")
-        action = yaml.safe_load((TOOLS / 'dependency-security/action.yml').read_text())
+        action = read_yaml((TOOLS / 'dependency-security/action.yml').read_text())
         nested = action['runs']['steps']
         self.assertFalse(any('timeout-minutes' in step for step in nested))
         install = next(index for index, step in enumerate(nested) if step.get('uses', '').startswith('jdx/mise-action@'))
@@ -242,11 +249,11 @@ path="tests/unit.py"
         (self.root / 'delivery.json').write_text(json.dumps(data))
         config = copy.deepcopy(self.config); config['delivery'] = {'definition': 'delivery.json'}
         with patch('godot_static.declaration', return_value={'production': False}):
-            jobs = yaml.safe_load(delivery_workflows.jobs(self.root, config, 'b'*40))
+            jobs = read_yaml(delivery_workflows.jobs(self.root, config, 'b'*40))
             self.assertEqual(jobs['cd']['needs'], ['validate', 'dependency-security'])
             self.assertIn('godot-static-delivery@'+'a'*40, jobs['cd']['steps'][1]['uses'])
             del config['ci']['dependency_security']
-            original = yaml.safe_load(delivery_workflows.jobs(self.root, config, 'b'*40))
+            original = read_yaml(delivery_workflows.jobs(self.root, config, 'b'*40))
             self.assertEqual(original['cd']['needs'], 'validate')
 
 
