@@ -71,6 +71,9 @@ def declaration(root, config):
 
 def jobs(root, config, tools):
     data = declaration(root, config)
+    if data.get('mode') == 'godot-static':
+        import godot_static_workflows
+        return godot_static_workflows.jobs(root, config, tools)
     ref = data['komizo_ref']
     # Token-created merges explicitly dispatch exact final-source CI. Both main
     # entrypoints may deliver; a stale dispatched source never reaches host jobs.
