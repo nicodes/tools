@@ -120,7 +120,7 @@ def makefile(root, revision):
              'COOKBOOK_RECIPE := ' + recipe,
              'COOKBOOK_ROOT ?= .artifacts/cookbook/$(COOKBOOK_REF)',
              'COOKBOOK_TEST_SUITES := ' + ' '.join(suites),
-             'COOKBOOK_CAPABILITIES := ' + ' '.join(capabilities),
+             'COOKBOOK_CAPABILITIES :=' + (' ' + ' '.join(capabilities) if capabilities else ''),
              'COOKBOOK_EMPTY :=',
              'COOKBOOK_SPACE := $(COOKBOOK_EMPTY) $(COOKBOOK_EMPTY)',
              'cookbook_path = $(subst $(COOKBOOK_SPACE),\\$(COOKBOOK_SPACE),$(1))',
