@@ -165,6 +165,27 @@ def makefile(root, revision):
     for operation in ['status', 'migrate', 'seed', 'reset']:
         if operation in config.get('database', {}):
             help_lines.append('make db:' + operation)
+    descriptions = {
+        'make help': 'List implemented commands',
+        'make setup': 'Prepare pinned tools and dependencies',
+        'make fmt': 'Apply formatting',
+        'make build': 'Compile, package and validate outputs',
+        'make test': 'Run implemented test groups without building',
+        'make test:lint': 'Check formatting, code and configuration',
+        'make test:unit': 'Run isolated behavior tests',
+        'make test:integration': 'Test real component boundaries',
+        'make test:e2e': 'Run complete product journeys; requires current build',
+        'make test:security': 'Run applicable security checks',
+        'make clean': 'Remove declared outputs; preserve retained data',
+        'make dev': 'Run the implemented local stack',
+        'make dev:stop': 'Stop this checkout development session',
+        'make dev:logs': 'Show this checkout development logs',
+        'make db:status': 'Show migration status',
+        'make db:migrate': 'Apply migrations to the selected development database',
+        'make db:seed': 'Load development seed data',
+        'make db:reset': 'Explicitly reset the local development database',
+    }
+    help_lines = [f'{command:<24}{descriptions[command]}' for command in help_lines]
     lines = ['# Generated cookbook entrypoint. Change cookbook.toml and regenerate.',
              '# Recipe data SHA256: ' + digest,
              'COOKBOOK_REF := ' + revision,
