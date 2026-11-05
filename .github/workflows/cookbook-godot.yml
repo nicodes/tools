@@ -14,6 +14,12 @@ name: Godot cookbook validation
       timeout-minutes:
         type: number
         default: 30
+      preview-number:
+        type: string
+        default: ''
+      preview-environment:
+        type: string
+        default: ''
       head:
         type: string
         default: ''
@@ -40,13 +46,23 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
+      COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      REQUEST_HEAD: ${{ inputs.head }}
+      REQUEST_BASE: ${{ inputs.base }}
     steps:
       - name: Validate accepted immutable cookbook
         env:
           GH_TOKEN: ${{ github.token }}
+          PREVIEW_ENVIRONMENT: ${{ inputs.preview-environment }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ -z "$PREVIEW_ENVIRONMENT" || "$PREVIEW_ENVIRONMENT" == Preview ]]
+          if [[ -n "$COOKBOOK_PREVIEW_NUMBER" ]]; then
+            [[ "$COOKBOOK_PREVIEW_NUMBER" =~ ^[1-9][0-9]{0,9}$ && "$PREVIEW_ENVIRONMENT" == Preview ]]
+            [[ "$SOURCE_SHA" == "$REQUEST_HEAD" && "$REQUEST_HEAD" =~ ^[a-f0-9]{40}$ && "$REQUEST_BASE" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$GITHUB_REF" == refs/heads/main && ( "$GITHUB_EVENT_NAME" == pull_request_target || "$GITHUB_EVENT_NAME" == issue_comment ) ]]
+          fi
           relation="$(gh api "repos/nicodes/tools/compare/$COOKBOOK_SHA...main" --jq .status)"
           [[ "$relation" == ahead || "$relation" == identical ]]
       - name: Check out exact source
@@ -83,12 +99,16 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     defaults:
       run:
         shell: bash
     env:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
+      COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      REQUEST_HEAD: ${{ inputs.head }}
+      REQUEST_BASE: ${{ inputs.base }}
       GODOT_ENTRY: build
       COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
       REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
@@ -153,12 +173,16 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     defaults:
       run:
         shell: bash
     env:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
+      COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      REQUEST_HEAD: ${{ inputs.head }}
+      REQUEST_BASE: ${{ inputs.base }}
       GODOT_ENTRY: ${{ matrix.id }}
       COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
       REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
@@ -217,12 +241,16 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     defaults:
       run:
         shell: bash
     env:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
+      COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      REQUEST_HEAD: ${{ inputs.head }}
+      REQUEST_BASE: ${{ inputs.base }}
       GODOT_ENTRY: ${{ matrix.id }}
       COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
       REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
@@ -276,6 +304,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     uses: ./.github/workflows/cookbook-validation.yml
     with:
       tools-ref: ${{ inputs.tools-ref }}
@@ -285,3 +314,5 @@ jobs:
       timeout-minutes: ${{ fromJSON(needs.plan.outputs.host-timeout) }}
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
+      preview-number: ${{ inputs.preview-number }}
+      preview-environment: ${{ inputs.preview-environment }}
