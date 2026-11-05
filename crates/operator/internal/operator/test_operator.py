@@ -345,3 +345,60 @@ class OperatorBoundary(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+class CookbookMergeDelegation(unittest.TestCase):
+    def setUp(self):
+        self.source=b'reviewed immutable main caller\n'
+        self.base='b'*40; self.head='a'*40; self.calls=[]
+        self.contract=dict(protocol='cookbook-request-v1',workflow_id=10,workflow_path='.github/workflows/ci.yml',
+            app_id=15368,event='pull_request',jobs=['validate / Fast source checks / Make fast'],
+            request_workflow_id=20,request_sha256=hashlib.sha256(self.source).hexdigest(),cookbook_commit='c'*40)
+        self.pull=dict(state='open',draft=False,head={'sha':self.head,'repo':{'full_name':'owner/product'}},base={'ref':'main'})
+        self.target=dict(id=20,state='active',path='.github/workflows/request-merge.yml')
+        self.relation='ahead'
+        self.body=self.source
+
+    def backend(self,args):
+        self.calls.append(args)
+        if '/files?' in args[-1]:return [{'filename':'src/application.rs'}]
+        if '/compare/' in args[-1]:return {'status':self.relation}
+        if '/actions/workflows/' in args[-1]:return self.target
+        if '/contents/' in args[-1]:
+            import base64
+            return dict(type='file',encoding='base64',size=len(self.body),content=base64.b64encode(self.body).decode())
+        if '/pulls/' in args[-1]:return self.pull
+        if '/git/ref/heads/main' in args[-1]:return {'object':{'sha':self.base}}
+        if args[:4]==['gh','api','--method','POST']:return None
+        raise AssertionError(args)
+
+    def request(self):
+        return operator.request_cookbook_merge('owner/product',7,self.head,'b'*40,self.contract,self.backend)
+
+    def test_v4_is_explicit_and_legacy_policy_cannot_claim_cheap_checks_as_full_acceptance(self):
+        policy=dict(version=4,repositories={'owner/product':self.contract},hosts=[])
+        self.assertEqual(operator.validate_policy(policy),policy)
+        for change in [{'version':3},{'version':5}]:
+            with self.subTest(change=change),self.assertRaises(ValueError):operator.validate_policy(policy|change)
+        for change in [{'jobs':['Test']},{'event':'workflow_dispatch'},{'request_sha256':'x'}, {'integration_job':'validate'}]:
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                operator.validate_cookbook_contract('owner/product',self.contract|change)
+
+    def test_exact_protected_request_is_dispatched_without_merge_host_or_delivery_authority(self):
+        result=self.request()
+        self.assertEqual(result['status'],'full_validation_requested')
+        self.assertFalse(result['full_validation_complete']);self.assertFalse(result['delivery_authorized'])
+        self.assertEqual(self.calls[-1],['gh','api','--method','POST',
+            'repos/owner/product/actions/workflows/20/dispatches','-f','ref=main','-f','inputs[pull-request]=7',
+            '-f','inputs[expected-head]='+self.head,'-f','inputs[expected-base]='+self.base])
+        self.assertFalse(any(call[0]=='ssh' or call[:3]==['gh','pr','merge'] for call in self.calls))
+
+    def test_source_controller_pin_head_base_or_target_changes_refuse_before_dispatch(self):
+        for name in ['source','pin','head','base','workflow']:
+            self.setUp()
+            if name=='source':self.body+=b'changed'
+            if name=='pin':self.relation='diverged'
+            if name=='head':self.pull['head']['sha']='f'*40
+            if name=='base':self.base='f'*40
+            if name=='workflow':self.target['path']='.github/workflows/other.yml'
+            with self.subTest(name=name),self.assertRaises(ValueError):self.request()
+            self.assertFalse(any(call[:4]==['gh','api','--method','POST'] for call in self.calls))
