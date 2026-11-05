@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tomllib
 
+import sdk_environment
+
 from configuration import godot_pins, load, relative
 from native_tests import run_entries
 import node_component
@@ -26,7 +28,7 @@ def helper(name):
 
 def environment(root):
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('env', {}) if (root / 'mise.toml').is_file() else {}
-    return {**os.environ, **({'GODOT_VERSION': pins['GODOT_VERSION']} if 'GODOT_VERSION' in pins else {}),
+    return {**sdk_environment.preserve_mise(), **({'GODOT_VERSION': pins['GODOT_VERSION']} if 'GODOT_VERSION' in pins else {}),
             'TOOLS_ROOT': str(TOOLS),
             'GODOT_BIN': str(root / '.artifacts/godot/bin/godot'),
             'XDG_DATA_HOME': str(root / '.artifacts/godot-data'),

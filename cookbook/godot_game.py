@@ -10,6 +10,8 @@ import sys
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 
+import sdk_environment
+
 from configuration import godot_pins, load, relative
 from native_tests import run_entries
 import rust_component
@@ -150,7 +152,7 @@ def environment(root, config):
     source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     if os.environ.get('SOURCE_COMMIT', source) != source:
         raise ValueError('SOURCE_COMMIT must identify this exact checkout')
-    values = {**os.environ, 'TOOLS_ROOT': str(TOOLS), 'SOURCE_COMMIT': source,
+    values = {**sdk_environment.preserve_mise(), 'TOOLS_ROOT': str(TOOLS), 'SOURCE_COMMIT': source,
               'GODOT_BIN': str(root / '.artifacts/godot/bin/godot'),
               'GDRUST_GODOT_BIN': str(root / '.artifacts/godot/bin/godot'),
               'XDG_DATA_HOME': str(root / '.artifacts/godot-data'),
