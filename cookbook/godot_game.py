@@ -44,7 +44,17 @@ def verification_scope(root, config):
 
 
 def artifact_paths(root, config):
-    return list(verification_scope(root, config)['artifacts'])
+    paths=list(verification_scope(root, config)['artifacts'])
+    if config.get('components',{}).get('image_security'):
+        paths.append(config['components']['image_security']['reports'])
+    return paths
+
+
+def evidence_paths(root, config):
+    if config.get('components',{}).get('image_security'):
+        import godot_security
+        return godot_security.evidence_paths(root,config)
+    return []
 
 
 def project(root, config):
@@ -107,6 +117,11 @@ def validate_config(root, config):
     if components.get('browser'):
         import godot_browser
         godot_browser.declaration(root, config)
+    if components.get('image_security'):
+        import godot_security
+        godot_security.declaration(root, config)
+    if config.get('security',{}).get('auth_policy'):
+        relative(root,config['security']['auth_policy'],exists=True)
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
 
@@ -158,6 +173,8 @@ def required_tools(root, config, stage='full'):
             selected.append('bun' if value.get('manager', 'npm') == 'bun' else 'node')
             if (relative(root, value['directory']) / 'security-remediations.json').exists():
                 selected.append('node')
+    if config.get('security',{}).get('auth_policy') and stage in {'full','security'}:
+        selected.append('bun')
     if any(name not in pins for name in selected):
         raise ValueError('required native SDK is not pinned in mise.toml')
     return sorted(set(selected))
@@ -226,6 +243,9 @@ def setup(root, config, env):
             sdk(['rustup', 'component', 'add', '--toolchain', pins['rust'], 'rustfmt'], root, env)
     if stage in {'full', 'security', 'fast'}:
         node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
+    if components.get('image_security') and stage in {'full','security'} and env.get('COOKBOOK_GODOT_ENTRY')!='build':
+        import godot_security
+        godot_security.setup(root,config,env,run)
     if stage != 'full':
         return
     if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY'):
@@ -321,6 +341,11 @@ def security(root, config, env):
         lock = str(Path(component['manifest']).with_name('Cargo.lock'))
         run(['cargo', 'audit', '--file', lock, '--deny', 'warnings'], root, env)
     node_component.audit(root, packages(config), env, run)
+    if config.get('security',{}).get('auth_policy'):
+        run(['bun',str(TOOLS/'helpers/auth-boundary.mjs'),'--policy',config['security']['auth_policy']],root,env)
+    if config.get('components',{}).get('image_security'):
+        import godot_security
+        godot_security.scan(root,config,env,run)
     if config.get('tests', {}).get('security'):
         native_tests(root, config, env, 'security')
 

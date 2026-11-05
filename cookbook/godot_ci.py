@@ -351,7 +351,7 @@ def validate_partial(proof, entry, source, tools, environment, canonical_hash):
 
 def allowed_output(name, config, root):
     import godot_game
-    return any(name == path or name.startswith(path.rstrip('/') + '/') for path in godot_game.artifact_paths(root, config))
+    return any(name == path or name.startswith(path.rstrip('/') + '/') for path in godot_game.verification_scope(root, config)['artifacts'])
 
 
 def export_packet(root, proof):
@@ -627,6 +627,9 @@ def setup_worker(root, config, environment, entry):
     node_component.install(root, packages, environment, sdk)
     if config.get('components', {}).get('python'):
         sdk(['python3', str(TOOLS / 'cookbook/python_component.py'), 'setup'], root, environment)
+    if role == 'host' and config.get('components',{}).get('image_security'):
+        import godot_security
+        godot_security.setup(root,config,environment,game.run)
     if role == 'host':
         import rust_component
         components = [value for value in config.get('components', {}).get('rust', []) if value.get('test', {}).get('enabled', True)]
