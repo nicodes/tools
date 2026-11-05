@@ -58,6 +58,13 @@ class PublicationAuthority(unittest.TestCase):
         self.config['publication']['mode'] = 'plugin'
         self.assertEqual(publication.identity(self.root, self.config, environment=self.environment)['tag'], 'v0.0.1')
 
+    def test_release_validation_keeps_the_source_declared_browser_host(self):
+        self.config['ci'] = {'runner': 'ubuntu-22.04', 'timeout_minutes': 30}
+        plan = publication.identity(self.root, self.config, environment=self.environment)
+        self.assertEqual(plan['validation_runner'], 'ubuntu-22.04')
+        workflow = (publication.TOOLS / '.github/workflows/cookbook-addon-release.yml').read_text()
+        self.assertIn('runner: ${{ needs.plan.outputs.validation_runner }}', workflow)
+
     def test_same_head_resume_and_wrong_head_tag_fail_closed(self):
         subprocess.run(['git', 'tag', 'v0.0.1'], cwd=self.root, check=True)
         self.config['publication'].update(resume=True, initial='bump')

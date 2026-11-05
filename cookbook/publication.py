@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import zipfile
 
-from configuration import load, relative
+from configuration import ci_settings, load, relative
 
 TOOLS = Path(__file__).resolve().parents[1]
 SHA = re.compile(r'[a-f0-9]{40}\Z')
@@ -154,6 +154,7 @@ def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag=
     return {'version': version, 'tag': selected, 'asset': asset, 'operation': operation,
             'target': target, 'source': source, 'sha256': expected,
             'registry_auth': values['registry_auth'], 'environment': values['environment'],
+            'validation_runner': ci_settings(config)['runner'],
             'validation_timeout': str(values['validation_timeout']),
             'publish_timeout': str(values['recovery_timeout'] if recovery else values['publish_timeout'])}
 

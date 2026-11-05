@@ -42,6 +42,7 @@ jobs:
       registry_auth: ${{ steps.plan.outputs.registry_auth }}
       environment: ${{ steps.plan.outputs.environment }}
       validation_timeout: ${{ steps.plan.outputs.validation_timeout }}
+      validation_runner: ${{ steps.plan.outputs.validation_runner }}
       publish_timeout: ${{ steps.plan.outputs.publish_timeout }}
       plan: ${{ steps.plan.outputs.plan }}
     steps:
@@ -92,6 +93,7 @@ jobs:
       source: ${{ github.sha }}
       mode: full
       timeout-minutes: ${{ fromJSON(needs.plan.outputs.validation_timeout) }}
+      runner: ${{ needs.plan.outputs.validation_runner }}
   publish-apikey:
     name: Publish accepted addon
     needs: [plan, validate]
