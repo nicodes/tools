@@ -1,0 +1,49 @@
+name: Windows SDK bootstrap
+'on':
+  pull_request:
+    paths:
+      - setup/**
+      - helpers/verification.py
+      - helpers/make-setup.py
+      - .github/workflows/windows-bootstrap.yml
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: windows-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  bootstrap:
+    name: Windows bootstrap (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up exact Python and GNU Make
+        uses: ./setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify native ACL protection and Make execution
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('windows_verification', Path('helpers/verification.py'))
+          verification = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(verification)
+          directory = verification.protected_directory(Path('.artifacts/bootstrap-control'))
+          verification.protected_windows_acl(verification.windows_access(directory))
+          print('Native owner and DACL validation passed')
+          PY
+          make --version
