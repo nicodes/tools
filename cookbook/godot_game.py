@@ -41,8 +41,9 @@ def helper(name):
 
 def verification_scope(root, config):
     values = config.get('artifacts', {})
-    if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'definition', 'release_metadata', 'evidence_paths'}:
+    if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'definition', 'release_metadata', 'evidence_paths', 'evidence_retention_days'}:
         raise ValueError('unknown Godot build artifact selector')
+    helper('native-diagnostics').declaration(root,config)
     verification = helper('verification')
     if values.get('definition'):
         inputs = verification.release_definition(relative(root, values['definition'], exists=True))['inputs']
