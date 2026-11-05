@@ -297,6 +297,7 @@ def build(root, config, environment):
             images.host_caddy(root, environment, run)
         else:
             images.stage_caddy(root)
+    images.stage_empty_directories(root, config)
     phase(root, config, environment, 'pre_images')
     if 'config' in images.components(images.definition(root, config)):
         run(['bun', str(TOOLS / 'helpers/hostnames.mjs')], root, environment)

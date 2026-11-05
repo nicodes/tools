@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -87,6 +88,29 @@ def stage_caddy(root, *, host=False):
     for name, destination in names.items():
         shutil.copy2(TOOLS / 'helpers' / name, directory / destination)
     return directory
+
+
+def stage_empty_directories(root, config):
+    records = config.get('components', {}).get('empty_directories', [])
+    if not isinstance(records, list):
+        raise ValueError('empty runtime staging directories require typed native records')
+    planned = []
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {'path', 'mode'}:
+            raise ValueError('empty runtime staging requires an explicit path and mode')
+        path = relative(root, record['path'])
+        if not path.is_relative_to(root / '.artifacts') or path == root / '.artifacts':
+            raise ValueError('runtime staging directories must stay in generated artifacts')
+        if type(record['mode']) is not int or record['mode'] not in {0o700, 0o750, 0o755}:
+            raise ValueError('runtime staging must use a reviewed directory permission mode')
+        if path.exists() and (not path.is_dir() or any(item.name != '.keep' or item.is_symlink()
+                or not item.is_file() or item.stat().st_size for item in path.iterdir())):
+            raise ValueError('empty runtime staging may not contain retained or private data')
+        planned.append((path, record['mode']))
+    for path, mode in planned:
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, mode)
+        (path / '.keep').touch()
 
 
 def host_caddy(root, environment, run):

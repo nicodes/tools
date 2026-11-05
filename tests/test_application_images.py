@@ -17,6 +17,19 @@ spec.loader.exec_module(images)
 
 
 class ApplicationImages(unittest.TestCase):
+    def test_empty_runtime_staging_never_copies_retained_private_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {'components': {'empty_directories': [{'path': '.artifacts/media', 'mode': 0o700}]}}
+            images.stage_empty_directories(root, config)
+            path = root / '.artifacts/media'
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(list(path.iterdir()), [path / '.keep'])
+            (path / 'private-photo').write_bytes(b'retained private bytes')
+            with self.assertRaisesRegex(ValueError, 'retained or private data'):
+                images.stage_empty_directories(root, config)
+            self.assertEqual((path / 'private-photo').read_bytes(), b'retained private bytes')
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='image source ')
         self.addCleanup(temporary.cleanup)
