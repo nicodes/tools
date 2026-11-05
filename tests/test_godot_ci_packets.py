@@ -4,6 +4,7 @@ from contextlib import chdir
 import hashlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -145,6 +146,35 @@ class GodotPacketControls(unittest.TestCase):
             self.assertEqual(len(c.require_units(Path('/fixture'), config, environment)), 3)
             matrix['proofs'].pop()
             with self.assertRaises(ValueError): c.require_units(Path('/fixture'), config, environment)
+
+    def test_host_revalidation_writes_a_real_protected_checkout_receipt(self):
+        import ci
+        import godot_game
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            subprocess.run(['git','init','-q'],cwd=root,check=True)
+            (root/'fixture.txt').write_text('native source\n')
+            subprocess.run(['git','add','fixture.txt'],cwd=root,check=True)
+            subprocess.run(['git','-c','user.name=Fixture','-c','user.email=fixture@example.invalid',
+                'commit','-qm','Native fixture'],cwd=root,check=True)
+            source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=root,text=True).strip()
+            (root/'public').mkdir();(root/'public/index.html').write_bytes(b'fixture')
+            config={**self.config(),'artifacts':{'paths':['public']}}
+            verify=ci.verification()
+            with chdir(root):
+                artifacts=verify.artifacts(godot_game.verification_scope(root,config))
+            matrix={'source_commit':source,'cookbook_commit':self.tools,
+                'proofs':[{'entry':{'kind':'build'},'build':{'artifacts':artifacts}}]}
+            with self.assertRaisesRegex(ValueError,'current exact checkout'):
+                c.revalidate_host_build(root,config,matrix,{})
+            with chdir(root),patch.object(c,'host_matrix',return_value=matrix),patch.object(ci,'verification',return_value=verify),patch.object(verify,'invoke') as native_validation:
+                c.revalidate_host_build(root,config,matrix,{})
+                receipt=json.loads((root/'.artifacts/verification/build.json').read_text())
+                self.assertEqual(receipt['artifacts'],artifacts)
+                self.assertEqual(receipt['provenance']['source_commit'],source)
+                self.assertTrue(receipt['provenance']['tracked_source_clean'])
+                self.assertEqual(native_validation.call_args.args[0][2:],
+                    ['validate-import','--source',source,'--tools',self.tools])
 
     def test_entirely_delegated_e2e_group_requires_an_actual_exact_join(self):
         config=self.config()

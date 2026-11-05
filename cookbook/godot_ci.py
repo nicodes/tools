@@ -551,6 +551,8 @@ def host_matrix(root, config, environment):
 def revalidate_host_build(root, config, matrix, environment):
     import godot_game
     import ci
+    if Path.cwd().resolve() != root.resolve():
+        raise ValueError('Godot build validation requires the current exact checkout')
     if matrix != host_matrix(root, config, environment):
         raise ValueError('Godot host build join differs from the imported matrix')
     accepted = next(value['build'] for value in matrix['proofs'] if value['entry']['kind'] == 'build')
@@ -559,7 +561,7 @@ def revalidate_host_build(root, config, matrix, environment):
         raise ValueError('Godot imported products changed before host verification')
     ci.verification().run_command('build', 'build', scope,
         [sys.executable, str(TOOLS / 'cookbook/godot_ci.py'), 'validate-import', '--source', matrix['source_commit'], '--tools', matrix['cookbook_commit']],
-        root / '.artifacts/verification')
+        Path('.artifacts/verification'))
 
 
 def selected_entries(root, config, environment, suite):
