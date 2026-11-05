@@ -112,6 +112,27 @@ class NativeCargoComponent(unittest.TestCase):
         self.assertNotIn('--bin', cargo.cargo_args(component, 'unit'))
         self.assertNotIn('--bin', cargo.cargo_args(component, 'lint'))
 
+    def test_native_host_coverage_remains_distinct_from_release_musl_compilation(self):
+        target = 'x86_64-unknown-linux-musl'
+        component = {'binaries': ['example'], 'test': {'native_host': True}, 'lint': {'native_host': True}}
+        self.assertNotIn('--target', cargo.cargo_args(component, 'unit', target=target))
+        self.assertNotIn('--target', cargo.cargo_args(component, 'lint', target=target))
+        self.assertIn('--target', cargo.cargo_args(component, 'build', target=target))
+        self.assertIn('--target', cargo.cargo_args({'manifest': 'Cargo.toml'}, 'unit', target=target))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'Cargo.toml').write_text('[package]\nname="native"\nversion="0.0.1"\n')
+            (root / 'mise.toml').write_text('[tools]\nrust="1.94.0"\n')
+            calls = []
+            cargo.setup(root, [component], {'RUST_TARGET': target}, lambda argv, *_args: calls.append(argv))
+            fetches = [argv for argv in calls if argv[:2] == ['cargo', 'fetch']]
+            self.assertEqual(len(fetches), 2)
+            self.assertIn('--target', fetches[0])
+            self.assertNotIn('--target', fetches[1])
+            self.assertFalse(any('--offline' in argv for argv in fetches))
+        with self.assertRaises(ValueError):
+            cargo.cargo_args({'build': {'native_host': True}}, 'build')
+
 
 if __name__ == '__main__':
     unittest.main()

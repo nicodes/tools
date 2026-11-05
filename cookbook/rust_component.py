@@ -15,6 +15,7 @@ BASE_FIELDS = {'name', 'manifest', 'binaries', 'packages', 'features', 'all_feat
 SELECTORS = {'binaries', 'packages', 'features', 'all_features', 'no_default_features',
              'workspace', 'all_targets', 'release', 'profile', 'lib', 'tests', 'enabled',
              'test_targets', 'test_filter', 'test_arguments'}
+SELECTORS.add('native_host')
 
 
 def names(value, label):
@@ -43,9 +44,11 @@ def validate(component, root=None):
         for field in ['binaries', 'packages', 'features', 'test_targets']:
             if field in declaration:
                 names(declaration[field], field)
-        for field in ['all_features', 'no_default_features', 'workspace', 'all_targets', 'release', 'lib', 'tests', 'enabled']:
+        for field in ['all_features', 'no_default_features', 'workspace', 'all_targets', 'release', 'lib', 'tests', 'enabled', 'native_host']:
             if field in declaration and type(declaration[field]) is not bool:
                 raise ValueError('Cargo switch values must be booleans')
+        if declaration is component.get('build') and 'native_host' in declaration:
+            raise ValueError('native host selectors belong to written unit or compiler validation coverage')
         if declaration.get('profile', 'release') not in {'release', 'debug', 'dev'}:
             raise ValueError('Cargo profile must be release or native development/debug')
         if declaration.get('all_features') and declaration.get('features'):
@@ -125,6 +128,8 @@ def cargo_args(component, operation, *, target=None, environment=None):
             argv += ['--', '--check']
         return argv
     target = component.get('target', target)
+    if operation in {'unit', 'lint'} and values.get('native_host'):
+        target = None
     if target:
         if not TARGET.fullmatch(target):
             raise ValueError('Rust target must be a native target identifier')
@@ -249,6 +254,10 @@ def setup(root, components, environment, run):
         if extra and not component.get('build_std'):
             run(['rustup', 'target', 'add', '--toolchain', nightly, *sorted(extra)], root, environment)
     invoke(root, components, environment, 'fetch', run, target=environment.get('RUST_TARGET'))
+    host_components = [{key: value for key, value in component.items() if key != 'target'} for component in components
+                       if any(component.get(operation, {}).get('native_host') for operation in ['test', 'lint'])]
+    if host_components:
+        invoke(root, host_components, environment, 'fetch', run)
 
 
 def format(root, components, environment, run):
