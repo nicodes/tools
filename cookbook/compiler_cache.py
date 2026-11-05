@@ -31,7 +31,7 @@ def plan(root, config, pins, environment, source, runner_os, runner_arch, target
     for component in components:
         rust_component.validate(component, root)
         manifest = component.get('manifest', 'Cargo.toml')
-        for name in [manifest, str(Path(manifest).with_name('Cargo.lock'))]:
+        for name in [manifest, Path(manifest).with_name('Cargo.lock').as_posix()]:
             path = relative(root, name, exists=True)
             if not path.is_file() or path.stat().st_size > 8 << 20:
                 raise ValueError('compiler cache inputs require bounded native source files')
