@@ -28,6 +28,9 @@ runs:
       run: python3 "$GITHUB_ACTION_PATH/../helpers/select-tools.py" --directory "$CALLER_DIRECTORY" --tools "$CALLER_TOOLS"
     - name: "Set up tools"
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      env:
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
       with:
         version: ${{ steps.mise.outputs.version }}
         working_directory: ${{ inputs.directory }}
@@ -36,6 +39,9 @@ runs:
     - name: Prepare the reviewed Windows Make task runner
       if: runner.os == 'Windows'
       shell: pwsh
+      env:
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
       run: python3 "$env:GITHUB_ACTION_PATH/../helpers/make-setup.py"
     - name: Select reviewed CI helpers
       shell: bash
@@ -46,3 +52,4 @@ runs:
         set -euo pipefail
         [[ "$TOOLS_SOURCE" =~ ^[a-f0-9]{40}$ ]] || { echo 'Pin tools/setup to a full source commit' >&2; exit 1; }
         printf 'TOOLS_ROOT=%s\n' "$(cd "$TOOLS_ACTION/.." && pwd -P)" >> "$GITHUB_ENV"
+        printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' >> "$GITHUB_ENV"

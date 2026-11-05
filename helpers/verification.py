@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -176,6 +177,7 @@ def windows_access(path):
     """Inspect the native owner/DACL; Unix mode bits do not describe NTFS ACLs."""
     script = r'''
 $ErrorActionPreference = 'Stop'
+Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1" -ErrorAction Stop
 $acl = Get-Acl -LiteralPath $env:TOOLS_EVIDENCE_PATH
 $sid = [System.Security.Principal.SecurityIdentifier]
 $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -187,9 +189,19 @@ $rules = @($acl.GetAccessRules($true, $true, $sid) | ForEach-Object {
   administrator=$principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
   rules=$rules} | ConvertTo-Json -Depth 4 -Compress
 '''
-    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
-                            env={**os.environ, 'TOOLS_EVIDENCE_PATH': str(path.resolve())},
-                            capture_output=True, text=True, timeout=15, check=True)
+    interpreter = shutil.which('pwsh.exe') or shutil.which('powershell.exe')
+    if not interpreter:
+        raise ValueError('native Windows ACL inspection requires PowerShell')
+    environment = {**os.environ, 'TOOLS_EVIDENCE_PATH': str(path.resolve())}
+    # A PowerShell 7 parent exports its module search path. Windows PowerShell
+    # cannot load those modules; neither engine should resolve ACL inspection
+    # from caller module paths. Import the security module from its own PSHOME.
+    environment.pop('PSModulePath', None)
+    result = subprocess.run([interpreter, '-NoProfile', '-NonInteractive', '-Command', script],
+                            env=environment,
+                            capture_output=True, text=True, timeout=15, check=False)
+    if result.returncode:
+        raise ValueError('cannot inspect protected Windows output DACL: ' + result.stderr[-4096:])
     if len(result.stdout) > 262144:
         raise ValueError('evidence ACL metadata exceeds its bound')
     return json.loads(result.stdout)
