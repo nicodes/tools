@@ -49,6 +49,7 @@ class NativeCargoComponent(unittest.TestCase):
         self.assertIn('--check', cargo.cargo_args(declaration, 'fmt-check'))
         self.assertNotIn('--check', cargo.cargo_args(declaration, 'fmt'))
         self.assertEqual(cargo.cargo_args(declaration, 'lint')[-3:], ['--', '-D', 'warnings'])
+        self.assertIn('--lib', cargo.cargo_args({'lint': {'lib': True, 'binaries': ['owner']}}, 'lint'))
 
     def test_named_native_test_targets_and_ignored_acceptance_are_explicit(self):
         argv = cargo.cargo_args({'test': {'test_targets': ['runtime', 'providers'],
