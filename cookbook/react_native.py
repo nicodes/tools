@@ -17,6 +17,7 @@ from configuration import load, relative
 import images
 import node_component
 import postgres_fixture
+import expo_exports
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -117,7 +118,7 @@ def required_tools(root, config, stage):
 def verification_scope(root, config):
     definition = images.definition(root, config)
     inputs = {key: list(value) for key, value in definition['inputs'].items()}
-    inputs['artifacts'] += config.get('artifacts', {}).get('fixture_paths', [])
+    inputs['artifacts'] += config.get('artifacts', {}).get('fixture_paths', []) + expo_exports.artifact_paths(root, config)
     return helper('verification').scope(**inputs)
 
 
@@ -301,6 +302,7 @@ def build(root, config, environment):
         run(['bun', str(TOOLS / 'helpers/hostnames.mjs')], root, environment)
     images.build(root, config, environment, run, native=native)
     phase(root, config, environment, 'post_images')
+    expo_exports.build(root, config, environment, run)
     phase(root, config, environment, 'fixtures')
     images.package(root, config, environment, run)
     validate_outputs(root, config, environment)
