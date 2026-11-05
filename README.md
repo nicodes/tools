@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 52c2bd205897cee50600f56c61ecd4d74da98a797ce749ea3b45c20505db58a7 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 606e656c513734202ab308374a2b5a38f3ac264c10e31e7426b700ad5096ba05 -->
 
 # tools
 
@@ -181,3 +181,7 @@ The Rust, React Native and Godot game adapters share SDK, UI, image and packagin
 `cookbook-cli-identity.yml` selects a typed native CLI release identity. Complete native and host validation precede publication. Generated release callers retain their own attestation step so existing installer signer workflow identities remain valid. Shared publication verifies the closed platform payload and immutable version/tag/source before uploading a draft; no release is published during ordinary CI.
 
 `cookbook/source_policy.py` explicitly prepares a copied Python environment from the hash-locked parser requirements during setup. Source lint uses that prepared environment without installing dependencies and retains Compose, scoped environment and host-only secret assertions. The parser runs in isolation from caller Python paths.
+
+Application delivery keeps the source repository’s authenticated `cd.yml` caller. That caller runs final-source validation once before invoking independently pinned Komizo publication and delivery. Recipe CI omits a duplicate main push build; requested merges dispatch the production caller for the exact final revision. Existing combined delivery jobs retain their original total deadline and release metadata body checks.
+
+Shared compiler caching selects only declared Cargo targets and registry/git dependencies, with keys bound to SDKs, native target, source locks and build options. Successful saves enforce size/file-count bounds and never restore verification or release receipts. Image recipe jobs use a disposable mirror-aware Docker builder with explicit web, layer and Go compiler caches.
