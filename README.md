@@ -1,8 +1,8 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 606e656c513734202ab308374a2b5a38f3ac264c10e31e7426b700ad5096ba05 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: bed44ece55f420a51c184cc0f9fdadbed0cefc8a6873631e8b0909b9bbfdee27 -->
 
 # tools
 
-Shared Rust libraries, development helpers and reusable CLI release automation.
+A collection of reusable tools, GitHub Actions and recipes. Application source, domain algorithms, product policy and product assertions stay in their owning repositories.
 
 ## Rust libraries
 
@@ -185,3 +185,15 @@ The Rust, React Native and Godot game adapters share SDK, UI, image and packagin
 Application delivery keeps the source repository’s authenticated `cd.yml` caller. That caller runs final-source validation once before invoking independently pinned Komizo publication and delivery. Recipe CI omits a duplicate main push build; requested merges dispatch the production caller for the exact final revision. Existing combined delivery jobs retain their original total deadline and release metadata body checks.
 
 Shared compiler caching selects only declared Cargo targets and registry/git dependencies, with keys bound to SDKs, native target, source locks and build options. Successful saves enforce size/file-count bounds and never restore verification or release receipts. Image recipe jobs use a disposable mirror-aware Docker builder with explicit web, layer and Go compiler caches.
+
+## Recipe capabilities and source ownership
+
+The maintained adapters are `rust-cli`, `react-native`, `godot-game` and `godot-addon`. A CLI can include a declared browser UI; an application can include a declared API or database. These remain capabilities of the selected recipe. `cookbook.toml` selects native components, owned assertion programs, fixtures, outputs and CI topology; it is bounded data rather than an additional shell task graph. `mise.toml` supplies SDK pins.
+
+Build immediately stages declared native executable variants before another feature variant can overwrite a shared compiler output. Nonshipping image variants use a separate source- and image-ID-bound fixture packet outside the closed shipping release directory. Browser journeys consume accepted image variants; fixtures are prepared during setup or build. Product programs own loader mutations, data semantics, renderer behavior and assertions.
+
+Godot exports can select explicit debug versus release configurations and caller-owned runtime configuration. Debug-only export features are isolated from release exports. The shared configuration encoder validates bounded JSON data; application hostnames, routes and policy remain caller-owned. Engine/template checksums, compiler/source identities and complete browser/shard coverage stay explicit.
+
+An optional `[operations]` table selects a tracked native declaration and generates pinned Komizo workflow callers. The declaration preserves actual runners, total and step deadlines, protected environments, schedules, native assertions and explicit opt-ins. It does not define application behavior in Tools. Source/deployed audits and artifact validation are separate scopes; an artifact audit declares its setup and build phases explicitly. Deployment, paid checks, backups and restoration retain their independent authorization.
+
+Dependency policy version 2 uses cheap source checks to request the trusted full-validation workflow for an exact bot head and base. It does not treat a cheap check as complete acceptance. The requested merge controller preserves repository protection, verifies the full candidate and separately validates final `main` source. An application’s generated production caller retains its existing authenticated workflow identity.
