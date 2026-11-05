@@ -17,6 +17,7 @@ from native_tests import run_entries
 import rust_component
 import rust_staging
 import godot_static
+import go_component
 import godot_package
 import godot_sdk
 import node_component
@@ -47,7 +48,8 @@ def verification_scope(root, config):
         inputs = {'artifacts': values.get('paths', []), 'images': values.get('images', []),
             'environment': values.get('environment', []), 'revision_environment': values.get('revision_environment', [])}
     inputs = {key: list(value) for key, value in inputs.items()}
-    inputs['artifacts'] += values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
+    inputs['artifacts'] += (values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
+        + go_component.artifact_paths(root,config))
     return verification.scope(**inputs)
 
 
@@ -148,6 +150,7 @@ def validate_config(root, config):
     for path in rust_staging.artifact_paths(rust_components(config)):
         relative(root, path)
     godot_static.declaration(root,config)
+    go_component.declaration(root,config)
     for package in packages(config):
         node_component.validate(package, root)
     godot_sdk.inputs(root, config)
@@ -221,6 +224,8 @@ def required_tools(root, config, stage='full'):
         mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
         if components.get('rust'):
             mandatory.update({'rust', 'cargo:cargo-audit'})
+        if components.get('go'):
+            mandatory.add('go')
         if components.get('godot', {}).get('art_sources'):
             mandatory.add('bun')
         for value in packages(config):
@@ -374,6 +379,7 @@ def setup(root, config, env):
         godot_security.setup(root,config,env,run)
     if stage != 'full':
         return
+    go_component.setup(root,config,env,run)
     if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY') and requested_stage!='local':
         import godot_browser
         godot_browser.setup(root, config, env)
@@ -525,6 +531,7 @@ def compile_outputs(root, config, env):
     if (directory / 'gdam.json').exists():
         helper('godot-addons').verify(directory)
     build_rust(root, config, compiler_environment)
+    go_component.build(root,config,env,run)
     # Emscripten owns a bundled Node for its compiler. Native app packaging must
     # keep the caller's Mise Node/Bun selection and its reviewed compression bytes.
     if compiler_environment.get('LIBCLANG_PATH'):
@@ -646,6 +653,8 @@ def main():
             else:
                 if args.suite == 'unit':
                     node_component.test(root, packages(config), env, run)
+                if args.suite == 'unit':
+                    go_component.test(root,config,env,run)
                 if args.suite == 'unit' and config.get('components', {}).get('rust'):
                     rust_component.test(root, cargo_records(config, env), env, run)
                 directory, _ = project(root, config)
