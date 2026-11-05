@@ -43,7 +43,7 @@ def verification_scope(root, config):
     values = config.get('artifacts', {})
     if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'definition', 'release_metadata', 'evidence_paths', 'evidence_retention_days'}:
         raise ValueError('unknown Godot build artifact selector')
-    helper('native-diagnostics').declaration(root,config)
+    if 'evidence_retention_days' in values:helper('native-diagnostics').declaration(root,config)
     verification = helper('verification')
     if values.get('definition'):
         inputs = verification.release_definition(relative(root, values['definition'], exists=True))['inputs']
@@ -92,6 +92,9 @@ def artifact_paths(root, config):
 
 def evidence_paths(root, config):
     paths=[]
+    if config.get('components',{}).get('rust'):
+        paths.append('.artifacts/security/rust-source.json')
+        if config.get('security',{}).get('rust_inventory_sbom',False):paths.append('.artifacts/security/rust-source-sbom.json')
     if config.get('components',{}).get('image_security'):
         import godot_security
         paths.extend(godot_security.evidence_paths(root,config))
@@ -231,7 +234,7 @@ def required_tools(root, config, stage='full'):
     if stage in {'full','local'}:
         mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
         if components.get('rust'):
-            mandatory.update({'rust', 'cargo:cargo-audit'})
+            mandatory.update({'rust', 'cargo:cargo-audit','trivy'})
         if components.get('go'):
             mandatory.add('go')
         if components.get('godot', {}).get('art_sources'):
@@ -259,8 +262,8 @@ def required_tools(root, config, stage='full'):
             selected += ['actionlint', 'github:aviorstudio/gdlint']
         if components.get('rust'):
             selected.append('rust')
-            if stage == 'security':
-                selected.append('cargo:cargo-audit')
+            if stage=='security':
+                selected+=['cargo:cargo-audit','trivy']
         active_packages = package_linters(config) if stage == 'fast' else [value for value in packages(config) if value.get('audit', True)]
         for value in active_packages:
             selected.append('bun' if value.get('manager', 'npm') == 'bun' else 'node')
@@ -492,9 +495,12 @@ def security(root, config, env):
     if config.get('security', {}).get('fixtures'):
         command += ['--fixtures', str(relative(root, config['security']['fixtures'], exists=True))]
     run(command, root, env)
-    for component in config.get('components', {}).get('rust', []):
-        lock = str(Path(component['manifest']).with_name('Cargo.lock'))
-        run(['cargo', 'audit', '--file', lock, '--deny', 'warnings'], root, env)
+    if config.get('components',{}).get('rust'):
+        manifests=images.rust_inventory_manifests(root,config)
+        images.rust_inventory(root,manifests,env,run,sbom=config.get('security',{}).get('rust_inventory_sbom',False))
+        for manifest in manifests:
+            lock=str(Path(manifest).with_name('Cargo.lock'))
+            run(['cargo','audit','--file',lock,'--deny','warnings'],root,env)
     node_component.audit(root, packages(config), env, run)
     if config.get('security',{}).get('auth_policy'):
         run(['bun',str(TOOLS/'helpers/auth-boundary.mjs'),'--policy',config['security']['auth_policy']],root,env)

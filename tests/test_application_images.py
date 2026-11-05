@@ -118,8 +118,10 @@ class ApplicationImages(unittest.TestCase):
             report = {'SchemaVersion': 2, 'Results': [
                 {'Target': str(index) + '/Cargo.lock', 'Type': 'cargo', 'Packages': [{'Name': 'dependency'}],
                  'Vulnerabilities': findings} for index in range(2)]}
+            if command[command.index('--format')+1]=='cyclonedx':report={'bomFormat':'CycloneDX','components':[{'name':'dependency'}]}
             Path(command[command.index('--output') + 1]).write_text(json.dumps(report))
-        images.rust_inventory(self.root, manifests, {}, scan)
+        images.rust_inventory(self.root, manifests, {}, scan,sbom=True)
+        self.assertEqual(json.loads((self.root/'.artifacts/security/rust-source-sbom.json').read_text())['bomFormat'],'CycloneDX')
         findings.append({'Severity': 'HIGH', 'FixedVersion': ''})
         with self.assertRaisesRegex(ValueError, 'High/Critical'):
             images.rust_inventory(self.root, manifests, {}, scan)
