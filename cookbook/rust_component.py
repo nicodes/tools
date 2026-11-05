@@ -253,11 +253,14 @@ def setup(root, components, environment, run):
             extra.add(component['target'])
         if extra and not component.get('build_std'):
             run(['rustup', 'target', 'add', '--toolchain', nightly, *sorted(extra)], root, environment)
-    invoke(root, components, environment, 'fetch', run, target=environment.get('RUST_TARGET'))
-    host_components = [{key: value for key, value in component.items() if key != 'target'} for component in components
-                       if any(component.get(operation, {}).get('native_host') for operation in ['test', 'lint'])]
-    if host_components:
-        invoke(root, host_components, environment, 'fetch', run)
+    # A target-filtered fetch can omit dependencies selected by host-side build
+    # scripts/proc macros (notably psm when targeting musl). Restore the complete
+    # locked package closure here so every subsequent compiler command is offline.
+    closure = [{key: value for key, value in component.items() if key not in {'target', 'build_std'}} for component in components]
+    invoke(root, closure, environment, 'fetch', run)
+    standard_library = [component for component in components if component.get('build_std')]
+    if standard_library:
+        invoke(root, standard_library, environment, 'fetch', run, target=environment.get('RUST_TARGET'))
 
 
 def format(root, components, environment, run):

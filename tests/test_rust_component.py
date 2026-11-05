@@ -126,9 +126,8 @@ class NativeCargoComponent(unittest.TestCase):
             calls = []
             cargo.setup(root, [component], {'RUST_TARGET': target}, lambda argv, *_args: calls.append(argv))
             fetches = [argv for argv in calls if argv[:2] == ['cargo', 'fetch']]
-            self.assertEqual(len(fetches), 2)
-            self.assertIn('--target', fetches[0])
-            self.assertNotIn('--target', fetches[1])
+            self.assertEqual(len(fetches), 1)
+            self.assertNotIn('--target', fetches[0])
             self.assertFalse(any('--offline' in argv for argv in fetches))
         with self.assertRaises(ValueError):
             cargo.cargo_args({'build': {'native_host': True}}, 'build')
