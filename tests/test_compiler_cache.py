@@ -1,5 +1,7 @@
 import copy
 import os
+import json
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -26,6 +28,24 @@ class CompilerCaches(unittest.TestCase):
 
     def plan(self, source='a' * 40, target='x86_64-unknown-linux-musl'):
         return cache.plan(self.root, self.config, {}, self.environment, source, 'Linux', 'X64', target)
+
+    def test_shell_wrapper_preserves_empty_and_save_arguments_with_nounset(self):
+        action = Path(__file__).parents[1] / 'compiler-cache/action.yml'
+        source = action.read_text().split('      run: |\n', 1)[1].split('    - name:', 1)[0]
+        program = '\n'.join(line[8:] for line in source.splitlines())
+        self.assertNotIn('arguments[@]', program)  # Bash 3.2 treats an empty array as unset.
+        commands = self.root / 'bin'; commands.mkdir()
+        python = commands / 'python3'
+        python.write_text('#!' + sys.executable + '\nimport json,os,sys\nfrom pathlib import Path\nPath(os.environ["CALLS"]).write_text(json.dumps(sys.argv[1:]))\n')
+        python.chmod(0o755)
+        for mode, target in [('restore', ''), ('restore', 'aarch64-apple-darwin'), ('save', ''), ('save', 'aarch64-apple-darwin')]:
+            environment = {**os.environ, 'PATH': str(commands) + os.pathsep + os.environ['PATH'],
+                'GITHUB_ACTION_PATH': '/fixture with spaces/compiler-cache', 'CACHE_MODE': mode,
+                'CACHE_TARGET': target, 'CALLS': str(self.root / 'calls.json')}
+            result = subprocess.run(['bash', '-c', program], env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = ['/fixture with spaces/compiler-cache/../cookbook/compiler_cache.py', '--target', target]
+            self.assertEqual(json.loads((self.root / 'calls.json').read_text()), expected + (['--save'] if mode == 'save' else []))
 
     def test_only_actual_compiler_and_cargo_download_directories_are_selected(self):
         value = self.plan()
