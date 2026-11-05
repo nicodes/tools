@@ -77,11 +77,15 @@ jobs:
             files['.github/workflows/ci.yml'] += '      preview-environment: ' + ci['preview_environment'] + '\n'
     files['.github/workflows/ci.yml'] += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
-    if config.get('publication') and config['recipe'] != 'godot-addon':
+    if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):
-        import publication_workflows
-        files.update(publication_workflows.workflow_files(root, revision))
+        if config['recipe'] == 'rust-cli':
+            import cli_publication_workflows
+            files.update(cli_publication_workflows.workflow_files(root, revision))
+        else:
+            import publication_workflows
+            files.update(publication_workflows.workflow_files(root, revision))
     return files
 
 
