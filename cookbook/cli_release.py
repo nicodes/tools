@@ -25,7 +25,7 @@ spec.loader.exec_module(github_release)
 
 def policy(config):
     values = config.get('publication', {})
-    allowed = {'tag_prefix', 'initial', 'initial_version', 'version_identity', 'cargo_manifest', 'acceptance_timeout'}
+    allowed = {'tag_prefix', 'initial', 'initial_version', 'version_identity', 'cargo_manifest', 'acceptance_timeout', 'validation_timeout'}
     if config.get('recipe') != 'rust-cli' or not isinstance(values, dict) or set(values)-allowed:
         raise ValueError('CLI publication requires native semantic release policy')
     result = {'tag_prefix': 'v', 'initial': 'first', 'version_identity': 'number', 'acceptance_timeout': 10, **values}
@@ -36,6 +36,8 @@ def policy(config):
     if 'initial_version' in result and (not isinstance(result['initial_version'], str)
             or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', result['initial_version'])):
         raise ValueError('CLI initial version must be a stable semantic version')
+    if 'validation_timeout' in result and (type(result['validation_timeout']) is not int or not 1 <= result['validation_timeout'] <= 180):
+        raise ValueError('CLI full release validation must retain a bounded source deadline')
     if 'cargo_manifest' in result:
         value = result['cargo_manifest']
         if not isinstance(value, str) or not value.endswith('Cargo.toml') or Path(value).is_absolute() or '..' in Path(value).parts:

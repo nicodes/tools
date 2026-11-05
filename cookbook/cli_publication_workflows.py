@@ -119,7 +119,7 @@ jobs:
       tag: ${{ needs.identity.outputs.tag }}
       artifact-id: ${{ needs.accept.outputs.artifact }}
 '''
-    for old, new in [('PIN', revision), ('RUNNER', settings['runner']), ('HOST_TIMEOUT', str(settings['timeout_minutes'])),
+    for old, new in [('PIN', revision), ('RUNNER', settings['runner']), ('HOST_TIMEOUT', str(values.get('validation_timeout', settings['timeout_minutes']))),
                      ('ACCEPT_TIMEOUT', str(values['acceptance_timeout'])), ('CHECKOUT', CHECKOUT),
                      ('DOWNLOAD', DOWNLOAD), ('UPLOAD', UPLOAD), ('ATTEST', ATTEST)]:
         text = text.replace(old, new)
