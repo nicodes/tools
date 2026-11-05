@@ -189,7 +189,9 @@ $rules = @($acl.GetAccessRules($true, $true, $sid) | ForEach-Object {
 '''
     result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', script],
                             env={**os.environ, 'TOOLS_EVIDENCE_PATH': str(path.resolve())},
-                            capture_output=True, text=True, timeout=15, check=True)
+                            capture_output=True, text=True, timeout=15, check=False)
+    if result.returncode:
+        raise ValueError('cannot inspect protected Windows output DACL: ' + result.stderr[-4096:])
     if len(result.stdout) > 262144:
         raise ValueError('evidence ACL metadata exceeds its bound')
     return json.loads(result.stdout)
