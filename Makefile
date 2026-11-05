@@ -13,6 +13,7 @@ lint:
 	bash scripts/lint.sh
 
 unit:
+	node --test tests/fixture-origins.test.mjs
 	cargo test --workspace --all-targets --locked
 	cargo build --locked -p tools-operator
 	bash tests/publish-inputs.test.sh
