@@ -144,6 +144,12 @@ jobs:
         else:
             import publication_workflows
             files.update(publication_workflows.workflow_files(root, revision))
+    if config.get('operations'):
+        import operational_workflows
+        operations = operational_workflows.workflow_files(root, revision, config)
+        if set(operations) & set(files):
+            raise ValueError('each generated workflow requires one native lifecycle owner')
+        files.update(operations)
     return files
 
 

@@ -94,6 +94,33 @@ class DeliveryWorkflows(unittest.TestCase):
         self.write()
         self.assertEqual(delivery.declaration(self.root, self.config)['health_urls'][1]['contains'], '{revision}')
 
+    def test_native_environment_deadlines_and_absent_notification_are_preserved(self):
+        self.data.update(environment='Production', notify=False,
+            step_timeouts={'deploy':25,'readiness':5,'diagnostics':3},
+            report={'runner':'ubuntu-24.04','timeout_minutes':5,
+                    'step_timeouts':{'checkout':3,'setup':5,'report':3}})
+        self.write()
+        text=delivery.jobs(self.root,self.config,'b'*40)
+        self.assertIn('    environment: Production',text)
+        self.assertIn('prepare-only: true',text)
+        self.assertIn('        timeout-minutes: 25',text)
+        self.assertIn('notify: false',text)
+        self.assertNotIn('DISCORD_WEBHOOK_URL',text)
+        self.assertIn('report-runner: ubuntu-24.04',text)
+        for changes in [{'deploy':101},{'command':5},{'readiness':True}]:
+            self.data['step_timeouts']=changes
+            self.write()
+            with self.subTest(changes=changes),self.assertRaises(ValueError):
+                delivery.declaration(self.root,self.config)
+
+    def test_readiness_and_operational_readiness_cannot_select_two_policies(self):
+        self.data['readiness_operation']=True
+        self.write()
+        with self.assertRaisesRegex(ValueError,'one native production policy'):
+            delivery.declaration(self.root,self.config)
+        self.config['operations']={'definition':'deploy/operations.json'}
+        self.assertTrue(delivery.declaration(self.root,self.config)['readiness_operation'])
+
 
 if __name__ == '__main__':
     unittest.main()

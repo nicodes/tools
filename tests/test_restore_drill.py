@@ -22,6 +22,28 @@ def fixture_config(project, postgres=False):
 
 
 class RestoreBoundaries(unittest.TestCase):
+    def test_disposable_dsn_environment_transport_never_places_credentials_in_docker_argv(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);dsn=root/'clone.url'
+            dsn.write_text('postgresql://runtime:fixture-secret@127.0.0.1/database\n')
+            dsn.chmod(0o600)
+            config=fixture_config('demo',postgres=True)
+            config.update(dsn_transport='environment',dsn_variable='RUNTIME_DATABASE_URL')
+            path=root/'restore.json';path.write_text(json.dumps(config))
+            drill.load_config(path)
+            values,mounts=drill.serving_credentials(config,dsn)
+            self.assertEqual(values['RUNTIME_DATABASE_URL'],dsn.read_text().strip())
+            self.assertEqual(mounts,[])
+            for content,mode in [('postgresql://local\nINJECTED=value',0o600),('postgresql://local',0o644)]:
+                dsn.write_text(content);dsn.chmod(mode)
+                with self.subTest(mode=mode),self.assertRaises(ValueError) as refused:
+                    drill.serving_credentials(config,dsn)
+                self.assertNotIn('fixture-secret',str(refused.exception))
+            config['env']['RUNTIME_DATABASE_URL']='competing'
+            path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(ValueError,'competing'):
+                drill.load_config(path)
+
     def test_renamed_fixture_preserves_configured_database_and_role_namespace(self):
         spec = importlib.util.spec_from_file_location('restore_fixture', Path(__file__).parents[1]/'helpers/test-restore-drill.py')
         fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)

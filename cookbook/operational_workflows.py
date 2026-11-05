@@ -17,9 +17,10 @@ RESERVED_ENV={'GH_TOKEN','GITHUB_TOKEN','TOOLS_ROOT','KOMIZO_ACTIONS_ROOT','OPEN
 STEP_NAMES={
     'backup':{'checkout','setup','plan','connect','frame','proof','capture','upload','artifact','cleanup','report_checkout','report_setup','report'},
     'recovery':{'checkout','setup','plan','verify','artifact'},
-    'security':{'checkout','setup','plan','source','registry','deployed','artifact','report_checkout','report_setup','report'},
+    'security':{'checkout','setup','plan','prepare','build','source','checks','registry','deployed','artifact','report_checkout','report_setup','report'},
     'production':{'checkout','setup','plan','prepare','run','artifact'},
     'paid':{'checkout','setup','plan','prepare','run','artifact'},
+    'retention':{'checkout','setup','plan','download','verify','artifact'},
 }
 
 
@@ -51,14 +52,44 @@ def step_timeouts(operation,record):
     return result
 
 
+def evidence_paths(root,record,config):
+    registered=records(config.get('artifacts',{}).get('evidence_paths',[]),64,'registered evidence')
+    if any(not isinstance(name,str) for name in registered):raise ValueError('registered evidence must name native output paths')
+    approved={name.rstrip('/') for name in registered}
+    values=records(record.get('evidence',[]),16,'operational evidence')
+    for name in values:
+        if not isinstance(name,str) or not (name.startswith('.artifacts/') or name.rstrip('/') in approved):
+            raise ValueError('operational evidence must be an artifact or an explicitly registered native output')
+        relative(root,name)
+    return values
+
+
+def artifact_name(operation,record,environment):
+    defaults={'backup':'backup-{run_id}-{run_attempt}','recovery':'recovery-transport-{run_id}',
+        'security':'deployed-security-{run_id}-{run_attempt}','production':'production-verification-{run_id}',
+        'paid':'production-verification-{run_id}-{run_attempt}',
+        'retention':'retained-production-pb-backup-{run_id}'}
+    value=record.get('artifact_name',defaults[operation])
+    if not isinstance(value,str) or not 1<=len(value)<=160:raise ValueError('artifact names require bounded native templates')
+    value=value.replace('{run_id}',environment['GITHUB_RUN_ID']).replace('{run_attempt}',environment['GITHUB_RUN_ATTEMPT'])
+    if not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,254}',value):raise ValueError('artifact names may select only native run identity fields')
+    return value
+
+
 def entry(root,value,paid=False,budget=900):
-    if not isinstance(value,dict) or set(value)-{'runner','path','args','environment','timeout','target','filter','binary'}:
+    if not isinstance(value,dict) or set(value)-{'runner','path','args','environment','timeout','target','filter','binary','cwd','manager'}:
         raise ValueError('operational checks require native program data')
     runner=value.get('runner')
-    if not isinstance(runner,str) or runner not in ({'python','node','bun','bash','cargo-test','cargo-run'} if paid else {'python','node','bun','bash'}):
+    if not isinstance(runner,str) or runner not in ({'python','node','bun','bash','cargo-test','cargo-run'} if paid else {'python','node','bun','bash','playwright'}):
         raise ValueError('unsupported native operational runner')
-    path=source(root,value.get('path'))
+    path=relative(root,value.get('path'),exists=True) if runner=='playwright' else source(root,value.get('path'))
     if not path.is_file():raise ValueError('native operational checks require real source programs')
+    if runner=='playwright':
+        directory=relative(root,value.get('cwd'),exists=True)
+        if (not directory.is_dir() or path.parent!=directory or not re.fullmatch(r'playwright\.config\.(?:[cm]?js|ts)',path.name)
+                or not (directory/'package.json').is_file() or value.get('manager') not in ('bun','npm')):
+            raise ValueError('Playwright checks select their actual owning package and native configuration')
+    elif {'cwd','manager'}&set(value):raise ValueError('package selection belongs only to its native Playwright runner')
     if runner.startswith('cargo-') and path.name!='Cargo.toml':raise ValueError('native Cargo checks select their owning manifest')
     arguments=value.get('args',[])
     if not isinstance(arguments,list) or len(arguments)>32 or any(not isinstance(v,str) or len(v)>1024 or any(c in v for c in '\0\r\n') for v in arguments):
@@ -96,8 +127,8 @@ def declaration(root,config):
     for role in ROLES:
         if role not in value:continue
         record=value[role]
-        fields={'backup':{'config','gate_variable','report_timeout'},'recovery':set(),'security':{'report_timeout','checks','prepare','deployed_policy'},'production':{'checks','prepare'}}
-        if not isinstance(record,dict) or set(record)-({'runner','timeout_minutes','environment','schedule','concurrency','queue','evidence','step_timeouts'}|fields[role]):
+        fields={'backup':{'config','gate_variable','report_timeout'},'recovery':{'legacy_retention'},'security':{'report','report_timeout','checks','prepare','deployed_policy','artifact_validation','artifact_checks'},'production':{'checks','prepare'}}
+        if not isinstance(record,dict) or set(record)-({'runner','timeout_minutes','environment','schedule','concurrency','queue','evidence','step_timeouts','artifact_name','evidence_missing'}|fields[role]):
             raise ValueError('unsupported native '+role+' data')
         if not isinstance(record.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',record['runner']):raise ValueError('operation requires its original runner')
         bounded(record.get('timeout_minutes'),110 if role=='security' else 45,role)
@@ -120,26 +151,51 @@ def declaration(root,config):
             if record.get('concurrency') not in (None,'deploy-production','backup'):raise ValueError('preserve bounded native host serialization')
         budget=record['timeout_minutes']*60
         for check in records(record.get('checks',[]),32,'native checks'):entry(root,check,budget=budget)
+        for check in record.get('checks',[]):
+            if check['runner']=='playwright':
+                import node_component
+                packages=[node_component.validate(item,root)[0] for item in config.get('node',{}).get('packages',[])]
+                if not any(item['directory']==check['cwd'] and item.get('manager','npm')==check['manager'] for item in packages):
+                    raise ValueError('Playwright requires its declared frozen native package')
         if role=='production' and not record.get('checks'):raise ValueError('production verification requires actual native assertions')
         if role=='security' and record.get('deployed_policy'):source(root,record['deployed_policy'],('deploy/',))
+        if role=='security':
+            if type(record.get('report',True)) is not bool:raise ValueError('audit reporting must retain its native explicit capability')
+            if type(record.get('artifact_validation',False)) is not bool:raise ValueError('artifact validation must explicitly select its build phase')
+            artifact_checks=records(record.get('artifact_checks',[]),32,'artifact checks')
+            available=[entry.get('name') for entries in config.get('tests',{}).values() for entry in entries if entry.get('name')]
+            if (any(not isinstance(name,str) or available.count(name)!=1 for name in artifact_checks)
+                    or len(set(artifact_checks))!=len(artifact_checks) or (artifact_checks and not record.get('artifact_validation'))):
+                raise ValueError('artifact checks select distinct existing named native assertions after explicit build')
         prepare=record.get('prepare',{})
-        if not isinstance(prepare,dict) or set(prepare)-{'packages','browser','rust','native'}:raise ValueError('SDK preparation accepts native package capabilities only')
+        if not isinstance(prepare,dict) or set(prepare)-{'packages','browser','browser_only_shell','rust','native'}:raise ValueError('SDK preparation accepts native package capabilities only')
         packages=records(prepare.get('packages',[]),16,'prepared packages')
         if any(not isinstance(package,str) for package in packages) or len(set(packages))!=len(packages):raise ValueError('prepared packages must be distinct native directories')
         for package in packages:
             if not relative(root,package,exists=True).is_dir():raise ValueError('prepared packages require native directories')
         if prepare.get('browser'):relative(root,prepare['browser'],exists=True)
         if 'browser' in prepare and (not isinstance(prepare['browser'],str) or prepare['browser'] not in packages):raise ValueError('browser preparation must select a prepared native package')
+        if 'browser_only_shell' in prepare and (type(prepare['browser_only_shell']) is not bool or not prepare.get('browser')):raise ValueError('browser shell selection requires its actual native browser preparation')
         if type(prepare.get('rust',False)) is not bool:raise ValueError('Rust SDK preparation must be explicit')
         for check in records(prepare.get('native',[]),16,'native preparation'):entry(root,check,budget=budget)
-        for name in records(record.get('evidence',[]),16,'operational evidence'):
-            if not isinstance(name,str) or not name.startswith('.artifacts/'):raise ValueError('operational evidence belongs in generated artifacts')
-            relative(root,name)
+        evidence_paths(root,record,config)
+        artifact_name(role,record,{'GITHUB_RUN_ID':'1','GITHUB_RUN_ATTEMPT':'1'})
+        missing=record.get('evidence_missing','error' if role in {'backup','recovery'} else 'ignore')
+        if missing not in ('ignore','warn','error') or (role in {'backup','recovery'} and missing!='error'):
+            raise ValueError('evidence absence policy must preserve its native upload behavior')
+        if role=='recovery' and 'legacy_retention' in record:
+            legacy=record['legacy_retention']
+            if (not isinstance(legacy,dict) or set(legacy)-{'runner','timeout_minutes','environment','format','step_timeouts'}
+                    or legacy.get('format')!='age-pb-v1' or legacy.get('environment')!=record['environment']
+                    or not isinstance(legacy.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',legacy['runner'])):
+                raise ValueError('legacy retention requires its original encrypted-only format, runner and protected environment')
+            bounded(legacy.get('timeout_minutes'),10,'legacy retention')
+            step_timeouts('retention',legacy)
     paid=value.get('paid',[])
     if not isinstance(paid,list) or len(paid)>4:raise ValueError('paid checks require bounded explicit opt-in declarations')
     seen=set()
     for check in paid:
-        if not isinstance(check,dict) or set(check)-{'id','description','runner','timeout_minutes','environment','prepare','check','deployment_required','skip_default','step_timeouts'}:
+        if not isinstance(check,dict) or set(check)-{'id','description','runner','timeout_minutes','environment','prepare','check','deployment_required','skip_default','step_timeouts','inline'}:
             raise ValueError('unsupported paid native check')
         name=check.get('id','')
         if not isinstance(name,str) or not NAME.fullmatch(name) or name in seen or name in ROLES|{'paid','verify','report'}:raise ValueError('paid checks require distinct native dispatch inputs')
@@ -148,11 +204,16 @@ def declaration(root,config):
         if check.get('environment') not in ('production','Production'):raise ValueError('paid checks retain their protected approval environment')
         if not isinstance(check.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',check['runner']):raise ValueError('paid check requires its existing runner')
         if not isinstance(check.get('description'),str) or not 1<=len(check['description'])<=256:raise ValueError('paid checks require a useful bounded dispatch description')
-        for key in ['deployment_required','skip_default']:
+        for key in ['deployment_required','skip_default','inline']:
             if type(check.get(key,False)) is not bool:raise ValueError('paid check gates must be literal booleans')
         entry(root,check.get('check'),paid=True,budget=check['timeout_minutes']*60)
         for native in records(check.get('prepare',[]),16,'paid preparation'):entry(root,native,budget=check['timeout_minutes']*60)
     if paid and 'production' not in value:raise ValueError('paid opt-ins require the original production workflow')
+    inline=[check for check in paid if check.get('inline')]
+    if len(inline)>1:raise ValueError('one production job supports its single original inline paid step')
+    for check in inline:
+        if check.get('skip_default') or any(check[key]!=value['production'].get(key) for key in ['runner','timeout_minutes','environment']):
+            raise ValueError('inline paid assertions must retain the original production job, approval environment and total budget')
     profiles=value.get('restore_profiles',[])
     if not isinstance(profiles,list) or len(profiles)>4:raise ValueError('restore profiles require bounded native data')
     names=set()
@@ -191,7 +252,13 @@ def workflow_files(root,revision,config=None):
         if role=='recovery':
             lines+=['    inputs:']
             for key,description in [('source-run-id','Successful exact main CD/Backup run containing the encrypted export'),('artifact-id','Immutable Actions encrypted backup artifact ID')]:
-                lines+=['      '+key+':','        description: '+json.dumps(description),'        required: true','        type: string']
+                required=not (key=='source-run-id' and record.get('legacy_retention'))
+                lines+=['      '+key+':','        description: '+json.dumps(description),'        required: '+str(required).lower(),'        type: string']
+            if record.get('legacy_retention'):
+                lines+=['      operation:','        description: Verify encrypted transport or retain an existing legacy AGE artifact',
+                    '        type: choice','        required: true','        default: verify-transport','        options: [verify-transport, retain-legacy]',
+                    '      run-id:','        description: Workflow run that produced the immutable legacy artifact',
+                    '        type: string','        required: false']
         elif paid:
             lines+=['    inputs:']
             for check in paid:lines+=['      '+check['id']+':','        description: '+json.dumps(check['description']),'        type: boolean','        default: false']
@@ -202,32 +269,54 @@ def workflow_files(root,revision,config=None):
             if record.get('queue'):lines+=['  queue: '+record['queue']]
         lines+=['jobs:']
         jobs=[(role,record,None)]
-        jobs += [(check['id'],check,check['id']) for check in paid]
+        jobs += [(check['id'],check,check['id']) for check in paid if not check.get('inline')]
         for job,settings,paid_id in jobs:
             operation='paid' if paid_id else role
+            inline=next((check for check in paid if check.get('inline')),None) if not paid_id else None
             condition="github.ref == 'refs/heads/main'"
+            if role=='recovery' and record.get('legacy_retention'):condition+=" && inputs.operation == 'verify-transport'"
             if paid_id:condition+=' && inputs.'+paid_id
             elif role=='production':
                 for check in paid:
                     if check.get('skip_default'):condition+=' && !inputs.'+check['id']
             if record.get('gate_variable') and role=='backup':condition+=" && vars."+record['gate_variable']+" == 'true'"
-            if operation=='security':callee='cookbook-security-audit'
+            if operation=='security':
+                callee='cookbook-security-audit' if record.get('deployed_policy') else 'cookbook-source-audit'
+                if not record.get('report',True):callee+='-no-report'
             elif operation in {'production','paid'}:callee='cookbook-production-check' if settings.get('environment') else 'cookbook-public-production-check'
             else:callee='cookbook-'+operation
             lines+=['  '+job+':','    if: '+expression(condition),'    uses: nicodes/komizo-actions/.github/workflows/'+callee+'.yml@'+pin,'    permissions:']
-            for key,value in permissions[role].items():lines+=['      '+key+': '+value]
+            grants=dict(permissions[role])
+            if role=='security':
+                if not record.get('deployed_policy'):
+                    for key in ['packages','deployments']:grants.pop(key,None)
+                if not record.get('report',True):grants.pop('issues',None)
+            for key,value in grants.items():lines+=['      '+key+': '+value]
             lines+=['    with:','      tools-ref: '+revision,'      komizo-ref: '+pin,'      declaration: '+json.dumps(data['definition']),
                     '      runner: '+settings['runner'],'      timeout-minutes: '+str(settings['timeout_minutes']),
                     '      step-timeouts: '+json.dumps(json.dumps(step_timeouts(operation,settings),sort_keys=True))]
-            if operation in {'security','production','paid'}:lines+=['      operation: '+operation,'      check: '+json.dumps(paid_id or '')]
+            if operation in {'security','production','paid'}:lines+=['      operation: '+operation,'      check: '+json.dumps(paid_id or (inline['id'] if inline else ''))]
             if role in {'backup','security'}:lines+=['      report-timeout: '+str(record.get('report_timeout',5))]
+            if inline:
+                lines+=['      inline-paid: '+expression('inputs.'+inline['id']+' || false'),
+                    '      inline-step-timeouts: '+json.dumps(json.dumps(step_timeouts('paid',inline),sort_keys=True))]
             if settings.get('environment'):lines+=['      environment: '+settings['environment']]
             if role=='recovery':
                 for key in ['source-run-id','artifact-id']:lines+=['      '+key+': '+expression('inputs.'+key)]
             if role=='backup':
                 lines+=['    secrets:']
                 for key in ['KOMIZO_DEPLOY_KEY','BACKUP_S3_ACCESS_KEY','BACKUP_S3_SECRET_KEY']:lines+=['      '+key+': '+expression('secrets.'+key)]
-            if paid_id:lines+=['    secrets:','      OPENROUTER_API_KEY: '+expression('secrets.OPENROUTER_API_KEY')]
+            if paid_id or inline:lines+=['    secrets:','      OPENROUTER_API_KEY: '+expression('secrets.OPENROUTER_API_KEY')]
+        if role=='recovery' and record.get('legacy_retention'):
+            settings=record['legacy_retention']
+            lines+=['  retain:','    if: '+expression("github.ref == 'refs/heads/main' && inputs.operation == 'retain-legacy'"),
+                '    uses: nicodes/komizo-actions/.github/workflows/cookbook-legacy-retention.yml@'+pin,
+                '    permissions:','      contents: read','      actions: read','      attestations: read',
+                '    with:','      tools-ref: '+revision,'      komizo-ref: '+pin,'      declaration: '+json.dumps(data['definition']),
+                '      runner: '+settings['runner'],'      timeout-minutes: '+str(settings['timeout_minutes']),
+                '      environment: '+settings['environment'],
+                '      step-timeouts: '+json.dumps(json.dumps(step_timeouts('retention',settings),sort_keys=True)),
+                '      artifact-id: '+expression('inputs.artifact-id'),'      run-id: '+expression('inputs.run-id')]
         filename={'production':'production-verification','security':'security-scan'}.get(role,role)
         result['.github/workflows/'+filename+'.yml']='\n'.join(lines)+'\n'
     return result

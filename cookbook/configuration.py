@@ -53,7 +53,7 @@ def load(root):
         raise ValueError('recipe configuration must be a bounded regular source file')
     data = tomllib.loads(path.read_text())
     allowed = {'version', 'recipe', 'package', 'tests', 'lint', 'format', 'clean',
-               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication', 'ci', 'delivery', 'preview'}
+               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication', 'ci', 'delivery', 'preview', 'operations'}
     if set(data) - allowed or data.get('version') != 1 or data.get('recipe') not in RECIPES:
         raise ValueError('unsupported cookbook configuration')
     if 'tasks' in data or 'commands' in data:
@@ -113,6 +113,9 @@ def load(root):
                 raise ValueError('native tests require a bounded timeout')
     for name in data.get('clean', {}).get('paths', []):
         relative(root, name)
+    if 'operations' in data:
+        import operational_workflows
+        operational_workflows.declaration(root, data)
     return data
 
 

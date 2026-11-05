@@ -4,9 +4,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import operational_workflows as operations
+import configuration
+import generate
 
 
 class OperationalWorkflows(unittest.TestCase):
@@ -86,6 +89,65 @@ class OperationalWorkflows(unittest.TestCase):
         self.assertIn('cookbook-public-production-check.yml@' + 'a' * 40, text)
         self.assertNotIn('environment:', text)
 
+    def test_inline_paid_assertion_shares_the_original_job_and_total_budget(self):
+        check = self.data['paid'][0]
+        check.update(inline=True, skip_default=False, timeout_minutes=45,
+                     step_timeouts={'prepare': 5, 'run': 5})
+        self.write()
+        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/production-verification.yml']
+        self.assertNotIn('\n  model_smoke:', text)
+        self.assertNotIn('!inputs.model_smoke', text)
+        self.assertEqual(text.count('    timeout-minutes: 45'), 1)
+        self.assertIn('      check: "model_smoke"', text)
+        self.assertIn('inline-paid: ${{ inputs.model_smoke || false }}', text)
+        self.assertIn('inline-step-timeouts:', text)
+        for changes in [dict(timeout_minutes=20), dict(environment='production'),
+                        dict(runner='ubuntu-22.04'), dict(skip_default=True)]:
+            original = copy.deepcopy(check)
+            check.update(changes)
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, 'original production job'):
+                self.declaration()
+            check.clear()
+            check.update(original)
+
+    def test_native_evidence_names_and_absence_policy_remain_explicit(self):
+        record = self.data['production']
+        record.update(evidence=['production-smoke-evidence/'],
+                      artifact_name='anonymous-production-smoke-{run_id}', evidence_missing='warn')
+        with self.assertRaisesRegex(ValueError, 'explicitly registered'):
+            self.declaration()
+        self.config['artifacts'] = {'evidence_paths': ['production-smoke-evidence/']}
+        self.declaration()
+        self.assertEqual(operations.artifact_name('production', record,
+            {'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2'}), 'anonymous-production-smoke-123')
+        for template in ['../escape', '${{ secrets.KEY }}', 'evidence-{branch}', 'evidence\nname']:
+            record['artifact_name'] = template
+            with self.subTest(template=template), self.assertRaises(ValueError):
+                self.declaration()
+        record['artifact_name'] = 'native-{run_attempt}'
+        self.data['backup']['evidence_missing'] = 'ignore'
+        with self.assertRaisesRegex(ValueError, 'upload behavior'):
+            self.declaration()
+
+    def test_legacy_retention_keeps_its_separate_job_and_explicit_selection(self):
+        self.data['recovery']['legacy_retention'] = dict(runner='ubuntu-22.04',
+            timeout_minutes=10, environment='production', format='age-pb-v1')
+        self.write()
+        text = operations.workflow_files(self.root, 'b' * 40, self.config)['.github/workflows/recovery.yml']
+        self.assertIn('default: verify-transport', text)
+        transport, legacy = text.split('\n  retain:', 1)
+        self.assertIn("inputs.operation == 'verify-transport'", transport)
+        self.assertIn("inputs.operation == 'retain-legacy'", legacy)
+        self.assertIn('timeout-minutes: 10', legacy)
+        self.assertIn('runner: ubuntu-22.04', legacy)
+        self.assertIn('run-id: ${{ inputs.run-id }}', legacy)
+        for changes in [dict(format='plaintext'), dict(timeout_minutes=11), dict(environment='Production')]:
+            original = copy.deepcopy(self.data['recovery']['legacy_retention'])
+            self.data['recovery']['legacy_retention'].update(changes)
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                self.declaration()
+            self.data['recovery']['legacy_retention'] = original
+
     def test_authority_environment_and_unused_native_selectors_are_rejected(self):
         original = copy.deepcopy(self.data)
         mutations = [
@@ -157,6 +219,57 @@ class OperationalWorkflows(unittest.TestCase):
             record['step_timeouts'].update(changes)
             with self.subTest(changes=changes),self.assertRaises(ValueError):
                 operations.step_timeouts('security',record)
+
+    def test_canonical_generator_includes_only_valid_native_operational_callers(self):
+        self.write()
+        (self.root/'tests').mkdir()
+        (self.root/'tests/unit.py').write_text('assert 2 + 2 == 4\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="deploy/delivery.json"\n[operations]\ndefinition="deploy/operations.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        files=generate.workflow_files(self.root,'b'*40)
+        self.assertIn('.github/workflows/security-scan.yml',files)
+        self.assertIn('.github/workflows/recovery.yml',files)
+        self.assertIn('step-timeouts:',files['.github/workflows/security-scan.yml'])
+        with patch.object(operations,'workflow_files',return_value={'.github/workflows/ci.yml':'overwrite'}):
+            with self.assertRaisesRegex(ValueError,'one native lifecycle owner'):
+                generate.workflow_files(self.root,'b'*40)
+        self.data['production']['checks']=[]
+        self.write()
+        with self.assertRaises(ValueError):
+            configuration.load(self.root)
+
+    def test_artifact_security_selects_only_real_unique_named_assertions(self):
+        self.config['tests']={'integration':[dict(runner='python',path='deploy/health.py',name='native-artifact')]}
+        self.data['security'].update(artifact_validation=True, artifact_checks=['native-artifact'])
+        self.declaration()
+        original=copy.deepcopy(self.data['security'])
+        for changes in [dict(artifact_validation=False),dict(artifact_validation='true'),
+                        dict(artifact_checks=['missing']),dict(artifact_checks=['native-artifact']*2)]:
+            self.data['security']=original | changes
+            with self.subTest(changes=changes),self.assertRaises(ValueError):
+                self.declaration()
+
+    def test_source_only_read_only_audit_cannot_gain_registry_or_issue_capabilities(self):
+        self.data['security'].pop('deployed_policy')
+        self.data['security']['report']=False
+        self.write()
+        text=operations.workflow_files(self.root,'b'*40,self.config)['.github/workflows/security-scan.yml']
+        self.assertIn('cookbook-source-audit-no-report.yml@',text)
+        for capability in ['issues: write','packages: read','deployments: read']:
+            self.assertNotIn(capability,text)
+
+    def test_native_playwright_preserves_its_real_package_configuration(self):
+        package=self.root/'app';package.mkdir()
+        (package/'package.json').write_text('{}\n')
+        (package/'playwright.config.ts').write_text('export default {};\n')
+        self.config['node']={'packages':[{'directory':'app','manager':'bun'}]}
+        check=dict(runner='playwright',path='app/playwright.config.ts',cwd='app',manager='bun',timeout=1200)
+        self.data['production']['checks'].append(check)
+        self.declaration()
+        for changes in [dict(cwd='deploy'),dict(manager='npm'),dict(path='deploy/health.py')]:
+            original=copy.deepcopy(check);check.update(changes)
+            with self.subTest(changes=changes),self.assertRaises(ValueError):
+                self.declaration()
+            check.clear();check.update(original)
 
 
 if __name__ == '__main__':
