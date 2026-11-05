@@ -8,6 +8,18 @@ name: Recipe CI
       source:
         type: string
         required: true
+      recipe:
+        type: string
+        default: godot-addon
+      preview-environment:
+        type: string
+        default: ''
+      head:
+        type: string
+        default: ''
+      base:
+        type: string
+        default: ''
       merge-gate:
         type: boolean
         default: false
@@ -24,6 +36,7 @@ jobs:
     if: github.event_name == 'pull_request' && inputs.merge-gate
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/cookbook-validation.yml
     with:
       tools-ref: ${{ inputs.tools-ref }}
@@ -33,9 +46,10 @@ jobs:
       timeout-minutes: ${{ inputs.timeout-minutes }}
   full:
     name: Full source checks
-    if: github.event_name != 'pull_request' || !inputs.merge-gate
+    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && contains(fromJSON('["godot-addon","react-native"]'), inputs.recipe)
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/cookbook-validation.yml
     with:
       tools-ref: ${{ inputs.tools-ref }}
@@ -43,3 +57,28 @@ jobs:
       mode: full
       runner: ${{ inputs.runner }}
       timeout-minutes: ${{ inputs.timeout-minutes }}
+      head: ${{ inputs.head }}
+      base: ${{ inputs.base }}
+      preview-environment: ${{ inputs.recipe == 'react-native' && (github.event_name == 'pull_request' || inputs.head != '') && inputs.preview-environment || '' }}
+  native:
+    name: Native source checks
+    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && inputs.recipe == 'rust-cli'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/cookbook-native.yml
+    with:
+      tools-ref: ${{ inputs.tools-ref }}
+      source: ${{ inputs.source }}
+      runner: ${{ inputs.runner }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+      head: ${{ inputs.head }}
+      base: ${{ inputs.base }}
+  unsupported:
+    name: Require implemented recipe orchestration
+    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && !contains(fromJSON('["godot-addon","react-native","rust-cli"]'), inputs.recipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - run: echo 'Complete orchestration for this recipe is not enrolled yet'; exit 1

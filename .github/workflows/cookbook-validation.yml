@@ -17,6 +17,9 @@ name: Cookbook validation
       runner:
         type: string
         default: ubuntu-24.04
+      preview-environment:
+        type: string
+        default: ''
       release-bump:
         type: string
         default: ''
@@ -32,9 +35,15 @@ jobs:
     name: Make ${{ inputs.mode }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: ${{ inputs.timeout-minutes }}
+    environment: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && (github.event_name == 'pull_request' || (inputs.head != '' && inputs.base != '')) && 'Preview' || '' }}
+    defaults:
+      run:
+        shell: bash
     permissions:
       contents: read
+      actions: read
     env:
+      COOKBOOK_PREVIEW_CLERK_KEY: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && vars.CLERK_PUBLISHABLE_KEY || '' }}
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
       COOKBOOK_MODE: ${{ inputs.mode }}
@@ -48,12 +57,16 @@ jobs:
       - name: Validate immutable source and accepted cookbook identities
         env:
           GH_TOKEN: ${{ github.token }}
+          PREVIEW_ENVIRONMENT: ${{ inputs.preview-environment }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ -z "$PREVIEW_ENVIRONMENT" || ( "$PREVIEW_ENVIRONMENT" == Preview && "$COOKBOOK_MODE" == full && ( "$GITHUB_EVENT_NAME" == pull_request || ( -n "$REQUEST_HEAD" && -n "$REQUEST_BASE" ) ) ) ]]
           case "$COOKBOOK_MODE" in fast|full) ;; *) exit 1 ;; esac
           relation="$(gh api "repos/nicodes/tools/compare/$COOKBOOK_SHA...main" --jq .status)"
           [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Preserve Git source line endings
+        run: git config --global core.autocrlf false
       - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -88,6 +101,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Run Make gate
         id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 _cookbook/cookbook/ci.py --mode "$COOKBOOK_MODE" --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --release-bump "$RELEASE_BUMP" --head "$REQUEST_HEAD" --base "$REQUEST_BASE"
       - name: Upload accepted outputs and fresh evidence
         if: inputs.mode == 'full'

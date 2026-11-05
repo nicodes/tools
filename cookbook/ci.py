@@ -12,6 +12,7 @@ import subprocess
 from configuration import load, relative
 from generate import makefile, workflow_files
 import recipe
+import orchestration
 
 TOOLS = Path(__file__).resolve().parents[1]
 SHA = re.compile(r'[a-f0-9]{40}\Z')
@@ -73,6 +74,9 @@ def proof(root, source, tools, config):
         evidence[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     return {'version': 1, 'repository': os.environ.get('GITHUB_REPOSITORY'),
             'source_commit': source, 'source_tree': tree, 'cookbook_commit': tools,
+            'recipe': config['recipe'],
+            'configuration_sha256': hashlib.sha256(subprocess.check_output(
+                ['git', '-C', str(root), 'show', 'HEAD:cookbook.toml'], timeout=30)).hexdigest(),
             'status': 'passed', 'tracked_source_clean': True,
             'build_verified': True, 'tests_verified': True, 'test_groups': sorted(suites),
             'execution_context': context, 'artifacts': build['artifacts'], 'evidence': evidence}
@@ -82,10 +86,16 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
     if (head or base) and (not SHA.fullmatch(head) or not SHA.fullmatch(base)):
         raise ValueError('merge validation requires exact head and base identities together')
     config = load(root)
-    recipe.configure_environment(root, config)
+    model = orchestration.model(config)
     identity(root, source, tools)
-    if config['recipe'] != 'godot-addon':
-        raise ValueError('complete native platform orchestration for this recipe is not enrolled yet')
+    os.environ['COOKBOOK_STAGE'] = mode
+    matrix = None
+    matrix_module = None
+    if mode == 'full':
+        matrix_module = orchestration.matrix_module(config)
+        if matrix_module is not None:
+            matrix = matrix_module.prepare_host(root, config, source, tools)
+    recipe.configure_environment(root, config)
     if release_bump:
         if mode != 'full':
             raise ValueError('release acceptance requires full validation')
@@ -111,6 +121,8 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
     if hasattr(module, 'post_test_evidence'):
         module.post_test_evidence(root, config, environment, candidate)
     accepted = proof(root, source, tools, config)
+    if matrix_module is not None:
+        accepted = matrix_module.finalize_host(accepted, matrix)
     if head:
         accepted.update(head=head, base=base)
     receipt.parent.mkdir(parents=True, exist_ok=True)

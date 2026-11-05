@@ -11,9 +11,18 @@ RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
 
 def ci_settings(data):
     values = data.get('ci', {})
-    if not isinstance(values, dict) or set(values)-{'runner', 'timeout_minutes'}:
+    if not isinstance(values, dict) or set(values)-{'runner', 'timeout_minutes', 'godot', 'preview_environment'}:
         raise ValueError('CI settings require literal runner and existing bounded job budget')
-    result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30, **values}
+    if 'godot' in values and (data.get('recipe') != 'godot-game' or not isinstance(values['godot'], dict)):
+        raise ValueError('Godot CI metadata belongs to its application recipe')
+    preview = values.get('preview_environment', '')
+    if preview and (data.get('recipe') != 'react-native' or preview != 'Preview'):
+        raise ValueError('only the reviewed React Native Preview environment may bind candidate builds')
+    if not isinstance(preview, str):
+        raise ValueError('preview environment must be a literal name')
+    result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30, **{key: value for key, value in values.items() if key not in {'godot', 'preview_environment'}}}
+    if preview:
+        result['preview_environment'] = preview
     if (not isinstance(result['runner'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', result['runner'])
             or type(result['timeout_minutes']) is not int or not 1 <= result['timeout_minutes'] <= 180):
         raise ValueError('CI runner and job budget must be bounded source data')

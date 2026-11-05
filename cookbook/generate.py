@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 
 from configuration import load, ci_settings
+import orchestration
+import recipe as native_recipe
 
 
 def workflow_files(root, revision):
@@ -13,8 +15,7 @@ def workflow_files(root, revision):
         raise ValueError('cookbook workflows require a full source pin')
     config = load(root)
     ci = ci_settings(config)
-    if config['recipe'] != 'godot-addon':
-        raise ValueError('workflow callers for this recipe are not implemented yet')
+    model = orchestration.model(config)
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
     files = {'.github/workflows/ci.yml': header + '''name: Build & Test
 'on':
@@ -41,6 +42,7 @@ jobs:
     uses: nicodes/tools/.github/workflows/cookbook-ci.yml@PIN
     permissions:
       contents: read
+      actions: read
     with:
       tools-ref: ${{ inputs.tools || 'PIN' }}
       source: ${{ inputs.source || github.sha }}
@@ -69,8 +71,14 @@ jobs:
       tools-ref: PIN
       pull-request: ${{ inputs.pull-request }}
 '''.replace('PIN', revision)}
+    if model['recipe'] != 'godot-addon':
+        files['.github/workflows/ci.yml'] += '      recipe: ' + model['recipe'] + '\n'
+        if ci.get('preview_environment'):
+            files['.github/workflows/ci.yml'] += '      preview-environment: ' + ci['preview_environment'] + '\n'
     files['.github/workflows/ci.yml'] += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
+    if config.get('publication') and config['recipe'] != 'godot-addon':
+        raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):
         import publication_workflows
         files.update(publication_workflows.workflow_files(root, revision))
@@ -83,7 +91,7 @@ def makefile(root, revision):
     root = Path(root).resolve()
     config = load(root)
     recipe = config['recipe']
-    suites = ['lint', 'unit', 'security', *[s for s in ['integration', 'e2e'] if s in config.get('tests', {})]]
+    suites = native_recipe.test_suites(root, config)
     digest = hashlib.sha256((root / 'cookbook.toml').read_bytes()).hexdigest()
     capabilities = ['dev'] if config.get('dev') else []
     capabilities += ['db:' + name for name in ['status', 'migrate', 'seed', 'reset']
