@@ -36,6 +36,9 @@ class ReactNativeRecipe(unittest.TestCase):
             self.assertEqual(result['EXPO_PUBLIC_API_URL'], '')
             self.assertEqual(result['GITHUB_SHA'], 'a' * 40)
             self.assertEqual(result['GH_TOKEN'], 'test-context')
+        for name in ['APP_VERSION', 'GITHUB_SHA', 'GH_TOKEN', 'MISE_AUTO_INSTALL']:
+            with self.subTest(name=name), patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, 'authority'):
+                recipe.configure_environment(self.root, {'components': {'app': {'environment': {name: 'replacement'}}}})
 
     def test_preview_requires_public_input_only_when_compiling_the_app(self):
         config = {'components': {'app': {'preview_environment': {'EXPO_PUBLIC_API_URL': '/api'},
@@ -111,6 +114,17 @@ mprocs="0.9.6"
         self.assertEqual(calls[0][0], ['bun', '--no-env-file', 'run', '--cwd', str(self.root / 'app'), 'start', '--port', '8181'])
         self.assertEqual(calls[0][2], {'EXPO_NO_DOTENV': '1'})
         self.assertEqual(len(calls), 1)
+
+    def test_supervised_native_development_remains_long_lived_without_disabling_build_deadlines(self):
+        (self.root / 'internal/dev').mkdir(parents=True)
+        (self.root / 'internal/dev/stack.py').write_text('raise SystemExit(0)\n')
+        entry = {'runner': 'python', 'path': 'internal/dev/stack.py'}
+        calls = []
+        with patch.object(recipe, 'run', side_effect=lambda *args: calls.append(args)):
+            recipe.launch_development(self.root, {'dev': {'kind': 'native', 'program': entry}}, {'APP_VERSION': self.source})
+            recipe.native(self.root, [entry], {'APP_VERSION': self.source})
+        self.assertIsNone(calls[0][-1])
+        self.assertEqual(calls[1][-1], 300)
 
     def test_database_reset_isolated_to_local_identity_and_owned_checkout_lease(self):
         (self.root / 'ghenv.json').write_text('{"version":1}')

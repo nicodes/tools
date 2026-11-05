@@ -22,6 +22,9 @@ from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
 ENVIRONMENT = re.compile('[A-Z][A-Z0-9_]*\\Z')
+PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
+                         'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE',
+                         'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
 PHASES = {'setup', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
 
 
@@ -69,14 +72,18 @@ def configure_environment(root, config):
     for name, value in defaults.items():
         if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str) or '\0' in value:
             raise ValueError('application build environment contains an invalid literal')
+        if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_')):
+            raise ValueError('application literals may not replace source, workflow or pinned SDK authority')
         values[name] = os.environ.get(name, value)
     if preview_context(os.environ):
         for name, value in app.get('preview_environment', {}).items():
             if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str):
                 raise ValueError('preview public environment must use literal named values')
+            if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_')):
+                raise ValueError('preview literals may not replace source, workflow or pinned SDK authority')
             values[name] = os.environ.get(name, value)
         for name, source in app.get('preview_variables', {}).items():
-            if not ENVIRONMENT.fullmatch(name) or source != 'COOKBOOK_PREVIEW_CLERK_KEY':
+            if name != 'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY' or source != 'COOKBOOK_PREVIEW_CLERK_KEY':
                 raise ValueError('preview variables must select the bounded public Clerk key input')
             value = os.environ.get(source, '')
             if value:
@@ -143,7 +150,7 @@ def run(arguments, root, environment, timeout=None):
     subprocess.run(arguments, cwd=root, env=environment, check=True, timeout=timeout)
 
 
-def native(root, entries, environment, *, sdk=False):
+def native(root, entries, environment, *, sdk=False, long_running=False):
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'cwd', 'args', 'timeout', 'environment', 'phase', 'stages'}:
             raise ValueError('invalid native product component entry')
@@ -156,8 +163,8 @@ def native(root, entries, environment, *, sdk=False):
         arguments = entry.get('args', [])
         if not isinstance(arguments, list) or any(not isinstance(value, str) or '\0' in value for value in arguments):
             raise ValueError('native product arguments must be literal strings')
-        timeout = entry.get('timeout', 300)
-        if type(timeout) is not int or not 1 <= timeout <= 3600:
+        timeout = None if long_running else entry.get('timeout', 300)
+        if not long_running and (type(timeout) is not int or not 1 <= timeout <= 3600):
             raise ValueError('native product operations require bounded deadlines')
         values = entry.get('environment', {})
         if not isinstance(values, dict) or any(not ENVIRONMENT.fullmatch(key) or not isinstance(value, str) for key, value in values.items()):
@@ -484,7 +491,7 @@ def launch_development(root, config, environment):
         run(['bun', '--no-env-file', 'run', '--cwd', str(directory), 'start', '--port', str(port)],
             root, environment | {'EXPO_NO_DOTENV': '1'})
     elif values.get('kind') == 'native' and values.get('program'):
-        native(root, [values['program']], environment)
+        native(root, [values['program']], environment, long_running=True)
     else:
         raise ValueError('development requires an implemented Expo or native product driver')
 
