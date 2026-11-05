@@ -445,9 +445,10 @@ def native_godot(root, config, entry, env):
     argv += entry.get('args', [])
     # The native helper receives explicit project paths; no user-owned task or
     # shell implementation is introduced by this metadata.
-    result = helper('godot-game-runner').main(argv, timeout=entry.get('timeout', 180),
-        sentinel=entry.get('sentinel'), forbidden=settings.get('forbidden_diagnostics', []), environment=env, cwd=cwd)
-    if result:
+    result = helper('godot-suite').run_one(argv,root/'.artifacts/godot-tests',name=entry['path'],
+        timeout=entry.get('timeout',180),sentinel=entry.get('sentinel'),
+        forbidden=settings.get('forbidden_diagnostics',[]),environment=env,cwd=cwd)
+    if result['exit_code']:
         raise ValueError('native Godot assertion failed: ' + entry['path'])
 
 

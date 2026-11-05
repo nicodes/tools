@@ -17,15 +17,15 @@ class DeferredAutoloadControls(unittest.TestCase):
         self.entry={'runner':'godot-check','path':'app/tests/node.gd','timeout':180,'policy':{'deferred_autoloads':True}}
 
     def test_real_owned_script_remains_the_deferred_argument_and_preserves_deadline_and_failures(self):
-        runner=Mock();runner.main.return_value=0
+        runner=Mock();runner.run_one.return_value={'exit_code':0}
         environment={'GODOT_BIN':'reviewed-engine'}
         with patch.object(game,'helper',return_value=runner):game.native_godot(self.root,self.config,self.entry,environment)
-        argv=runner.main.call_args.args[0]
+        argv=runner.run_one.call_args.args[0]
         self.assertEqual(argv,['reviewed-engine','--headless','--path',str(self.root/'app'),'--script',
             str(game.TOOLS/'helpers/godot-test-entry.gd'),'--','res://tests/node.gd'])
-        self.assertEqual(runner.main.call_args.kwargs['timeout'],180)
-        self.assertEqual(runner.main.call_args.kwargs['forbidden'],['native guard'])
-        runner.main.return_value=1
+        self.assertEqual(runner.run_one.call_args.kwargs['timeout'],180)
+        self.assertEqual(runner.run_one.call_args.kwargs['forbidden'],['native guard'])
+        runner.run_one.return_value={'exit_code':1}
         with patch.object(game,'helper',return_value=runner),self.assertRaisesRegex(ValueError,'app/tests/node.gd'):
             game.native_godot(self.root,self.config,self.entry,environment)
 
@@ -35,7 +35,7 @@ class DeferredAutoloadControls(unittest.TestCase):
         for change in [{'path':'tests/outside.gd'},{'args':['unreviewed']},{'policy':{'deferred_autoloads':'yes'}}]:
             with self.subTest(change=change),patch.object(game,'helper',return_value=runner),self.assertRaises(ValueError):
                 game.native_godot(self.root,self.config,self.entry|change,{'GODOT_BIN':'reviewed-engine'})
-        runner.main.assert_not_called()
+        runner.run_one.assert_not_called()
 
 
 if __name__=='__main__':unittest.main()

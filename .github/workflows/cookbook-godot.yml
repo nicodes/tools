@@ -149,6 +149,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 _cookbook/cookbook/godot_ci.py run --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --entry "$GODOT_ENTRY"
+      - name: Preserve native diagnostics independently of acceptance
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-native-diagnostics-${{ inputs.source }}-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/godot-tests/**/output.log
+            .artifacts/godot-tests/**/summary.json
+            .artifacts/godot-tests/**/timings.jsonl
+            .artifacts/godot-tests.jsonl
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload actual source-bound partial evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -221,6 +234,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 _cookbook/cookbook/godot_ci.py run --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --entry "$GODOT_ENTRY"
+      - name: Preserve native diagnostics independently of acceptance
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-native-diagnostics-${{ inputs.source }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/godot-tests/**/output.log
+            .artifacts/godot-tests/**/summary.json
+            .artifacts/godot-tests/**/timings.jsonl
+            .artifacts/godot-tests.jsonl
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload actual source-bound partial evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -289,6 +315,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 _cookbook/cookbook/godot_ci.py run --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --entry "$GODOT_ENTRY"
+      - name: Preserve native diagnostics independently of acceptance
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-native-diagnostics-${{ inputs.source }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/godot-tests/**/output.log
+            .artifacts/godot-tests/**/summary.json
+            .artifacts/godot-tests/**/timings.jsonl
+            .artifacts/godot-tests.jsonl
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload actual source-bound partial evidence
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
