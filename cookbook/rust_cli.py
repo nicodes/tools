@@ -120,7 +120,7 @@ def verification_scope(root, config):
         relative(root, name)
     return helper('verification').scope(artifacts=paths,
         environment=[*artifacts.get('environment', ['VERSION', 'COMMIT', 'DATE', 'RUST_TARGET']),
-                     *(['COOKBOOK_NATIVE_COMPONENTS'] if config.get('components', {}).get('native') else [])],
+                     *(['COOKBOOK_NATIVE_COMPONENTS', 'COOKBOOK_NATIVE_BUILD_CHECKS'] if config.get('components', {}).get('native') else [])],
         revision_environment=artifacts.get('revision_environment', ['COMMIT']))
 
 
@@ -458,6 +458,10 @@ def main():
             if contexts:
                 for component, values in contexts:
                     rust_component.validate_build(root, [component], values, run, target=env.get('RUST_TARGET'))
+                source_components = [value for value in components(config) if value.get('build', {}).get('enabled') is False
+                                     and value.get('lint', {}).get('enabled') is not False]
+                if source_components:
+                    rust_component.validate_build(root, source_components, env, run, target=env.get('RUST_TARGET'))
             else:
                 rust_component.validate_build(root, components(config), env, run, target=env.get('RUST_TARGET'))
             if config.get('components', {}).get('rust_tests'):
