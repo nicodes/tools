@@ -21,11 +21,12 @@ import rust_staging
 import source_policy
 import application_fixtures
 import application_development
+import komizo_sdk
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
 ENVIRONMENT = re.compile('[A-Z][A-Z0-9_]*\\Z')
-PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
+PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'KOMIZO_ACTIONS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
                          'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE', 'COOKBOOK_PREVIEW_NUMBER',
                          'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
 PHASES = {'setup', 'lint', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
@@ -68,6 +69,11 @@ def configure_environment(root, config):
               'MISE_TRUSTED_CONFIG_PATHS': str(root)}
     if os.environ.get('APP_VERSION') not in {None, '', revision}:
         raise ValueError('APP_VERSION must match this exact source checkout')
+    komizo=komizo_sdk.source_root(root,config)
+    if komizo is not None:
+        if os.environ.get('KOMIZO_ACTIONS_ROOT') not in {None,'',str(komizo)}:
+            raise ValueError('KOMIZO_ACTIONS_ROOT must select this checkout exact accepted SDK')
+        values['KOMIZO_ACTIONS_ROOT']=str(komizo)
     app = config.get('components', {}).get('app', {})
     defaults = app.get('environment', {})
     if not isinstance(defaults, dict):
@@ -185,7 +191,7 @@ def phase(root, config, environment, name, stage='full'):
 def cargo_records(config, environment):
     records = []
     for value in rust_components(config):
-        record = {key: item for key, item in value.items() if key != 'output_directory'}
+        record = {key: item for key, item in value.items() if key not in {'output_directory','output_names'}}
         if any(key in PROTECTED_ENVIRONMENT or key.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')) for key in record.get('environment', {})):
             raise ValueError('Rust component environment may not replace execution authority')
         record['environment'] = {key: item.replace('{revision}', environment['APP_VERSION'])
@@ -200,6 +206,7 @@ def setup(root, config, environment):
     if pin != '.'.join(map(str, sys.version_info[:3])):
         raise ValueError('setup requires the exact caller-pinned Python SDK; run make setup')
     run(['mise', 'install', *required_tools(root, config, stage)], root, environment)
+    komizo_sdk.setup(root,config,environment)
     if stage in {'fast', 'full', 'local'}:
         source_policy.setup(root, config, environment)
     def sdk(arguments, directory, values, timeout=None):
@@ -499,6 +506,7 @@ def main():
         environment = configure_environment(root, config)
         if args.operation not in {'setup', 'clean', '_clean', 'dev:stop', 'dev:logs', '_stop-services'}:
             check_sdks(root, config, args.operation, environment, args.suite)
+            komizo_sdk.check(root,config,environment)
         if args.operation == 'setup':
             setup(root, config, environment)
         elif args.operation == 'fmt':

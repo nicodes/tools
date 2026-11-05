@@ -36,9 +36,18 @@ class ReactNativeRecipe(unittest.TestCase):
             self.assertEqual(result['EXPO_PUBLIC_API_URL'], '')
             self.assertEqual(result['GITHUB_SHA'], 'a' * 40)
             self.assertEqual(result['GH_TOKEN'], 'test-context')
-        for name in ['APP_VERSION', 'GITHUB_SHA', 'GH_TOKEN', 'MISE_AUTO_INSTALL']:
+        for name in ['APP_VERSION', 'GITHUB_SHA', 'GH_TOKEN', 'MISE_AUTO_INSTALL', 'KOMIZO_ACTIONS_ROOT']:
             with self.subTest(name=name), patch.dict(os.environ, {}, clear=True), self.assertRaisesRegex(ValueError, 'authority'):
                 recipe.configure_environment(self.root, {'components': {'app': {'environment': {name: 'replacement'}}}})
+
+    def test_declared_komizo_source_is_bound_without_a_hidden_setup_or_ambient_override(self):
+        expected=self.root/'.artifacts/sdk/komizo/source'
+        with patch.object(recipe.komizo_sdk,'source_root',return_value=expected),patch.dict(os.environ,{},clear=True):
+            self.assertEqual(recipe.configure_environment(self.root,{})['KOMIZO_ACTIONS_ROOT'],str(expected))
+            self.assertFalse(expected.exists())
+        with patch.object(recipe.komizo_sdk,'source_root',return_value=expected),\
+             patch.dict(os.environ,{'KOMIZO_ACTIONS_ROOT':'/unreviewed/source'},clear=True):
+            with self.assertRaisesRegex(ValueError,'exact accepted SDK'):recipe.configure_environment(self.root,{})
 
     def test_preview_requires_public_input_only_when_compiling_the_app(self):
         config = {'components': {'app': {'preview_environment': {'EXPO_PUBLIC_API_URL': '/api'},
