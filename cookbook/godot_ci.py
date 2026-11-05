@@ -810,7 +810,27 @@ def execute_entry(root, source, tools, entry_id):
             raise ValueError('Godot worker products differ from the declared builder')
         suite = 'unit' if entry['kind'] == 'unit' else entry['suite']
         os.environ['COOKBOOK_GODOT_ENTRY'] = entry_id
-        subprocess.run(['make', '--no-print-directory', 'test:' + suite], cwd=root, env=os.environ, check=True)
+        selection = None
+        if entry['kind'] == 'unit':
+            if Path.cwd().resolve() != root.resolve() or not SHA.fullmatch(source):
+                raise ValueError('native selection diagnostics require the bound exact source checkout')
+            _, run, attempt = run_identity(os.environ)
+            inventory = plan(root, config)['godot_unit_inventory']
+            selected = partition(inventory, entry['shard'])
+            if entry['workers'] != 4 or selected != entry['groups']:
+                raise ValueError('native selection diagnostics require the actual native shard and workers')
+            selection = {'source_commit': source, 'run_id': run, 'attempt': attempt,
+                         'shard': entry['shard'], 'workers': entry['workers'], 'inventory': inventory,
+                         'selected': selected, 'status': 'running'}
+            ci.verification().write(Path('.artifacts/godot-test-selection.json'), selection)
+        completed = False
+        try:
+            subprocess.run(['make', '--no-print-directory', 'test:' + suite], cwd=root, env=os.environ, check=True)
+            completed = True
+        finally:
+            if selection is not None:
+                selection['status'] = 'passed' if completed else 'failed'
+                ci.verification().write(Path('.artifacts/godot-test-selection.json'), selection)
     export_packet(root, collect_partial(root, config, source, tools, entry, build))
 
 
