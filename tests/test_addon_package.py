@@ -109,6 +109,17 @@ class AddonPackage(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'closed manifest'):
             package.verify(self.archive, self.manifest, installed=installed)
 
+    def test_archive_only_uid_verification_cannot_skip_the_policy(self):
+        (self.source/'script.gd').write_text('extends Node\n')
+        self.manifest.write_text('plugin.cfg\nscript.gd\n')
+        package.build(self.source, self.manifest, self.archive)
+        with self.assertRaisesRegex(ValueError, 'UID sidecar'):
+            package.verify(self.archive, self.manifest, script_uids=True)
+        (self.source/'script.gd.uid').write_text('uid://valid\n')
+        self.manifest.write_text('plugin.cfg\nscript.gd\nscript.gd.uid\n')
+        package.build(self.source, self.manifest, self.archive)
+        package.verify(self.archive, self.manifest, script_uids=True)
+
     def test_non_regular_archive_entries_cannot_pass_as_payload(self):
         self.archive.parent.mkdir()
         with zipfile.ZipFile(self.archive, 'w') as archive:

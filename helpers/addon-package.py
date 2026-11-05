@@ -84,6 +84,16 @@ def verify(archive, manifest, source=None, installed=None, script_uids=False):
                 raise ValueError('archive bytes differ from the current package source')
         if package.testzip() is not None:
             raise ValueError('package checksum failed')
+        if script_uids:
+            seen = set()
+            for name in expected:
+                if name.endswith('.gd'):
+                    if name + '.uid' not in expected:
+                        raise ValueError('shipped GDScript requires a UID sidecar: ' + name)
+                    uid = package.read(name + '.uid').decode('utf-8').strip()
+                    if not re.fullmatch(r'uid://[a-z0-9]+', uid) or uid in seen:
+                        raise ValueError('shipped script UIDs must be valid and unique')
+                    seen.add(uid)
         if installed is not None:
             copies = source_files(installed, manifest, script_uids)
             for name in expected:
