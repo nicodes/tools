@@ -19,6 +19,7 @@ import godot_package
 import godot_sdk
 import node_component
 import images
+import application_development
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -130,6 +131,27 @@ def validate_config(root, config):
         godot_security.declaration(root, config)
     if config.get('security',{}).get('auth_policy'):
         relative(root,config['security']['auth_policy'],exists=True)
+    development=config.get('dev')
+    if development is not None:
+        if not isinstance(development,dict) or development.get('kind') not in {None,'native'}:
+            raise ValueError('Godot development requires an editor or owned native application driver')
+        if development.get('kind')=='native':
+            if set(development)-{'kind','identity','project_prefix','program','cleanup','cleanup_compose','capture_output'}:
+                raise ValueError('unsupported native application development setting')
+            if type(development.get('capture_output',False)) is not bool:
+                raise ValueError('development output capture must be explicit')
+            relative(root,development.get('identity','ghenv.json'),exists=True)
+            development_project(root,config)
+            for entry in [development.get('program'),*([development['cleanup']] if development.get('cleanup') else [])]:
+                application_development.native_entry(root,entry,{'APP_VERSION':'0'*40},long_running=True,
+                    allowed_roots={'app','api','core','tests'})
+            for name in development.get('cleanup_compose',[]):relative(root,name,exists=True)
+        elif set(development)-{'mode','state','log'} or development.get('mode','editor') not in {'editor','run'}:
+            raise ValueError('unsupported Godot editor session setting')
+    for name,entry in config.get('database',{}).items():
+        if name not in {'status','migrate','seed','reset'} or config.get('dev',{}).get('kind')!='native':
+            raise ValueError('database operations require an implemented native application lifecycle')
+        application_development.native_entry(root,entry,{'APP_VERSION':'0'*40},allowed_roots={'app','api','core','tests'})
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
 
@@ -147,7 +169,7 @@ def package_linters(config):
 def required_tools(root, config, stage='full'):
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
     components = config.get('components', {})
-    if stage == 'full':
+    if stage in {'full','local'}:
         mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
         if components.get('rust'):
             mandatory.update({'rust', 'cargo:cargo-audit'})
@@ -214,6 +236,53 @@ def configure_environment(root, config):
     return environment(root, config)
 
 
+
+def development_api():
+    from types import SimpleNamespace
+    return SimpleNamespace(**{name:globals()[name] for name in [
+        'run','native','select_port','pinned_ghenv','development_project',
+        'isolated_operation','stop_services','helper']})
+
+
+def native(root, entries, environment, *, sdk=False, long_running=False):
+    return application_development.native(root,entries,environment,api=development_api(),
+        sdk=sdk,long_running=long_running,allowed_roots={'app','api','core','tests'},
+        protected_environment={'SOURCE_COMMIT','APP_VERSION','CI','TOOLS_ROOT','GH_TOKEN','GITHUB_TOKEN','TOOLS_VERIFICATION_SESSION','GOTOOLCHAIN','RUSTUP_AUTO_INSTALL'})
+def development_project(root, config=None):
+    return application_development.development_project(root, config)
+
+def select_port(preferred, attempts=100):
+    return application_development.select_port(preferred, attempts)
+
+def pinned_ghenv(root, environment):
+    return application_development.pinned_ghenv(root, environment)
+
+def launch_development(root, config, environment):
+    return application_development.launch_development(root, config, environment, api=development_api())
+
+def clean_outputs(root, config, environment):
+    return application_development.clean_outputs(root, config, environment, api=development_api())
+
+def stop_services(root, config, environment):
+    return application_development.stop_services(root, config, environment, api=development_api())
+
+def isolated_operation(root, config, environment, operation):
+    return application_development.isolated_operation(root, config, environment, operation, api=development_api())
+
+def development(root, config, environment, operation):
+    return application_development.development(root, config, environment, operation, api=development_api())
+
+def database(root, config, environment, operation):
+    return application_development.database(root, config, environment, operation, api=development_api())
+
+
+def check_development_sdks(root, config, environment, operation, suite=None):
+    pins=tomllib.loads((root/'mise.toml').read_text()).get('tools',{})
+    if pins.get('python')!='.'.join(map(str,sys.version_info[:3])):
+        raise ValueError('use the exact caller-pinned Python SDK; run make setup first')
+    for name in required_tools(root,config,'local'):
+        run(['mise','where',name],root,environment)
+
 def test_suites(root, config):
     if (not config.get('tests', {}).get('unit') and not config.get('components', {}).get('rust')
             and not any(value.get('test') or value.get('test_paths') for value in packages(config))):
@@ -232,7 +301,8 @@ def setup(root, config, env):
         entry = next(value for value in matrix['requirements'] if value['kind'] == 'host')
         godot_ci.setup_worker(root, config, env, entry)
         return
-    stage = os.environ.get('COOKBOOK_STAGE', 'full')
+    requested_stage = os.environ.get('COOKBOOK_STAGE', 'full')
+    stage = 'full' if requested_stage == 'local' else requested_stage
     selected = required_tools(root, config, stage)
     run(['mise', 'install', *selected], root, env)
     components = config.get('components', {})
@@ -251,12 +321,12 @@ def setup(root, config, env):
             sdk(['rustup', 'component', 'add', '--toolchain', pins['rust'], 'rustfmt'], root, env)
     if stage in {'full', 'security', 'fast'}:
         node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
-    if components.get('image_security') and stage in {'full','security'} and env.get('COOKBOOK_GODOT_ENTRY')!='build':
+    if components.get('image_security') and stage in {'full','security'} and env.get('COOKBOOK_GODOT_ENTRY')!='build' and requested_stage!='local':
         import godot_security
         godot_security.setup(root,config,env,run)
     if stage != 'full':
         return
-    if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY'):
+    if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY') and requested_stage!='local':
         import godot_browser
         godot_browser.setup(root, config, env)
     directory, settings = project(root, config)
@@ -435,7 +505,8 @@ def compile_outputs(root, config, env):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['setup', 'fmt', 'build', 'validate', '_build', 'test',
-        'test:lint', 'test:unit', 'test:integration', 'test:e2e', 'test:security', '_test', 'clean', 'dev', 'dev:stop', 'dev:logs'])
+        'test:lint', 'test:unit', 'test:integration', 'test:e2e', 'test:security', '_test', 'clean', 'dev', 'dev:stop', 'dev:logs', '_dev', '_stop-services', '_clean', '_database',
+        'db:status','db:migrate','db:seed','db:reset'])
     parser.add_argument('--suite')
     args = parser.parse_args()
     root = Path.cwd().resolve()
@@ -446,7 +517,7 @@ def main():
         validate_config(root, config)
         env = environment(root, config)
         os.environ.update(env)
-        if args.operation not in {'setup', 'clean', 'dev:stop', 'dev:logs'} and (root / 'mise.toml').is_file():
+        if args.operation not in {'setup', 'clean', '_clean', 'dev:stop', 'dev:logs', '_stop-services'} and (root / 'mise.toml').is_file():
             pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
             if pins.get('python') != '.'.join(map(str, sys.version_info[:3])):
                 raise ValueError('use the exact caller-pinned Python SDK; run make setup first')
@@ -457,7 +528,7 @@ def main():
                 import godot_ci
                 selected = godot_ci.worker_tools(root, config, env)
             else:
-                selected = required_tools(root, config, stage)
+                selected = required_tools(root, config, 'local' if args.operation in {'dev','_dev','_database','db:status','db:migrate','db:seed','db:reset'} else stage)
             for name in selected:
                 subprocess.run(['mise', 'where', name], cwd=root, env=env, check=True, stdout=subprocess.DEVNULL)
         verify = helper('verification')
@@ -473,11 +544,26 @@ def main():
             if config.get('components', {}).get('rust'):
                 rust_component.format(root, config['components']['rust'], env, run)
         elif args.operation == 'clean':
-            if config.get('dev'):
+            if config.get('dev',{}).get('kind')=='native':
+                run([sys.executable,str(TOOLS/'helpers/dev.py'),'clean','--state','.local/dev','--',
+                     *isolated_operation(root,config,env,'_clean')],root,env)
+            elif config.get('dev'):
                 with helper('dev').checkout_lease(root):
                     helper('clean').clean(root, config.get('clean', {}).get('paths', []))
             else:
                 helper('clean').clean(root, config.get('clean', {}).get('paths', []))
+        elif args.operation == '_clean':
+            clean_outputs(root,config,env)
+        elif args.operation == '_dev':
+            launch_development(root,config,env)
+        elif args.operation == '_stop-services':
+            stop_services(root,config,env)
+        elif args.operation == '_database':
+            entry=config.get('database',{}).get(args.suite)
+            if not isinstance(entry,dict):raise ValueError('database operation is not implemented')
+            native(root,[entry],env)
+        elif args.operation.startswith('db:'):
+            database(root,config,env,args.operation)
         elif args.operation == '_build':
             compile_outputs(root, config, env)
         elif args.operation == 'build':
@@ -512,6 +598,8 @@ def main():
             if suite in {'integration', 'e2e'}:
                 current_build(root, config, verify)
             verify.run_command('test', suite, declaration, [sys.executable, str(Path(__file__).resolve()), '_test', '--suite', suite], Path('.artifacts/verification'))
+        elif config.get('dev',{}).get('kind')=='native':
+            development(root,config,env,args.operation)
         else:
             directory, _ = project(root, config)
             state = config.get('dev', {}).get('state', '.local/dev')
