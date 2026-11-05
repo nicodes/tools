@@ -33,12 +33,35 @@ def setup(root, config, environment, run):
 
 
 def scan(root, config, environment, run):
+    definition=images.definition(root,config)
+    records=list(zip(images.components(definition),images.references(definition,environment['SOURCE_COMMIT']),strict=True))
+    return scan_references(root,config,environment,run,records)
+
+
+def scan_references(root, config, environment, run, records):
+    """Scan only literal source-family refs; historical authority is the caller's verified CD record.
+
+    This creates scanner evidence only. It never issues a current-source build,
+    product-test or aggregate acceptance receipt for historical images.
+    """
     import sys
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'helpers'))
     from image_security_report import blocking_findings
     directory,scanner=declaration(root,config)
     definition=images.definition(root,config)
-    records=zip(images.components(definition),images.references(definition,environment['SOURCE_COMMIT']),strict=True)
+    components=images.components(definition)
+    current=dict(zip(components,images.references(definition,environment['SOURCE_COMMIT']),strict=True))
+    if (not isinstance(records,(list,tuple)) or not 1<=len(records)<=len(components)
+            or any(not isinstance(record,(list,tuple)) or len(record)!=2 for record in records)):
+        raise ValueError('image scans require a bounded nonempty component/reference inventory')
+    seen=set()
+    for name,reference in records:
+        if not isinstance(name,str) or name not in components or name in seen or not isinstance(reference,str):
+            raise ValueError('image scans require distinct declared shipping components')
+        seen.add(name)
+        immutable=definition['image_base']+'-'+name+'@sha256:'
+        if reference!=current[name] and not (reference.startswith(immutable) and re.fullmatch('[a-f0-9]{64}',reference[len(immutable):])):
+            raise ValueError('image scans require this source tag or the exact immutable component family')
     run(['docker','image','inspect',scanner],root,environment)
     for name,reference in records:
         output=relative(root,(directory/name).relative_to(root).as_posix());output.mkdir(parents=True,exist_ok=True)

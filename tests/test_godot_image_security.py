@@ -56,6 +56,25 @@ class ImageSecurityControls(unittest.TestCase):
         with patch.object(security.images,'definition',return_value=self.definition),self.assertRaises(subprocess.CalledProcessError):
             security.scan(self.root,self.config,{'SOURCE_COMMIT':'b'*40},missing)
 
+    def test_historical_ref_is_scanned_without_retagging_or_current_source_proof(self):
+        reference='ghcr.io/fixture/game-gate@sha256:'+'c'*64
+        with patch.object(security.images,'definition',return_value=self.definition):
+            security.scan_references(self.root,self.config,{'SOURCE_COMMIT':'b'*40},self.execute,[('gate',reference)])
+        self.assertEqual([argv[-1] for argv,_ in self.commands[1:]],[reference,reference])
+        self.assertFalse(any(any(value in argv for value in ['tag','build','push','pull']) for argv,_ in self.commands))
+        self.assertFalse((self.root/'.artifacts/verification').exists())
+
+    def test_historical_scan_inventory_cannot_escape_declared_image_family(self):
+        invalid=[[],[('gate','ghcr.io/other/game-gate@sha256:'+'c'*64)],
+            [('gate','ghcr.io/fixture/game-gate:historical')],[('config','ghcr.io/fixture/game-config@sha256:'+'c'*64)],
+            [('gate','ghcr.io/fixture/game-gate@sha256:'+'C'*64)],
+            [('gate','ghcr.io/fixture/game-gate@sha256:'+'c'*64)]*2]
+        with patch.object(security.images,'definition',return_value=self.definition):
+            for records in invalid:
+                with self.subTest(records=records),self.assertRaises(ValueError):
+                    security.scan_references(self.root,self.config,{'SOURCE_COMMIT':'b'*40},self.execute,records)
+        self.assertEqual(self.commands,[])
+
     def test_report_and_sdk_pins_cannot_escape_native_authority(self):
         self.config['components']['image_security']['reports']='app'
         with self.assertRaises(ValueError):security.declaration(self.root,self.config)
