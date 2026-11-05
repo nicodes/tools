@@ -240,8 +240,7 @@ def reload(root, source, archives, expected, environment, timeout=600):
                               text=True, timeout=min(cap, remaining(deadline))).stdout
 
     listing = execute(['docker', 'image', 'ls', '--all', '--digests', '--no-trunc', '--format', '{{json .}}'])
-    present = set()
-    targets = set(expected.values())
+    rows, present = [], {}
     for line in listing.splitlines():
         row = json.loads(line, object_pairs_hook=unique_object)
         if not isinstance(row, dict) or not isinstance(row.get('ID'), str) or not DIGEST.fullmatch(row['ID']):
@@ -251,9 +250,16 @@ def reload(root, source, archives, expected, environment, timeout=600):
             raise ValueError('Docker image metadata omits tag or digest scope')
         reference = repository + ':' + tag
         if reference in expected:
-            if row['ID'] != expected[reference]:
-                raise ValueError('existing source tag points to a different image ID')
-            present.add(reference)
+            if reference in present and present[reference] != row['ID']:
+                raise ValueError('existing source tag has ambiguous cache image IDs')
+            present[reference] = row['ID']
+        rows.append((row, reference))
+    # A source tag can name another build of the same commit. Its cached ID is
+    # not accepted build evidence, but removing that tag still requires protecting
+    # every alias/digest/container of BOTH the prior and incoming image IDs.
+    targets = set(expected.values()) | set(present.values())
+    for row, reference in rows:
+        repository, tag = row['Repository'], row['Tag']
         if row['ID'] in targets and (row['Digest'] not in {'', '<none>'}
                 or (reference not in expected and (repository, tag) != ('<none>', '<none>'))):
             raise ValueError('accepted cache image has an out-of-scope alias or digest')

@@ -143,6 +143,44 @@ def main():
             assert inspect(alias)['Id'] == expected[refs[1]]
             assert all(inspect(ref)['Id'] == value['id'] for ref, value in images.items())
             docker('image', 'rm', alias)
+            # Separate builds of one source may have distinct configuration IDs.
+            # Prepare that ordinary cache state without altering accepted inputs.
+            prior = {}
+            for index, reference in enumerate(refs):
+                path = source_root / ('.artifacts/prior-' + str(index) + '.tar')
+                prior[reference] = image_archive(path, reference,
+                    [base, middle] + ([upper] if index else []), 'prior-build-' + str(index))
+                assert prior[reference]['id'] != expected[reference]
+                docker('image', 'load', '--input', str(path), timeout=60)
+            assert all(inspect(ref)['Id'] == value['id'] for ref, value in prior.items())
+            for identity in [prior[refs[1]]['id'], expected[refs[1]]]:
+                target = docker('container', 'create', '--network', 'none', identity, '/never-started').stdout.strip()
+                refuse_without_cache_effect('a prior or incoming created container bypassed reset admission')
+                assert json.loads(docker('container', 'inspect', target).stdout)[0]['State']['Status'] == 'created'
+                assert all(inspect(ref)['Id'] == value['id'] for ref, value in prior.items())
+                docker('container', 'rm', target)
+            for identity in [prior[refs[1]]['id'], expected[refs[1]]]:
+                docker('image', 'tag', identity, alias)
+                refuse_without_cache_effect('a prior or incoming foreign alias bypassed reset admission')
+                assert inspect(alias)['Id'] == identity
+                assert all(inspect(ref)['Id'] == value['id'] for ref, value in prior.items())
+                docker('image', 'rm', alias)
+            commands = []
+            native_run = subprocess.run
+            def observed(command, *args, **kwargs):
+                commands.append(command)
+                return native_run(command, *args, **kwargs)
+            with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
+                replaced = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
+            removal, = [command for command in commands if command[:3] == ['docker', 'image', 'rm']]
+            assert removal[3:5] == ['--no-prune', '--'] and set(removal[5:]) == set(refs)
+            assert replaced == images
+            assert all(inspect(ref)['Id'] == value['id'] and inspect(ref)['RootFS']['Layers'] == value['rootfs']
+                       for ref, value in images.items())
+            assert inspect(sentinel)['Id'] == sentinel_image['id']
+            kept = json.loads(docker('container', 'inspect', unrelated).stdout)[0]
+            assert kept['Image'] == sentinel_image['id'] and kept['State']['Status'] == 'created'
+            print('NATIVE_IMAGE_CACHE_PRIOR_BUILD_CONTROL_OK: distinct prior IDs replaced; both ID sets protected; unrelated image/container retained; no container started', flush=True)
             rows = [json.loads(value) for value in docker('image', 'ls', '--all', '--no-trunc',
                 '--format', '{{json .}}').stdout.splitlines()]
             ancestors = {}

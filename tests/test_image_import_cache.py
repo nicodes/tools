@@ -244,16 +244,56 @@ class ImageImportCacheControls(unittest.TestCase):
         with patch.object(cache, 'MAX_ARCHIVE', 1):
             self.refused_before_docker()
 
-    def test_foreign_alias_digest_and_different_existing_source_id_refuse_before_mutations(self):
+    def test_foreign_alias_and_digest_refuse_before_mutations(self):
         for row in [self.row('registry.example/other/alias:stable', self.expected[self.refs[0]]),
-                    self.row(self.refs[0], self.expected[self.refs[0]], 'sha256:' + 'd' * 64),
-                    self.row(self.refs[0], 'sha256:' + 'c' * 64)]:
+                    self.row(self.refs[0], self.expected[self.refs[0]], 'sha256:' + 'd' * 64)]:
             with self.subTest(row=row):
                 self.calls.clear()
                 self.listing = [row]
                 with self.assertRaises(ValueError):
                     self.reload()
                 self.assertFalse(self.mutations())
+
+    def test_same_source_prior_build_ids_are_replaced_only_after_both_id_sets_are_checked(self):
+        prior = {ref: 'sha256:' + hashlib.sha256(('prior build ' + ref).encode()).hexdigest() for ref in self.refs}
+        self.listing = [self.row(ref, identity) for ref, identity in prior.items()] + [self.listing[-1]]
+        self.assertTrue(all(prior[ref] != self.expected[ref] for ref in self.refs))
+        admitted = self.reload()
+        self.assertEqual({ref: value['id'] for ref, value in admitted.items()}, self.expected)
+        removal, = [command for command in self.mutations() if command[2] == 'rm']
+        self.assertEqual(removal, ['docker', 'image', 'rm', '--no-prune', '--', *reversed(self.refs)])
+        removal_index = next(index for index, (command, _) in enumerate(self.calls) if command[1:3] == ['image', 'rm'])
+        checks = [command for command, _ in self.calls[:removal_index] if command[1:3] == ['container', 'ls']]
+        self.assertEqual({command[-1] for command in checks}, {'ancestor=' + identity for identity in {*prior.values(), *self.expected.values()}})
+        self.assertTrue(all('--all' in command for command in checks))
+
+    def test_prior_id_alias_before_selected_row_and_prior_digest_refuse_before_mutations(self):
+        prior = 'sha256:' + 'c' * 64
+        rows = [[self.row('registry.example/other/prior:stable', prior), self.row(self.refs[0], prior)],
+                [self.row(self.refs[0], prior, 'sha256:' + 'd' * 64)],
+                [self.row('registry.example/other/incoming:stable', self.expected[self.refs[0]]), self.row(self.refs[0], prior)]]
+        for listing in rows:
+            with self.subTest(listing=listing):
+                self.calls.clear(); self.listing = listing
+                with self.assertRaisesRegex(ValueError, 'out-of-scope alias or digest'):
+                    self.reload()
+                self.assertFalse(self.mutations())
+
+    def test_prior_and_incoming_stopped_containers_each_refuse_before_any_mutation(self):
+        prior = 'sha256:' + 'c' * 64
+        self.listing = [self.row(self.refs[0], prior)]
+        for identity in [prior, self.expected[self.refs[0]]]:
+            with self.subTest(identity=identity):
+                self.calls.clear(); self.containers = {identity: 'created-container-never-started\n'}
+                with self.assertRaisesRegex(ValueError, 'existing container'):
+                    self.reload()
+                self.assertFalse(self.mutations())
+
+    def test_ambiguous_cached_tag_ids_refuse_before_any_mutation(self):
+        self.listing = [self.row(self.refs[0], 'sha256:' + 'c' * 64), self.row(self.refs[0], self.expected[self.refs[0]])]
+        with self.assertRaisesRegex(ValueError, 'ambiguous cache image IDs'):
+            self.reload()
+        self.assertFalse(self.mutations())
 
     def test_even_stopped_target_container_refuses_before_any_mutation(self):
         self.containers[self.expected[self.refs[-1]]] = 'created-container-never-started\n'
