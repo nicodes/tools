@@ -10,7 +10,7 @@ from configuration import relative
 TOOLS = Path(__file__).resolve().parents[1]
 SCRIPT = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:-]*\Z')
 FIELDS = {'directory', 'manager', 'build', 'typecheck', 'lint', 'test', 'format', 'format_check',
-          'audit', 'expo', 'test_arguments', 'test_paths', 'format_paths'}
+          'audit', 'audit_level', 'ignore_scripts', 'expo', 'test_arguments', 'test_paths', 'format_paths'}
 
 
 def validate(package, root):
@@ -30,9 +30,12 @@ def validate(package, root):
             script = manifest.get('scripts', {}).get(value) if isinstance(value, str) else None
             if not isinstance(value, str) or not SCRIPT.fullmatch(value) or not isinstance(script, str) or not script.strip():
                 raise ValueError('Node operation must select an existing native package script: ' + name)
-    for name in ['audit', 'expo']:
+    for name in ['audit', 'expo', 'ignore_scripts']:
         if name in package and type(package[name]) is not bool:
             raise ValueError('Node capability switches must be booleans')
+    if 'audit_level' in package and (package.get('manager', 'npm') != 'npm'
+            or package['audit_level'] not in {'low', 'moderate', 'high', 'critical'}):
+        raise ValueError('npm audit severity must be an explicit supported level')
     for name in ['test_arguments', 'test_paths', 'format_paths']:
         values = package.get(name, [])
         if not isinstance(values, list) or any(not isinstance(value, str) or '\0' in value for value in values):
@@ -58,6 +61,8 @@ def install(root, packages, environment, run):
         package, directory = validate(value, root)
         command = ['bun', 'install', '--frozen-lockfile'] if package.get('manager', 'npm') == 'bun' else [
             'npm', 'ci', '--no-audit', '--no-fund']
+        if package.get('ignore_scripts'):
+            command.append('--ignore-scripts')
         run(command, directory, environment)
 
 
@@ -105,7 +110,10 @@ def audit(root, packages, environment, run):
     for value in packages:
         package, directory = validate(value, root)
         if package.get('audit', True):
-            run([sys.executable, str(TOOLS / 'helpers/audit.py'), str(directory)], root, environment)
+            if package.get('manager', 'npm') == 'npm':
+                run(['npm', 'audit', '--audit-level=' + package.get('audit_level', 'high')], directory, environment)
+            else:
+                run([sys.executable, str(TOOLS / 'helpers/audit.py'), str(directory)], root, environment)
             count += 1
     return count
 

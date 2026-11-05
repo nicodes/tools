@@ -55,6 +55,26 @@ class NodeComponents(unittest.TestCase):
         node.test(self.root, [self.package | {'test_arguments': ['literal;value']}], {}, self.capture)
         self.assertEqual(self.calls[0][0], ['npm', 'run', 'test', '--', 'literal;value'])
 
+    def test_npm_and_bun_audits_preserve_their_native_policy_and_failures(self):
+        node.audit(self.root, [self.package], {}, self.capture)
+        self.assertEqual(self.calls[0][0], ['npm', 'audit', '--audit-level=high'])
+        self.calls.clear()
+        node.audit(self.root, [self.package | {'manager': 'bun'}], {}, self.capture)
+        self.assertEqual(self.calls[0][0][1], str(node.TOOLS/'helpers/audit.py'))
+        def fail(arguments, cwd, environment):
+            raise subprocess.CalledProcessError(1, arguments)
+        with self.assertRaises(subprocess.CalledProcessError):
+            node.audit(self.root, [self.package], {}, fail)
+
+    def test_explicit_install_script_policy_is_not_changed_by_the_manager(self):
+        for manager in ['npm', 'bun']:
+            self.calls.clear()
+            node.install(self.root, [self.package | {'manager': manager, 'ignore_scripts': True}], {}, self.capture)
+            self.assertEqual(self.calls[0][0][-1], '--ignore-scripts')
+        for value in ['true', 1]:
+            with self.assertRaises(ValueError):
+                node.validate(self.package | {'ignore_scripts': value}, self.root)
+
     def test_formatting_selects_tracked_source_and_excludes_generated_outputs(self):
         (self.app / 'src').mkdir()
         (self.app / 'src/source.ts').write_text('const value=1\n')
