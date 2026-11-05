@@ -668,6 +668,9 @@ def setup_worker(root, config, environment, entry):
     game.run(['mise', 'install', *sorted(tools)], root, environment)
     sdk = lambda argv, directory, env: game.run(['mise', 'exec', '--', *argv], directory, env)
     node_component.install(root, packages, environment, sdk)
+    if role=='host' and config.get('components',{}).get('playwright'):
+        import playwright_sdk
+        playwright_sdk.setup(root,config,environment,game.run)
     if config.get('components', {}).get('python'):
         sdk(['python3', str(TOOLS / 'cookbook/python_component.py'), 'setup'], root, environment)
     if role == 'host' and config.get('components',{}).get('image_security'):
@@ -685,10 +688,10 @@ def setup_worker(root, config, environment, entry):
         import godot_browser
         godot_browser.setup(root, config, environment, capability=entry['kind']=='capability')
     elif entry.get('setup') == 'browser':
+        import playwright_sdk
+        playwright_sdk.install(root,config,environment,game.run,[package['directory'] for package in packages],['chromium'])
         for package in packages:
             directory = relative(root, package['directory'], exists=True)
-            executable = relative(directory, 'node_modules/.bin/playwright', exists=True)
-            game.run([str(executable), 'install', '--with-deps', 'chromium'], directory, environment, timeout=600)
             browser = subprocess.check_output(['mise', 'exec', '--', 'node', '--input-type=module', '-e',
                 'import {chromium} from "playwright"; console.log(chromium.executablePath())'],
                 cwd=directory, env=environment, text=True, timeout=30).strip()

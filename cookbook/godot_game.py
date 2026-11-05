@@ -24,6 +24,7 @@ import godot_sdk
 import node_component
 import images
 import application_development
+import playwright_sdk
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -158,6 +159,7 @@ def validate_config(root, config):
     image_fixtures.declaration(root,config)
     for package in packages(config):
         node_component.validate(package, root)
+    playwright_sdk.declaration(root,config)
     godot_sdk.inputs(root, config)
     godot_package.validate(root, config, verification_scope(root, config)['artifacts'])
     for record in config.get('components', {}).get('static_images', []):
@@ -379,6 +381,8 @@ def setup(root, config, env):
             sdk(['rustup', 'component', 'add', '--toolchain', pins['rust'], 'rustfmt'], root, env)
     if stage in {'full', 'security', 'fast'}:
         node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
+    if stage=='full' and env.get('COOKBOOK_GODOT_ENTRY')!='build' and requested_stage!='local':
+        playwright_sdk.setup(root,config,env,run)
     if components.get('image_security') and stage in {'full','security'} and env.get('COOKBOOK_GODOT_ENTRY')!='build' and requested_stage!='local':
         import godot_security
         godot_security.setup(root,config,env,run)
