@@ -242,6 +242,9 @@ def lint(root, config, environment):
     run(['actionlint'], root, environment)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, environment)
     source_policy.check(root, config, environment, run)
+    for name in config.get('lint', {}).get('caddy_dockerfiles', []):
+        run(['bash', str(TOOLS / 'helpers/caddy-pin.sh'),
+             str(relative(root, name, exists=True))], root, environment)
     if config.get('lint', {}).get('auth_policy'):
         run(['bun', str(TOOLS / 'helpers/auth-boundary.mjs'), '--policy',
              str(relative(root, config['lint']['auth_policy'], exists=True))], root, environment)
