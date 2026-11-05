@@ -10,7 +10,7 @@ from configuration import relative
 TOOLS = Path(__file__).resolve().parents[1]
 SCRIPT = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:-]*\Z')
 FIELDS = {'directory', 'manager', 'build', 'typecheck', 'lint', 'test', 'format', 'format_check',
-          'audit', 'audit_level', 'ignore_scripts', 'expo', 'test_arguments', 'test_paths', 'format_paths'}
+          'audit', 'audit_level', 'ignore_scripts', 'expo', 'test_arguments', 'test_paths', 'format_paths', 'glob_compatibility'}
 
 
 def validate(package, root):
@@ -30,7 +30,7 @@ def validate(package, root):
             script = manifest.get('scripts', {}).get(value) if isinstance(value, str) else None
             if not isinstance(value, str) or not SCRIPT.fullmatch(value) or not isinstance(script, str) or not script.strip():
                 raise ValueError('Node operation must select an existing native package script: ' + name)
-    for name in ['audit', 'expo', 'ignore_scripts']:
+    for name in ['audit', 'expo', 'ignore_scripts', 'glob_compatibility']:
         if name in package and type(package[name]) is not bool:
             raise ValueError('Node capability switches must be booleans')
     if 'audit_level' in package and (package.get('manager', 'npm') != 'npm'
@@ -95,6 +95,9 @@ def test(root, packages, environment, run):
     count = 0
     for value in packages:
         package, directory = validate(value, root)
+        if package.get('glob_compatibility'):
+            run(['node', str(TOOLS / 'helpers/glob-compatibility.mjs'), str(directory)], root, environment)
+            count += 1
         if package.get('test'):
             run_script(package, directory, package['test'], environment, run, package.get('test_arguments', []))
             count += 1
