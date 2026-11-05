@@ -43,5 +43,21 @@ class RustUiInputs(unittest.TestCase):
             data['artifacts']['binary_environment']['API_BINARY'] = '{platform.__class__}'
             with self.assertRaises(ValueError): rust_cli.environment(self.root, data)
 
+    def test_native_setup_selects_actual_runtime_sdks_without_repeating_host_security_tools(self):
+        (self.root / 'mise.toml').write_text('[tools]\npython="3.13.11"\nrust="1.94.0"\n'
+            '"cargo:cargo-audit"="0.22.2"\ntrivy="0.74.0"\nactionlint="1.7.12"\n'
+            'shellcheck="0.11.0"\nnode="26.7.0"\nbun="1.4.1"\ncaddy="2.11.6"\n')
+        (self.root / 'app').mkdir()
+        (self.root / 'app/package.json').write_text('{"scripts":{"build":"vite build"}}')
+        config = self.config | {'node': {'packages': [{'directory': 'app', 'build': 'build'}]},
+            'tests': {'unit': [{'runner': 'bun-test', 'path': 'tests/unit.test.ts'}]},
+            'security': {'rust_inventory_manifests': ['Cargo.toml']}}
+        config['components']['native_tools'] = ['caddy']
+        self.assertEqual(set(rust_cli.required_tools(self.root, config, 'native')), {'python', 'rust', 'node', 'bun', 'caddy'})
+        self.assertTrue({'cargo:cargo-audit', 'trivy', 'actionlint', 'shellcheck'} <= set(rust_cli.required_tools(self.root, config, 'full')))
+        self.assertTrue({'cargo:cargo-audit', 'trivy'} <= set(rust_cli.required_tools(self.root, config, 'security')))
+        config['components']['native_tools'] = ['--anything']
+        with self.assertRaises(ValueError): rust_cli.required_tools(self.root, config, 'native')
+
 
 if __name__ == '__main__': unittest.main()

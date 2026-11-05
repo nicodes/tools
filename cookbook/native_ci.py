@@ -348,7 +348,7 @@ def run_entry(root, source, tools, entry_id):
     if helper('native_cli').host() != (entry['platform'], entry['arch']):
         raise ValueError('native runner host differs from the declared platform/architecture')
     os.environ['RUST_TARGET'] = entry['target']
-    os.environ['COOKBOOK_STAGE'] = 'full'
+    os.environ['COOKBOOK_STAGE'] = 'native'
     os.environ['COOKBOOK_ROOT'] = str(TOOLS)
     if entry['components']:
         os.environ['COOKBOOK_NATIVE_COMPONENTS'] = json.dumps(entry['components'])
