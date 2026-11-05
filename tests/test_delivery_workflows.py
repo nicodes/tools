@@ -123,6 +123,22 @@ class DeliveryWorkflows(unittest.TestCase):
         self.config['operations']={'definition':'deploy/operations.json'}
         self.assertTrue(delivery.declaration(self.root,self.config)['readiness_operation'])
 
+    def test_scoped_profile_keeps_generation_and_never_transports_profile_values(self):
+        self.data.update(service_env_profile='serving-postgres-v2',expected_generation='c'*32,secrets={},variables={})
+        self.write()
+        text=delivery.jobs(self.root,self.config,'b'*40)
+        self.assertIn('service-env-profile: serving-postgres-v2',text)
+        self.assertIn('expected-generation: '+'c'*32,text)
+        self.assertNotIn('KOMIZO_SECRET_',text)
+        import copy
+        original=copy.deepcopy(self.data)
+        for changes in [dict(expected_generation='wrong'),dict(service_env_profile='../other'),
+                        dict(secrets={'KOMIZO_SECRET_DB':'DB'}),dict(optional_secrets={'KOMIZO_SECRET_TOKEN':'TOKEN'}),
+                        dict(service_env_profile='')]:
+            self.data=original|changes;self.write()
+            with self.subTest(changes=changes),self.assertRaises(ValueError):
+                delivery.declaration(self.root,self.config)
+
 
 if __name__ == '__main__':
     unittest.main()

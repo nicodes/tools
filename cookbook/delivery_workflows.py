@@ -44,7 +44,8 @@ def declaration(root, config):
     keys = {'version', 'project', 'komizo_ref', 'publish_runner', 'publish_timeout',
             'deploy_runner', 'deploy_timeout', 'health_urls', 'secrets', 'variables',
             'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined', 'mode', 'static',
-            'environment','step_timeouts','readiness_operation','notify','report','notification','optional_secrets'}
+            'environment','step_timeouts','readiness_operation','notify','report','notification','optional_secrets',
+            'service_env_profile','expected_generation'}
     if not isinstance(data, dict) or set(data) - keys or data.get('version') != 1:
         raise ValueError('unsupported delivery declaration')
     mode = data.get('mode', 'application-images')
@@ -90,6 +91,14 @@ def declaration(root, config):
         raise ValueError('host inputs cannot have two secret authorities')
     if set(data.get('optional_secrets',{}))&(set(data.get('secrets',{}))|set(data.get('variables',{}))):
         raise ValueError('optional host tokens cannot replace required secret authority')
+    profile=data.get('service_env_profile','');generation=data.get('expected_generation','')
+    if profile:
+        if (not isinstance(profile,str) or not re.fullmatch('[a-z][a-z0-9-]{0,62}',profile)
+                or not isinstance(generation,str) or not re.fullmatch('[a-f0-9]{32}',generation)
+                or any(data.get(key) for key in ['secrets','variables','optional_secrets'])):
+            raise ValueError('scoped delivery retains one native profile generation without transporting profile values')
+    elif generation or 'service_env_profile' in data or 'expected_generation' in data:
+        raise ValueError('a scoped delivery generation requires its explicit native profile')
     for key in ['backup', 'readiness']:
         if data.get(key):
             relative(Path(root), data[key], exists=True)
@@ -151,7 +160,11 @@ def jobs(root, config, tools):
     lines+=['      - uses: nicodes/komizo-actions/deploy@'+ref,'        timeout-minutes: '+str(limits['deploy']),
         '        with:','          release-manifest: .artifacts/komizo-release/manifest.json','          version: ${{ github.sha }}',
         '          registry-user: ${{ github.repository_owner }}','          registry-token: ${{ github.token }}',
-        "          health-urls: ${{ steps.delivery.outputs['health-urls'] }}",'        env:',
+        "          health-urls: ${{ steps.delivery.outputs['health-urls'] }}"]
+    if data.get('service_env_profile'):
+        lines+=['          service-env-profile: '+data['service_env_profile'],
+            '          expected-generation: '+data['expected_generation']]
+    lines+=['        env:',
         '          GH_TOKEN: ${{ github.token }}','          KOMIZO_APP_NAME: ${{ vars.KOMIZO_APP_NAME }}',
         '          KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}','          KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}',
         '          KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}']

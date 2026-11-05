@@ -80,7 +80,7 @@ def entry(root,value,paid=False,budget=900):
     if not isinstance(value,dict) or set(value)-{'runner','path','args','environment','timeout','target','filter','binary','cwd','manager'}:
         raise ValueError('operational checks require native program data')
     runner=value.get('runner')
-    if not isinstance(runner,str) or runner not in ({'python','node','bun','bash','cargo-test','cargo-run'} if paid else {'python','node','bun','bash','playwright'}):
+    if not isinstance(runner,str) or runner not in ({'python','node','node-test','bun','bash','cargo-test','cargo-run'} if paid else {'python','node','node-test','bun','bash','playwright'}):
         raise ValueError('unsupported native operational runner')
     path=relative(root,value.get('path'),exists=True) if runner=='playwright' else source(root,value.get('path'))
     if not path.is_file():raise ValueError('native operational checks require real source programs')
