@@ -11,16 +11,19 @@ RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
 
 def ci_settings(data):
     values = data.get('ci', {})
-    if not isinstance(values, dict) or set(values)-{'runner', 'timeout_minutes', 'godot', 'preview_environment'}:
+    if not isinstance(values, dict) or set(values)-{'runner', 'timeout_minutes', 'godot', 'preview_environment', 'dependency_security'}:
         raise ValueError('CI settings require literal runner and existing bounded job budget')
     if 'godot' in values and (data.get('recipe') != 'godot-game' or not isinstance(values['godot'], dict)):
         raise ValueError('Godot CI metadata belongs to its application recipe')
+    if 'dependency_security' in values:
+        import dependency_security
+        dependency_security.declaration(data)
     preview = values.get('preview_environment', '')
     if preview and (data.get('recipe') != 'react-native' or preview != 'Preview'):
         raise ValueError('only the reviewed React Native Preview environment may bind candidate builds')
     if not isinstance(preview, str):
         raise ValueError('preview environment must be a literal name')
-    result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30, **{key: value for key, value in values.items() if key not in {'godot', 'preview_environment'}}}
+    result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30, **{key: value for key, value in values.items() if key not in {'godot', 'preview_environment', 'dependency_security'}}}
     if preview:
         result['preview_environment'] = preview
     if (not isinstance(result['runner'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', result['runner'])
