@@ -35,18 +35,29 @@ def plan(root, config, pins, environment, source, runner_os, runner_arch, target
     for component in records:
         rust_component.validate(component, root)
         manifest = component.get('manifest', 'Cargo.toml')
-        for name in [manifest, Path(manifest).with_name('Cargo.lock').as_posix()]:
-            path = relative(root, name, exists=True)
-            if not path.is_file() or path.stat().st_size > 8 << 20:
-                raise ValueError('compiler cache inputs require bounded native source files')
-            inputs['files'][name] = hashlib.sha256(path.read_bytes()).hexdigest()
-        for directory in [root, *(root / manifest).parents]:
+        locked = False
+        # Include enclosing manifests and locks conservatively. Workspace
+        # members use an ancestor lock; a cache key must also retain workspace
+        # declarations, without running Cargo before SDK preparation.
+        for directory in (root / manifest).parents:
             if not directory.is_relative_to(root):
                 break
+            for filename in ['Cargo.toml', 'Cargo.lock']:
+                path = directory / filename
+                if not path.exists() and not path.is_symlink():
+                    continue
+                name = path.relative_to(root).as_posix()
+                path = relative(root, name, exists=True)
+                if not path.is_file() or path.stat().st_size > 8 << 20:
+                    raise ValueError('compiler cache inputs require bounded native source files')
+                inputs['files'][name] = hashlib.sha256(path.read_bytes()).hexdigest()
+                locked = locked or filename == 'Cargo.lock'
             path = directory / '.cargo/config.toml'
             if path.exists():
                 safe = relative(root, path.relative_to(root).as_posix(), exists=True)
                 inputs['files'][safe.relative_to(root).as_posix()] = hashlib.sha256(safe.read_bytes()).hexdigest()
+        if not locked:
+            raise ValueError('compiler caches require a caller-owned Cargo lockfile')
         destination = component.get('target_directory') or environment.get('CARGO_TARGET_DIR') or str(Path(manifest).parent / 'target')
         path = Path(destination)
         path = path if path.is_absolute() else root / path
