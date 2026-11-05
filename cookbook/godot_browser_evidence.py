@@ -200,3 +200,21 @@ def verify_host(root, config, proofs):
             directory = relative(root, record['root'] + '/' + proof['entry']['id'], exists=True)
             if inventory(directory) != record['files']:
                 raise ValueError('joined browser reports differ from their exact worker evidence')
+
+
+def verify_final(host, proofs):
+    """Bind final aggregate JSON hashes to the accepted imported namespaces."""
+    records = [proof['browser_evidence'] for proof in proofs if proof.get('browser_evidence') is not None]
+    if not records:
+        return
+    actual = host.get('evidence')
+    if not isinstance(actual, dict):
+        raise ValueError('final host evidence omitted its imported browser reports')
+    for record in records:
+        prefix = record['root'] + '/' + record['entry'] + '/'
+        expected = {prefix + filename: value['sha256'] for filename, value in record['files'].items()
+                    if filename.endswith('.json')}
+        selected = {filename: value for filename, value in actual.items()
+                    if isinstance(filename, str) and filename.startswith(prefix) and filename.endswith('.json')}
+        if selected != expected:
+            raise ValueError('final host browser evidence differs from its accepted worker reports')

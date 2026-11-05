@@ -667,10 +667,13 @@ def finalize_host(host, matrix):
             or host.get('coverage') == 'godot-partial' or host.get('source_commit') != matrix['source_commit']
             or host.get('cookbook_commit') != matrix['cookbook_commit']):
         raise ValueError('Godot partial coverage cannot replace complete host validation')
+    import godot_browser_evidence
+    godot_browser_evidence.verify_final(host, matrix['proofs'])
     return {**host, 'coverage': 'complete-host-and-godot-matrix', 'godot_matrix': matrix}
 
 
-def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, root=None):
+def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, root=None, host=None):
+    """Validate the matrix, and final report hashes when an aggregate is supplied."""
     declaration = plan(root, config, environment)
     if (not isinstance(matrix, dict) or matrix.get('version') != 1 or not declaration.get('enrolled')
             or matrix.get('source_commit') != source or matrix.get('cookbook_commit') != tools
@@ -694,6 +697,8 @@ def validate_acceptance(matrix, config, jobs, source, tools, environment, config
     accepted = validate_jobs(entries, jobs)
     if accepted != matrix.get('jobs'):
         raise ValueError('Godot acceptance belongs to different actual Actions jobs')
+    if host is not None:
+        finalize_host(host, matrix)
     return accepted
 
 

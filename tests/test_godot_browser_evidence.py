@@ -246,6 +246,37 @@ writeFileSync('release-reports/browser/gate.log','driver native log');'''),
             with self.assertRaisesRegex(ValueError, 'joined browser reports'):
                 ci.host_matrix(self.root, self.config, os.environ)
 
+    def test_final_aggregate_refuses_post_last_join_json_change_or_missing_extra_hash(self):
+        import godot_game
+        packets, jobs = self.matrix_packets()
+        with chdir(self.root), patch.dict(os.environ, self.environment):
+            matrix = ci.prepare_host(self.root, self.config, self.source, self.tools, directory=self.downloads, jobs=jobs)
+            ci.host_matrix(self.root, self.config, os.environ)
+        def aggregate():
+            return {'status': 'passed', 'build_verified': True, 'tests_verified': True,
+                'test_groups': matrix['host_groups'], 'source_commit': self.source, 'cookbook_commit': self.tools,
+                'evidence': {filename: hashlib.sha256((self.root / filename).read_bytes()).hexdigest()
+                    for filename in godot_game.evidence_paths(self.root, self.config)}}
+        host = aggregate()
+        ci.finalize_host(host, matrix)
+        ci.validate_acceptance(matrix, self.config, jobs, self.source, self.tools, self.environment,
+            self.canonical, root=self.root, host=host)
+        # This is after the final host-matrix check. The ordinary final proof
+        # reader sees the newly changed bytes; the cached worker manifest does not.
+        target = self.root / 'release-reports/browser/gate-browser/123/result.json'
+        target.write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'final host browser evidence'):
+            ci.finalize_host(aggregate(), matrix)
+        with self.assertRaisesRegex(ValueError, 'final host browser evidence'):
+            ci.validate_acceptance(matrix, self.config, jobs, self.source, self.tools, self.environment,
+                self.canonical, root=self.root, host=aggregate())
+        for mode in ['missing', 'extra']:
+            bad = copy.deepcopy(host)
+            if mode == 'missing': bad['evidence'].clear()
+            else: bad['evidence']['release-reports/browser/gate-browser/foreign.json'] = '1' * 64
+            with self.subTest(mode=mode), self.assertRaisesRegex(ValueError, 'final host browser evidence'):
+                ci.finalize_host(bad, matrix)
+
     def test_tracked_or_linked_source_report_roots_refuse(self):
         entry = next(row for row in self.entries if row['id'] == 'gate-browser')
         self.produce(entry)
