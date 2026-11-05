@@ -24,6 +24,9 @@ TOOLS = Path(__file__).resolve().parents[1]
 
 
 def helper(name):
+    directory = str(TOOLS / 'helpers')
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
     spec = importlib.util.spec_from_file_location('game_' + name.replace('-', '_'), TOOLS / 'helpers' / (name + '.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -55,7 +58,7 @@ def project(root, config):
 def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
-               'import_ignored_patterns', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
+               'import_ignored_patterns', 'preserve_import_defaults', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
                'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web', 'extensions'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
@@ -243,7 +246,7 @@ def import_native(root, config, env):
     helper('godot-project').import_project(directory, env['GODOT_BIN'],
         lambda argv, timeout: strict.main(argv, timeout=timeout, environment=env),
         timeout=settings.get('import_timeout', 180), arguments=settings.get('import_arguments', []),
-        ignored_patterns=settings.get('import_ignored_patterns', []))
+        ignored_patterns=settings.get('import_ignored_patterns', []), preserve_defaults=settings.get('preserve_import_defaults', False))
 
 
 def current_build(root, config, verify):
