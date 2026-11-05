@@ -166,7 +166,7 @@ def stage(root,config,environment,execute=run):
     verify(root,config,environment)
 
 
-def verify(root,config,environment,execute=run):
+def verify_blueprint(root,config,environment):
     selected=declaration(root,config)
     if selected is None:return
     blueprint=json.loads(read(relative(root,CONFIG_ARTIFACT,exists=True),1048576))
@@ -182,6 +182,13 @@ def verify(root,config,environment,execute=run):
         raise ValueError('static blueprints require bounded validated hostnames')
     gate='ghcr.io/'+selected['repository']+'-gate@'+PLACEHOLDER
     validate_stack(blueprint['production_stack'],selected['repository'],gate)
+    return blueprint
+
+
+def verify(root,config,environment,execute=run):
+    blueprint=verify_blueprint(root,config,environment)
+    if blueprint is None:return
+    selected=declaration(root,config)
     observed=json.loads(read(relative(root,MANIFEST_ARTIFACT,exists=True)))
     if observed!=manifest(root,selected,environment['SOURCE_COMMIT']):raise ValueError('static release identity metadata differs from its actual public export')
     return blueprint
