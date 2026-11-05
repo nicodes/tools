@@ -73,6 +73,8 @@ class DeliveryWorkflows(unittest.TestCase):
         self.assertIn('merge-gate: false', files['.github/workflows/cd.yml'])
         self.assertNotIn('application-delivery', files['.github/workflows/ci.yml'])
         self.assertIn('application-delivery', files['.github/workflows/cd.yml'])
+        self.assertIn('group: deploy-source-${{ github.sha }}-', files['.github/workflows/cd.yml'])
+        self.assertIn('group: ci-${{ github.ref }}-', files['.github/workflows/ci.yml'])
 
     def test_combined_delivery_keeps_one_existing_job_deadline(self):
         self.data.update(combined=True, publish_timeout=15, deploy_timeout=15)

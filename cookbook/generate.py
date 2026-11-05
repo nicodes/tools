@@ -98,7 +98,7 @@ jobs:
         files['.github/workflows/ci.yml'] = original.replace('  push:\n    branches: [main]\n', '')
         production = original.replace('name: Build & Test\n', 'name: Deploy\n', 1)
         production = production.replace('  pull_request:\n    types: [opened, synchronize, reopened, ready_for_review]\n', '')
-        production = production.replace('group: ci-', 'group: deploy-source-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
+        production = production.replace('group: ci-${{ github.ref }}-', 'group: deploy-source-${{ github.sha }}-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
         production = production.replace("merge-gate: ${{ vars.COOKBOOK_REQUEST_MERGE == 'enabled' }}", 'merge-gate: false')
         files['.github/workflows/cd.yml'] = production + delivery_workflows.jobs(root, config, revision)
         if delivery_workflows.declaration(root, config).get('mode') == 'godot-static':
