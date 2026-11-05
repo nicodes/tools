@@ -74,10 +74,13 @@ def load(root):
             if entry.get('runner') not in RUNNERS:
                 raise ValueError('unsupported native test runner')
             policy = entry.get('policy', {})
-            policy_keys = {'sentinel_regex', 'assertions_regex', 'allow_errors', 'editor', 'audio_driver', 'allow_error_version'}
+            policy_keys = {'sentinel_regex', 'assertions_regex', 'allow_errors', 'editor', 'audio_driver', 'allow_error_version', 'deferred_autoloads'}
             if (not isinstance(policy, dict) or set(policy)-policy_keys
                     or (policy and entry['runner'] not in {'godot', 'godot-check'})):
                 raise ValueError('native assertion policy is unsupported for this runner')
+            if 'deferred_autoloads' in policy and (data['recipe'] != 'godot-game'
+                    or entry['runner'] != 'godot-check' or type(policy['deferred_autoloads']) is not bool):
+                raise ValueError('deferred autoloads require a native Godot game check and literal boolean')
             if entry['runner'] in {'godot', 'godot-suite'}:
                 sentinel = entry.get('sentinel')
                 regex_signal = entry['runner'] == 'godot' and isinstance(policy.get('sentinel_regex'), str)
