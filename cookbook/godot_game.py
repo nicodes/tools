@@ -104,6 +104,9 @@ def validate_config(root, config):
         installed = record.get('installed', '/srv/public')
         if not isinstance(installed, str) or not installed.startswith('/') or '..' in Path(installed).parts or '\\' in installed:
             raise ValueError('static image contracts require literal installed paths')
+    if components.get('browser'):
+        import godot_browser
+        godot_browser.declaration(root, config)
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
 
@@ -225,6 +228,9 @@ def setup(root, config, env):
         node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
     if stage != 'full':
         return
+    if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY'):
+        import godot_browser
+        godot_browser.setup(root, config, env)
     directory, settings = project(root, config)
     pins = godot_pins(root)
     (root / '.artifacts').mkdir(exist_ok=True)
@@ -281,7 +287,9 @@ def native_tests(root, config, env, suite):
     godot_entries = [entry for entry in entries if entry['runner'] == 'godot-check']
     others = [entry for entry in entries if entry['runner'] != 'godot-check']
     if others:
-        run_entries(root, {**config, 'tests': {suite: others}}, env, suite)
+        import godot_browser
+        custom = {'godot-browser': lambda checkout, entry, environment: godot_browser.journeys(checkout, config, environment, entry)}
+        run_entries(root, {**config, 'tests': {suite: others}}, env, suite, custom_runners=custom)
     if godot_entries:
         jobs = settings.get('test_jobs', 4)
         if type(jobs) is not int or not 1 <= jobs <= 16:

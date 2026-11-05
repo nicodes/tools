@@ -632,7 +632,10 @@ def setup_worker(root, config, environment, entry):
         components = [value for value in config.get('components', {}).get('rust', []) if value.get('test', {}).get('enabled', True)]
         if components:
             rust_component.setup(root, components, environment, sdk)
-    if entry.get('setup') == 'browser':
+    if entry.get('setup') == 'browser' and config.get('components', {}).get('browser'):
+        import godot_browser
+        godot_browser.setup(root, config, environment, capability=entry['kind']=='capability')
+    elif entry.get('setup') == 'browser':
         for package in packages:
             directory = relative(root, package['directory'], exists=True)
             executable = relative(directory, 'node_modules/.bin/playwright', exists=True)

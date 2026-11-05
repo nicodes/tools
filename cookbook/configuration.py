@@ -6,7 +6,7 @@ import tomllib
 RECIPES = {'rust-cli', 'react-native', 'godot-game', 'godot-addon', 'native'}
 SUITES = {'lint', 'unit', 'integration', 'e2e', 'security'}
 RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
-           'bash', 'godot', 'godot-suite', 'godot-check', 'playwright'}
+           'bash', 'godot', 'godot-suite', 'godot-check', 'playwright', 'godot-browser'}
 
 
 def ci_settings(data):
