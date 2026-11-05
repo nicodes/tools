@@ -82,6 +82,9 @@ jobs:
         command -v xauth
     - name: Check libraries and disposable recovery
       run: mise run check
+    - name: Verify isolated classic image-cache reset
+      timeout-minutes: 5
+      run: sudo /usr/bin/python3 tests/native_image_cache_control.py
     - name: Verify locked upstream Caddy build and linked symbols
       run: python3 helpers/test-caddy.py
     - name: Verify standalone CLI build and release preparation
