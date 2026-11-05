@@ -246,8 +246,9 @@ def lint(root, config, environment):
              str(relative(root, config['lint']['auth_policy'], exists=True))], root, environment)
     node_component.lint(root, packages(config), environment, run)
     for value in packages(config):
-        _, directory = node_component.validate(value, root)
-        run(['node', str(TOOLS / 'helpers/dependency-compatibility.cjs'), str(directory)], root, environment)
+        package, directory = node_component.validate(value, root)
+        if package.get('expo'):
+            run(['node', str(TOOLS / 'helpers/dependency-compatibility.cjs'), str(directory)], root, environment)
     if rust_components(config):
         cargo().lint(root, cargo_records(config, environment), environment, run)
     paths = []

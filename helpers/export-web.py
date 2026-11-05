@@ -92,8 +92,8 @@ def compiler_cache(app, output_name, root):
 
 def export(app, output_name, timeout=900, command=None, cache_root=None):
     app = Path(app).resolve(strict=True)
-    if output_name not in ('dist', 'dist-e2e', 'dist-check'):
-        raise ValueError('output must be dist, dist-e2e, or dist-check inside the app')
+    if not isinstance(output_name, str) or not re.fullmatch(r'dist(?:-[a-z0-9][a-z0-9-]{0,63})?', output_name):
+        raise ValueError('output must be dist or a bounded dist-* variant inside the app')
     output = app / output_name
     if output.is_symlink():
         raise ValueError('export output must not be a symlink')

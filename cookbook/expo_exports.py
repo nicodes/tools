@@ -12,6 +12,11 @@ import sys
 from configuration import relative
 
 TOOLS = Path(__file__).resolve().parents[1]
+PROTECTED = {'APP_VERSION', 'CI', 'GH_TOKEN', 'GITHUB_TOKEN', 'KOMIZO_ACTIONS_ROOT',
+             'COMMIT', 'VERSION', 'DATE', 'SOURCE_COMMIT', 'SOURCE_REV', 'SOURCE_ROOT',
+             'PATH', 'HOME', 'SHELL', 'ENV', 'BASH_ENV', 'PYTHONPATH', 'PYTHONHOME',
+             'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'NODE_OPTIONS',
+             'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
 
 
 def records(root, config):
@@ -25,12 +30,15 @@ def records(root, config):
     directory = relative(root, app.get('directory', 'app'), exists=True)
     result, outputs = [], set()
     for entry in fixtures:
-        if not isinstance(entry, dict) or set(entry) - {'output', 'environment', 'timeout'} or entry.get('output') not in {'dist-e2e', 'dist-check'}:
+        if (not isinstance(entry, dict) or set(entry) - {'output', 'environment', 'timeout'}
+                or not isinstance(entry.get('output'), str)
+                or not re.fullmatch(r'dist-[a-z0-9][a-z0-9-]{0,63}', entry['output'])):
             raise ValueError('Web test variants require an explicit disposable Expo output')
         values = entry.get('environment', {})
-        if (not isinstance(values, dict) or any(not isinstance(name, str)
-                or not (name.startswith('EXPO_PUBLIC_') or name in {'BUILD_VARIANT', 'NODE_ENV', 'BABEL_ENV', 'ENGINEERING_E2E_AUTH'})
-                or not re.fullmatch('[A-Z][A-Z0-9_]*', name) or not isinstance(value, str) or '\0' in value
+        if (not isinstance(values, dict) or len(values) > 64 or any(not isinstance(name, str)
+                or not re.fullmatch('[A-Z][A-Z0-9_]{0,99}', name) or name in PROTECTED
+                or name.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_', 'TOOLS_', 'FLEET_'))
+                or not isinstance(value, str) or len(value) > 4096 or any(ord(character)<32 for character in value)
                 for name, value in values.items())):
             raise ValueError('Web test build inputs must be literal native compiler variables')
         output = relative(directory, entry['output'])
@@ -103,9 +111,11 @@ def build(root, config, environment, run, *, native_runner=compile_native):
     plan = sorted(records(root, config), key=lambda record: record[0] == 'web')
     for kind, directory, output, entry in plan:
         if kind == 'web':
+            values = entry.get('environment', {})
+            cache_names = list(dict.fromkeys([*environment.get('FLEET_WEB_CACHE_ENV', '').split(), *values]))
             run([sys.executable, str(TOOLS / 'helpers/export-web.py'), '--app', str(directory),
                  '--output', output.name, '--timeout', str(entry.get('timeout', 900))],
-                root, environment | entry.get('environment', {}))
+                root, environment | values | {'FLEET_WEB_CACHE_ENV': ' '.join(cache_names)})
         else:
             if output.exists():
                 shutil.rmtree(output)

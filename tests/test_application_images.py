@@ -1,6 +1,8 @@
 import importlib.util
 import contextlib
 import json
+import hashlib
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -17,6 +19,32 @@ spec.loader.exec_module(images)
 
 
 class ApplicationImages(unittest.TestCase):
+    def test_static_image_keeps_exact_bytes_and_reports_bounded_hash_differences(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'source';installed=root/'installed'
+            source.mkdir();installed.mkdir()
+            (source/'index.html').write_bytes(b'reviewed')
+            (installed/'index.html').write_bytes(b'reviewed')
+            def docker(command,**kwargs):
+                if command[:2]==['docker','cp']:
+                    shutil.copytree(installed,command[-1],dirs_exist_ok=True)
+            with patch.object(images.subprocess,'check_output',return_value='a'*64),patch.object(images.subprocess,'run',side_effect=docker) as run:
+                self.assertEqual(images.static_image('reviewed-image',source),
+                                 {'index.html':hashlib.sha256(b'reviewed').hexdigest()})
+                (installed/'index.html').write_bytes(b'changed')
+                for i in range(20):(installed/('extra-'+str(i))).write_bytes(b'extra')
+                (source/'missing').write_bytes(b'expected')
+                with self.assertRaisesRegex(ValueError,'complete source bytes') as error:
+                    images.static_image('reviewed-image',source)
+                message=json.loads(str(error.exception).split(': ',1)[1])
+                self.assertEqual(message['missing'],['missing'])
+                self.assertEqual(message['extra_count'],20)
+                self.assertEqual(len(message['extra']),10)
+                self.assertEqual(message['changed'],[{'path':'index.html',
+                    'source_sha256':hashlib.sha256(b'reviewed').hexdigest(),
+                    'installed_sha256':hashlib.sha256(b'changed').hexdigest()}])
+                self.assertEqual(run.call_args.args[0],['docker','rm','-v','a'*64])
+
     def test_empty_runtime_staging_never_copies_retained_private_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

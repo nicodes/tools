@@ -1,9 +1,14 @@
 import importlib.util
+import contextlib
+import os
 from pathlib import Path
+import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import addon_fixtures
@@ -23,6 +28,7 @@ class ExportControls(unittest.TestCase):
         self.assertEqual(options['timeout'], 120)
         self.assertEqual(command[1:3], ['--headless', '--path'])
         output = Path(command[-1])
+        self.assertTrue((output.parent / '.gdignore').is_file())
         output.write_text('native html')
         output.with_suffix('.wasm').write_bytes(b'native wasm')
         return subprocess.CompletedProcess(command, 0, 'export complete\n', '')
@@ -56,6 +62,74 @@ class ExportControls(unittest.TestCase):
         self.config['components']['fixture_exports'].append(dict(self.entry))
         with self.assertRaisesRegex(ValueError, 'distinct'):
             addon_fixtures.build_exports(self.root, self.config, {'GODOT_BIN': 'godot'}, execute=self.execute)
+
+    def test_import_boundary_refuses_links_and_nonregular_marker_before_export(self):
+        output=self.root/'dist/web';output.mkdir(parents=True)
+        target=self.root/'owned-source';target.write_bytes(b'untouched source')
+        marker=output/'.gdignore';marker.symlink_to(target)
+        with self.assertRaises(ValueError):
+            addon_fixtures.build_exports(self.root,self.config,{'GODOT_BIN':'godot'},execute=self.execute)
+        self.assertEqual(target.read_bytes(),b'untouched source')
+        marker.unlink();marker.mkdir()
+        with self.assertRaisesRegex(ValueError,'regular file'):
+            addon_fixtures.build_exports(self.root,self.config,{'GODOT_BIN':'godot'},execute=self.execute)
+
+    def verification_fixture(self):
+        (self.root/'.gitignore').write_text('dist/\n.godot/\n.artifacts/\n')
+        subprocess.run(['git','init','--quiet',str(self.root)],check=True)
+        for arguments in [['config','user.name','Fixture'],['config','user.email','fixture@example.invalid'],
+                          ['add','project.godot','.gitignore'],['commit','--quiet','-m','Native fixture source']]:
+            subprocess.run(['git','-C',str(self.root),*arguments],check=True,stdout=subprocess.DEVNULL)
+        spec=importlib.util.spec_from_file_location('fixture_verification',Path(__file__).parents[1]/'helpers/verification.py')
+        verify=importlib.util.module_from_spec(spec);spec.loader.exec_module(verify)
+        from godot_addon import current_build, verification_scope
+        declaration=(verification_scope(self.root,self.config) if self.config.get('package') else
+                     verify.scope(artifacts=addon_fixtures.artifact_paths(self.root,self.config)))
+        return verify,current_build,declaration
+
+    def test_import_marker_does_not_exempt_artifact_payload_or_extra_file_mutations(self):
+        (self.root/'addon').mkdir();(self.root/'addon/owned.gd').write_text('extends Node\n')
+        (self.root/'files.txt').write_text('owned.gd\n')
+        archive=self.root/'dist/plugin.zip'
+        checksum=addon_fixtures.package_helper().build(self.root/'addon',self.root/'files.txt',archive)
+        archive.with_suffix('.zip.sha256').write_text(checksum+'  plugin.zip\n')
+        self.config['package']={'source':'addon','manifest':'files.txt','archive':'dist/plugin.zip'}
+        verify,current_build,declaration=self.verification_fixture()
+        addon_fixtures.build_exports(self.root,self.config,{'GODOT_BIN':'godot'},execute=self.execute)
+        with contextlib.chdir(self.root):
+            directory=self.root/'.artifacts/verification';directory.mkdir(parents=True)
+            receipt={'identity':verify.identity(declaration),'artifacts':verify.artifacts(declaration)}
+            import json
+            (directory/'build.json').write_text(json.dumps(receipt))
+            current_build(self.root,self.config,verify)
+            extra=self.root/'dist/web/unexpected.import';extra.write_bytes(b'foreign output')
+            with self.assertRaisesRegex(ValueError,'packaged outputs changed'):
+                current_build(self.root,self.config,verify)
+            extra.unlink();(self.root/'dist/web/index.wasm').write_bytes(b'mutated payload')
+            with self.assertRaisesRegex(ValueError,'packaged outputs changed'):
+                current_build(self.root,self.config,verify)
+
+    @unittest.skipUnless(os.environ.get('GODOT_BIN'),'real editor import control requires explicitly prepared GODOT_BIN')
+    def test_real_editor_keeps_export_artifacts_stable_only_behind_the_owned_boundary(self):
+        def chunk(kind,data):
+            return struct.pack('!I',len(data))+kind+data+struct.pack('!I',zlib.crc32(kind+data)&0xffffffff)
+        image=(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('!IIBBBBB',1,1,8,6,0,0,0))
+               +chunk(b'IDAT',zlib.compress(b'\0\xff\0\0\xff'))+chunk(b'IEND',b''))
+        (self.root/'project.godot').write_text('config_version=5\n[application]\nconfig/name="SDK import fixture"\n[rendering]\nrenderer/rendering_method="gl_compatibility"\n')
+        verify,_guard,declaration=self.verification_fixture()
+        def export(command,**options):
+            result=self.execute(command,**options);Path(command[-1]).with_suffix('.png').write_bytes(image);return result
+        addon_fixtures.build_exports(self.root,self.config,{'GODOT_BIN':os.environ['GODOT_BIN']},execute=export)
+        with contextlib.chdir(self.root):
+            before=verify.artifacts(declaration)
+            subprocess.run([os.environ['GODOT_BIN'],'--headless','--editor','--import','--quit','--path',str(self.root)],check=True,timeout=45,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            self.assertEqual(verify.artifacts(declaration),before)
+            (self.root/'dist/web/.gdignore').unlink()
+            shutil.rmtree(self.root/'.godot')
+            unprotected=verify.artifacts(declaration)
+            subprocess.run([os.environ['GODOT_BIN'],'--headless','--editor','--import','--quit','--path',str(self.root)],check=True,timeout=45,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            self.assertNotEqual(verify.artifacts(declaration),unprotected)
+            self.assertTrue((self.root/'dist/web/index.png.import').is_file())
 
     def test_installed_fixture_contains_exact_accepted_archive_bytes(self):
         fixture = self.root / 'tests/web'

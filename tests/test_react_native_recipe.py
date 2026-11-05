@@ -115,6 +115,40 @@ mprocs="0.9.6"
         self.assertEqual(calls[0][0][:2], ['mise', 'install'])
         self.assertEqual(calls[1][0], ['mise', 'exec', '--', 'node', '--version'])
 
+    def test_lint_keeps_plain_package_checks_and_enforces_expo_compatibility_only_for_expo(self):
+        packages = [
+            {'directory': 'app', 'manager': 'bun', 'expo': True, 'typecheck': 'typecheck'},
+            {'directory': 'internal/worker', 'manager': 'bun', 'typecheck': 'typecheck'},
+        ]
+        for package in packages:
+            directory = self.root / package['directory']
+            directory.mkdir(parents=True)
+            (directory / 'package.json').write_text(json.dumps({'scripts': {'typecheck': 'tsc --noEmit'}}))
+        config = {'node': {'packages': packages}}
+        calls = []
+        def execute(command, directory, environment):
+            calls.append((command, directory))
+        with patch.object(recipe, 'run', side_effect=execute), \
+                patch.object(recipe.source_policy, 'check'), patch.object(recipe.images, 'validate_compose'):
+            recipe.lint(self.root, config, {})
+        compatibility = ['node', str(recipe.TOOLS / 'helpers/dependency-compatibility.cjs'), str(self.root / 'app')]
+        self.assertEqual([command for command, _ in calls if 'dependency-compatibility.cjs' in ' '.join(command)], [compatibility])
+        self.assertIn((['bun', 'x', '--no-install', 'expo', 'install', '--check'], self.root / 'app'), calls)
+        for package in packages:
+            self.assertIn((['bun', 'run', 'typecheck'], self.root / package['directory']), calls)
+
+        def refuse_compatibility(command, directory, environment):
+            if command == compatibility:
+                raise subprocess.CalledProcessError(1, command)
+        with patch.object(recipe, 'run', side_effect=refuse_compatibility), \
+                patch.object(recipe.source_policy, 'check'), patch.object(recipe.images, 'validate_compose'):
+            with self.assertRaises(subprocess.CalledProcessError):
+                recipe.lint(self.root, config, {})
+        packages[1]['expo'] = 'false'
+        with patch.object(recipe, 'run'), patch.object(recipe.source_policy, 'check'):
+            with self.assertRaisesRegex(ValueError, 'must be booleans'):
+                recipe.lint(self.root, config, {})
+
     def test_expo_development_passes_selected_port_and_never_signals_listeners(self):
         (self.root / 'app').mkdir()
         calls = []

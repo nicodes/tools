@@ -52,7 +52,7 @@ def verification_scope(root, config):
         inputs = {'artifacts': values.get('paths', []), 'images': values.get('images', []),
             'environment': values.get('environment', []), 'revision_environment': values.get('revision_environment', [])}
     inputs = {key: list(value) for key, value in inputs.items()}
-    inputs['artifacts'] += (values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
+    inputs['artifacts'] += (export_import_boundaries(root, config) + values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
         + go_component.artifact_paths(root,config) + image_fixtures.artifact_paths(root,config))
     inputs['images'] += image_fixtures.references(root,config)
     return verification.scope(**inputs)
@@ -60,6 +60,29 @@ def verification_scope(root, config):
 
 def rust_components(config):
     return config.get('components', {}).get('rust', [])
+
+
+def export_import_boundaries(root, config):
+    settings = config.get('components', {}).get('godot', {})
+    result = set()
+    for export in settings.get('exports', []):
+        project_root = relative(root, export.get('project', settings.get('project', 'app')))
+        output = relative(root, export['output'])
+        build = project_root / 'build'
+        if output.is_relative_to(build):
+            result.add((build / '.gdignore').relative_to(root).as_posix())
+    return sorted(result)
+
+
+def prepare_export_import_boundaries(root, config):
+    for name in export_import_boundaries(root, config):
+        path = relative(root, name)
+        if path.exists():
+            if not path.is_file() or path.stat().st_size > 4096:
+                raise ValueError('Godot generated build import boundary must be a bounded regular file')
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'')
 
 
 def cargo_records(config, environment):
@@ -430,6 +453,7 @@ def setup(root, config, env):
 
 
 def import_native(root, config, env):
+    prepare_export_import_boundaries(root, config)
     directory, settings = project(root, config)
     strict = helper('godot-game-runner')
     helper('godot-project').import_project(directory, env['GODOT_BIN'],
@@ -560,6 +584,7 @@ def validate_outputs(root, config, env, compiler=False):
 
 
 def compile_outputs(root, config, env):
+    prepare_export_import_boundaries(root, config)
     compiler_environment = godot_sdk.activate(root, config, env)
     node_component.build(root, packages(config), env, run)
     directory, settings = project(root, config)

@@ -62,6 +62,11 @@ jobs:
         merge-multiple: true
     - name: Verify complete native operator set
       run: python3 scripts/operator_package.py assemble
+    - name: Prepare pinned Godot for real native import controls
+      timeout-minutes: 5
+      run: |
+        python3 helpers/godot-setup.py --version 4.7.2 --expected-version 4.7.2.stable.official.ed1daf0bf --binary-checksum sha256:cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4 --origin godot-builds --root .artifacts/native-test-godot
+        printf 'GODOT_BIN=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-test-godot/bin/godot" >> "$GITHUB_ENV"
     - name: Check libraries and disposable recovery
       run: mise run check
     - name: Verify locked upstream Caddy build and linked symbols
