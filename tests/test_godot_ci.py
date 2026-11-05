@@ -51,6 +51,13 @@ class GodotTopologyControls(unittest.TestCase):
         host = next(value for value in plan['requirements'] if value['kind'] == 'host')
         self.assertNotIn(backup, host['cases'])
 
+    def test_real_go_unit_packages_require_native_host_unit_coverage(self):
+        config=self.config();config['components']={'rust':[]}
+        config['components']['go']=[{'directory':'deploy/native','package':'example.invalid/native/cmd/server',
+            'output':'.artifacts/native/server','test_packages':['example.invalid/native/security/...']}]
+        declaration=godot_ci.plan(None,config)
+        self.assertIn('test-native',declaration['unit_inventory'])
+
     def test_unknown_empty_or_duplicate_slices_fail_before_execution(self):
         for shard in ['0/2', '1/0', '3/2', '1/3', '1', '1/2;echo', '-1/2']:
             with self.subTest(shard=shard), self.assertRaises(ValueError):
