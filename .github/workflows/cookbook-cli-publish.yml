@@ -20,6 +20,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      attestations: read
     env:
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
       RELEASE_TAG: ${{ inputs.tag }}
