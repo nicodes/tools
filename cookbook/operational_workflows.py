@@ -9,6 +9,11 @@ import delivery_workflows
 NAME=re.compile('[a-z][a-z0-9_-]{0,62}')
 ENV=re.compile('[A-Z][A-Z0-9_]{0,79}')
 ROLES={'backup','recovery','security','production'}
+RESERVED_ENV={'GH_TOKEN','GITHUB_TOKEN','TOOLS_ROOT','KOMIZO_ACTIONS_ROOT','OPENROUTER_API_KEY',
+    'TOOLS_REF','KOMIZO_REF','DECLARATION','OPERATION','OPERATION_CHECK','OPERATION_RUNNER',
+    'OPERATION_TIMEOUT','OPERATION_ENVIRONMENT','OPERATION_REPORT_TIMEOUT','APP_VERSION',
+    'EXPECTED_REVISION','PLAYWRIGHT_BROWSERS_PATH','PATH','PYTHONPATH','PYTHONHOME','BASH_ENV',
+    'ENV','NODE_OPTIONS','LD_PRELOAD','LD_LIBRARY_PATH'}
 
 
 def bounded(value,maximum,label):
@@ -20,69 +25,90 @@ def source(root,name,prefixes=('deploy/','tests/','api/','internal/')):
     return relative(root,name,exists=True)
 
 
-def entry(root,value,paid=False):
+def records(value,maximum,label):
+    if not isinstance(value,list) or len(value)>maximum:raise ValueError(label+' must be a bounded list')
+    return value
+
+
+def entry(root,value,paid=False,budget=900):
     if not isinstance(value,dict) or set(value)-{'runner','path','args','environment','timeout','target','filter','binary'}:
         raise ValueError('operational checks require native program data')
     runner=value.get('runner')
-    if runner not in ({'python','node','bun','bash','cargo-test','cargo-run'} if paid else {'python','node','bun','bash'}):
+    if not isinstance(runner,str) or runner not in ({'python','node','bun','bash','cargo-test','cargo-run'} if paid else {'python','node','bun','bash'}):
         raise ValueError('unsupported native operational runner')
     path=source(root,value.get('path'))
+    if not path.is_file():raise ValueError('native operational checks require real source programs')
     if runner.startswith('cargo-') and path.name!='Cargo.toml':raise ValueError('native Cargo checks select their owning manifest')
     arguments=value.get('args',[])
-    if not isinstance(arguments,list) or len(arguments)>32 or any(not isinstance(v,str) or len(v)>1024 or '\0' in v for v in arguments):
+    if not isinstance(arguments,list) or len(arguments)>32 or any(not isinstance(v,str) or len(v)>1024 or any(c in v for c in '\0\r\n') for v in arguments):
         raise ValueError('native arguments must be bounded literal argv')
     environment=value.get('environment',{})
     if not isinstance(environment,dict) or len(environment)>16:raise ValueError('native environment must be bounded literal data')
     for key,item in environment.items():
-        if (not ENV.fullmatch(key) or key.startswith(('GITHUB_','MISE_','COOKBOOK_','REQUEST_'))
-                or key in {'GH_TOKEN','TOOLS_ROOT','KOMIZO_ACTIONS_ROOT','OPENROUTER_API_KEY'}
+        if (not isinstance(key,str) or not ENV.fullmatch(key) or key.startswith(('GITHUB_','MISE_','COOKBOOK_','REQUEST_','DYLD_'))
+                or key in RESERVED_ENV
                 or not isinstance(item,str) or len(item)>2048 or any(c in item for c in '\0\r\n')):
             raise ValueError('native environment cannot replace workflow, SDK or secret authority')
-    bounded(value.get('timeout',180),900,'native check')
+    bounded(value.get('timeout',180),budget,'native check')
     for key in ['target','filter','binary']:
         if key in value and (not isinstance(value[key],str) or not re.fullmatch('[A-Za-z0-9_:.-]{1,160}',value[key])):
             raise ValueError('native Cargo selectors must be literal identifiers')
     if runner=='cargo-test' and not {'target','filter'}<=set(value):raise ValueError('paid Cargo test must select its exact native test')
     if runner=='cargo-run' and 'binary' not in value:raise ValueError('paid Cargo run must select its exact native binary')
+    selectors={'cargo-test':{'target','filter'},'cargo-run':{'binary'}}.get(runner,set())
+    if (set(value)&{'target','filter','binary'})-selectors:raise ValueError('native selectors must be used by their declared runner')
+    if runner=='cargo-test' and arguments:raise ValueError('exact paid Cargo tests cannot discard declared arguments')
     return value
 
 
 def declaration(root,config):
     selected=config.get('operations')
     if not isinstance(selected,dict) or set(selected)!={'definition'}:raise ValueError('operations require one native declaration')
-    path=relative(root,selected['definition'],exists=True)
+    if config.get('recipe') not in {'react-native','godot-game'}:raise ValueError('operations belong to implemented application recipes')
+    path=source(root,selected['definition'],('deploy/',))
     if not path.is_file() or path.stat().st_size>65536:raise ValueError('operations declaration must be bounded regular source')
     value=json.loads(path.read_text())
-    if not isinstance(value,dict) or set(value)-{'version','project','backup','recovery','security','production','paid','restore_profiles'} or value.get('version')!=1:
+    if not isinstance(value,dict) or set(value)-{'version','project','backup','recovery','security','production','paid','restore_profiles'} or type(value.get('version')) is not int or value['version']!=1:
         raise ValueError('unsupported native operational declaration')
     delivery=delivery_workflows.declaration(root,config)
     if value.get('project')!=delivery['project']:raise ValueError('operations and delivery project authority disagree')
     for role in ROLES:
         if role not in value:continue
         record=value[role]
-        if not isinstance(record,dict) or set(record)-{'runner','timeout_minutes','environment','schedule','config','gate_variable','concurrency','queue','report_timeout','checks','prepare','evidence','deployed_policy'}:
+        fields={'backup':{'config','gate_variable'},'recovery':set(),'security':{'report_timeout','checks','prepare','deployed_policy'},'production':{'checks','prepare'}}
+        if not isinstance(record,dict) or set(record)-({'runner','timeout_minutes','environment','schedule','concurrency','queue','evidence'}|fields[role]):
             raise ValueError('unsupported native '+role+' data')
         if not isinstance(record.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',record['runner']):raise ValueError('operation requires its original runner')
         bounded(record.get('timeout_minutes'),110 if role=='security' else 45,role)
         if 'report_timeout' in record:bounded(record['report_timeout'],11,'failure report')
-        if record.get('environment') not in {None,'production','Production'}:raise ValueError('preserve the original protected production environment')
+        if record.get('environment') not in (None,'production','Production'):raise ValueError('preserve the original protected production environment')
         schedule=record.get('schedule',[])
         if not isinstance(schedule,list) or len(schedule)>4 or any(not isinstance(v,str) or not re.fullmatch('[0-9*/,-]+(?: [0-9*/,-]+){4}',v) for v in schedule):raise ValueError('operational schedule must be bounded literal cron')
         if role in {'backup','recovery'} and 'checks' in record:raise ValueError('credentialed backup and transport recovery execute only pinned shared code')
+        if role=='recovery' and schedule:raise ValueError('encrypted recovery transport requires explicit artifact selection')
+        concurrency=record.get('concurrency')
+        if concurrency is not None and (not isinstance(concurrency,str) or not re.fullmatch('[A-Za-z0-9_.:/-]{1,128}',concurrency)):
+            raise ValueError('operational concurrency requires its literal native group')
+        if record.get('queue') not in (None,'max') or (record.get('queue') and not concurrency):raise ValueError('queue policy requires its native serialization group')
         if role=='backup':
             source(root,record.get('config'),('deploy/',))
-            if record.get('gate_variable') and not ENV.fullmatch(record['gate_variable']):raise ValueError('backup gates select a named public variable')
-            if record.get('concurrency') not in {None,'deploy-production','backup'} or record.get('queue') not in {None,'max'}:raise ValueError('preserve bounded native host serialization')
-        for check in record.get('checks',[]):entry(root,check)
+            if 'gate_variable' in record and (not isinstance(record['gate_variable'],str) or not ENV.fullmatch(record['gate_variable'])):raise ValueError('backup gates select a named public variable')
+            if record.get('concurrency') not in (None,'deploy-production','backup'):raise ValueError('preserve bounded native host serialization')
+        budget=record['timeout_minutes']*60
+        for check in records(record.get('checks',[]),32,'native checks'):entry(root,check,budget=budget)
         if role=='production' and not record.get('checks'):raise ValueError('production verification requires actual native assertions')
         if role=='security' and record.get('deployed_policy'):source(root,record['deployed_policy'],('deploy/',))
         prepare=record.get('prepare',{})
         if not isinstance(prepare,dict) or set(prepare)-{'packages','browser','rust','native'}:raise ValueError('SDK preparation accepts native package capabilities only')
-        for package in prepare.get('packages',[]):relative(root,package,exists=True)
+        packages=records(prepare.get('packages',[]),16,'prepared packages')
+        if any(not isinstance(package,str) for package in packages) or len(set(packages))!=len(packages):raise ValueError('prepared packages must be distinct native directories')
+        for package in packages:
+            if not relative(root,package,exists=True).is_dir():raise ValueError('prepared packages require native directories')
         if prepare.get('browser'):relative(root,prepare['browser'],exists=True)
+        if 'browser' in prepare and (not isinstance(prepare['browser'],str) or prepare['browser'] not in packages):raise ValueError('browser preparation must select a prepared native package')
         if type(prepare.get('rust',False)) is not bool:raise ValueError('Rust SDK preparation must be explicit')
-        for check in prepare.get('native',[]):entry(root,check)
-        for name in record.get('evidence',[]):
+        for check in records(prepare.get('native',[]),16,'native preparation'):entry(root,check,budget=budget)
+        for name in records(record.get('evidence',[]),16,'operational evidence'):
             if not isinstance(name,str) or not name.startswith('.artifacts/'):raise ValueError('operational evidence belongs in generated artifacts')
             relative(root,name)
     paid=value.get('paid',[])
@@ -92,21 +118,26 @@ def declaration(root,config):
         if not isinstance(check,dict) or set(check)-{'id','description','runner','timeout_minutes','environment','prepare','check','deployment_required','skip_default'}:
             raise ValueError('unsupported paid native check')
         name=check.get('id','')
-        if not isinstance(name,str) or not NAME.fullmatch(name) or name in seen:raise ValueError('paid checks require distinct native dispatch inputs')
+        if not isinstance(name,str) or not NAME.fullmatch(name) or name in seen or name in ROLES|{'paid','verify','report'}:raise ValueError('paid checks require distinct native dispatch inputs')
         seen.add(name);bounded(check.get('timeout_minutes'),45,'paid check')
-        if check.get('environment') not in {'production','Production'}:raise ValueError('paid checks retain their protected approval environment')
-        if not re.fullmatch('[A-Za-z0-9_.-]{1,80}',check.get('runner','')):raise ValueError('paid check requires its existing runner')
+        if check.get('environment') not in ('production','Production'):raise ValueError('paid checks retain their protected approval environment')
+        if not isinstance(check.get('runner'),str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',check['runner']):raise ValueError('paid check requires its existing runner')
         if not isinstance(check.get('description'),str) or not 1<=len(check['description'])<=256:raise ValueError('paid checks require a useful bounded dispatch description')
         for key in ['deployment_required','skip_default']:
             if type(check.get(key,False)) is not bool:raise ValueError('paid check gates must be literal booleans')
-        entry(root,check.get('check'),paid=True)
-        for native in check.get('prepare',[]):entry(root,native)
+        entry(root,check.get('check'),paid=True,budget=check['timeout_minutes']*60)
+        for native in records(check.get('prepare',[]),16,'paid preparation'):entry(root,native,budget=check['timeout_minutes']*60)
+    if paid and 'production' not in value:raise ValueError('paid opt-ins require the original production workflow')
     profiles=value.get('restore_profiles',[])
     if not isinstance(profiles,list) or len(profiles)>4:raise ValueError('restore profiles require bounded native data')
+    names=set()
     for profile in profiles:
         if (not isinstance(profile,dict) or set(profile)!={'name','project','config'}
-                or not NAME.fullmatch(profile.get('name','')) or not NAME.fullmatch(profile.get('project',''))):
+                or not isinstance(profile.get('name'),str) or not NAME.fullmatch(profile['name'])
+                or not isinstance(profile.get('project'),str) or not NAME.fullmatch(profile['project'])):
             raise ValueError('invalid native restore profile')
+        if profile['name'] in names:raise ValueError('restore profile names must be distinct')
+        names.add(profile['name'])
         source(root,profile['config'],('deploy/',))
     return {**value,'komizo_ref':delivery['komizo_ref'],'definition':selected['definition']}
 
