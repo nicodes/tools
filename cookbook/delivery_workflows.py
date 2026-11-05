@@ -9,9 +9,9 @@ from configuration import relative
 
 def deadlines(data):
     values=data.get('step_timeouts',{})
-    names={'checkout','setup','plan','registry','inspect','prepare','deploy','readiness','diagnostics','artifact','upload'}
+    names={'checkout','setup','plan','registry','inspect','prepare','connect','capture','download','deploy','readiness','diagnostics','artifact','upload'}
     if not isinstance(values,dict) or set(values)-names:raise ValueError('delivery step deadlines require implemented native phases')
-    result={name:values.get(name,min(3,data['deploy_timeout']) if name in {'readiness','diagnostics','registry'} else min(5,data['deploy_timeout']) if name in {'setup','plan'} else min(10,data['deploy_timeout']) if name in {'artifact','upload'} else data['deploy_timeout']) for name in names}
+    result={name:values.get(name,min(3,data['deploy_timeout']) if name in {'readiness','diagnostics','registry','connect'} else min(5,data['deploy_timeout']) if name in {'setup','plan','download'} else min(10,data['deploy_timeout']) if name in {'artifact','upload'} else min(15,data['deploy_timeout']) if name=='capture' else data['deploy_timeout']) for name in names}
     if any(type(value) is not int or not 1<=value<=data['deploy_timeout'] for value in result.values()):
         raise ValueError('delivery step deadlines must stay within the original job budget')
     return result
@@ -154,15 +154,28 @@ def jobs(root, config, tools):
         lines+=['      - uses: nicodes/komizo-actions/application-publication@'+ref,
             '        with:','          tools-ref: '+tools,'          komizo-ref: '+ref,'          source: ${{ github.sha }}',
             '          project: '+data['project'],'        env:','          GH_TOKEN: ${{ github.token }}']
-    lines+=['      - uses: nicodes/komizo-actions/application-delivery@'+ref,'        id: delivery',
-        '        timeout-minutes: '+str(limits['prepare']),'        with:','          tools-ref: '+tools,
+    lines+=['      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+        '        timeout-minutes: '+str(limits['setup']),'        with:','          repository: nicodes/tools',
+        '          ref: '+tools,'          path: _delivery_cookbook','          persist-credentials: false',
+        '      - uses: nicodes/tools/setup@'+tools,'        timeout-minutes: '+str(limits['setup']),
+        '        with:','          tools: python','        env:','          GH_TOKEN: ${{ github.token }}',
+        '      - uses: nicodes/komizo-actions/application-delivery@'+ref,'        id: delivery',
+        '        timeout-minutes: '+str(limits['plan']),'        with:','          tools-ref: '+tools,
         '          project: '+data['project'],'          declaration: '+config['delivery']['definition'],
-        '          prepare-only: true','        env:','          GH_TOKEN: ${{ github.token }}',
+        '          plan-only: true','          sdk-prepared: true','        env:','          GH_TOKEN: ${{ github.token }}',
+        "          PYTHONDONTWRITEBYTECODE: '1'",
+        '      - uses: nicodes/komizo-actions/connect@'+ref,
+        '        timeout-minutes: '+str(limits['connect']),'        with:','          user: komizo-'+data['project'],
+        '        env:',
         '          KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}',
         '          KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}','          KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}']
+    if data.get('backup'):
+        lines+=['      - uses: nicodes/komizo-actions/application-backup-export@'+ref,'        id: backup',
+            '        timeout-minutes: '+str(limits['capture']),'        with:',
+            '          project: '+data['project'],'          config: '+data['backup']]
     if data.get('upload_backup'):
         lines+=['      - uses: nicodes/komizo-actions/application-backup-upload@'+ref,
-            "        if: steps.delivery.outputs.has-export == 'true'",'        timeout-minutes: '+str(limits['upload']),
+            "        if: steps.backup.outputs.has-export == 'true'",'        timeout-minutes: '+str(limits['upload']),
             '        with:','          project: '+data['project'],'        env:',
             '          BACKUP_ALLOWED_SLUGS: '+json.dumps(json.dumps([data['project']]))]
         for key in ['ACCESS_KEY','SECRET_KEY']:lines+=['          BACKUP_S3_'+key+': ${{ secrets.BACKUP_S3_'+key+' }}']
@@ -177,6 +190,9 @@ def jobs(root, config, tools):
             '        timeout-minutes: '+str(limits['prepare']),'        env:']
         for name,source in sorted(data['optional_secrets'].items()):
             lines+=['          '+name.replace('KOMIZO_SECRET_','KOMIZO_OPTIONAL_SECRET_',1)+': ${{ secrets.'+source+' }}']
+    lines+=['      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333',
+        '        timeout-minutes: '+str(limits['download']),'        with:',
+        '          name: host-release-${{ github.sha }}','          path: .artifacts/komizo-release']
     lines+=['      - uses: nicodes/komizo-actions/deploy@'+ref,'        timeout-minutes: '+str(limits['deploy']),
         '        with:','          release-manifest: .artifacts/komizo-release/manifest.json','          version: ${{ github.sha }}',
         '          registry-user: ${{ github.repository_owner }}','          registry-token: ${{ github.token }}',

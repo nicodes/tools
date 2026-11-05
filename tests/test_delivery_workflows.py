@@ -107,7 +107,8 @@ class DeliveryWorkflows(unittest.TestCase):
         self.write()
         text=delivery.jobs(self.root,self.config,'b'*40)
         self.assertIn('    environment: Production',text)
-        self.assertIn('prepare-only: true',text)
+        self.assertIn('plan-only: true',text)
+        self.assertIn('sdk-prepared: true',text)
         self.assertIn('        timeout-minutes: 25',text)
         self.assertIn('notify: false',text)
         self.assertNotIn('DISCORD_WEBHOOK_URL',text)
@@ -178,6 +179,23 @@ class DeliveryWorkflows(unittest.TestCase):
         self.data.pop('service_env_profile');self.data.pop('expected_generation');self.write()
         with self.assertRaisesRegex(ValueError,'fixed scoped profile'):
             delivery.declaration(self.root,self.config)
+
+    def test_setup_connection_capture_and_download_have_actual_workflow_deadlines(self):
+        (self.root/'deploy').mkdir()
+        (self.root/'deploy/backup.json').write_text('{}\n')
+        self.data.update(backup='deploy/backup.json',upload_backup=True)
+        self.write()
+        text=delivery.jobs(self.root,self.config,'b'*40)
+        for action,minutes in [('nicodes/tools/setup@',5),('nicodes/komizo-actions/connect@',3),
+                               ('nicodes/komizo-actions/application-backup-export@',15),
+                               ('nicodes/komizo-actions/application-backup-upload@',10),
+                               ('actions/download-artifact@',5)]:
+            block=text.split('      - uses: '+action,1)[1].split('      - uses:',1)[0]
+            with self.subTest(action=action):self.assertIn('        timeout-minutes: '+str(minutes)+'\n',block)
+        admission=text.split('      - uses: nicodes/komizo-actions/application-delivery@',1)[1].split('      - uses:',1)[0]
+        self.assertNotIn('secrets.',admission)
+        capture=text.split('      - uses: nicodes/komizo-actions/application-backup-export@',1)[1].split('      - uses:',1)[0]
+        self.assertNotIn('BACKUP_S3_',capture)
 
 
 if __name__ == '__main__':
