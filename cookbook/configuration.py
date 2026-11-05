@@ -95,7 +95,9 @@ def load(root):
             if not (program.is_dir() if entry['runner'] == 'godot-suite' else
                     (program.is_file() or program.is_dir()) if discovery else program.is_file()):
                 raise ValueError('test entry must name a source file')
-            if not any(part in {'tests', 'test'} for part in Path(entry['path']).parts):
+            colocated = (entry['runner'] in {'node-test','bun-test'} and program.is_file()
+                and re.fullmatch(r'.+\.(?:test|spec)\.(?:[cm]?js|jsx|ts|tsx)',program.name))
+            if not colocated and not any(part in {'tests', 'test'} for part in Path(entry['path']).parts):
                 raise ValueError('product test entry points belong with their tests')
             arguments = entry.get('args', [])
             if not isinstance(arguments, list) or any(not isinstance(value, str) or '\0' in value for value in arguments):

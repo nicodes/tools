@@ -54,6 +54,22 @@ class RecipeConfiguration(unittest.TestCase):
         with self.assertRaises(ValueError):
             configuration.load(self.root)
 
+    def test_colocated_javascript_tests_keep_native_ownership_and_literal_test_identity(self):
+        (self.root/'app/native').mkdir(parents=True)
+        for runner,name,accepted in [('bun-test','authoring.test.ts',True),
+                ('node-test','runtime.spec.mjs',True),('node-test','runtime.mjs',False),
+                ('bun','authoring.test.ts',False),('python','policy.test.py',False)]:
+            source=self.root/'app/native'/name
+            source.write_text('// real native test source\n')
+            self.write('[[tests.unit]]\nrunner="'+runner+'"\npath="app/native/'+name+'"\n')
+            with self.subTest(runner=runner,name=name):
+                if accepted:
+                    self.assertEqual(configuration.load(self.root)['tests']['unit'][0]['path'],'app/native/'+name)
+                else:
+                    with self.assertRaises(ValueError):configuration.load(self.root)
+        self.write('[[tests.unit]]\nrunner="node-test"\npath="app/native"\n')
+        with self.assertRaises(ValueError):configuration.load(self.root)
+
     def test_source_and_output_paths_reject_symlink_escapes(self):
         try:
             (self.root / 'linked').symlink_to(self.root.parent, target_is_directory=True)
