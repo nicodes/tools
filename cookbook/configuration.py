@@ -106,7 +106,7 @@ def load(root):
                 if (entry['runner'] not in {'python-unittest', 'node-test'} or not isinstance(pattern, str)
                         or not pattern or '/' in pattern or '\\' in pattern or '\0' in pattern):
                     raise ValueError('native test discovery requires one filename pattern')
-            if type(entry.get('timeout', 300)) is not int or not 1 <= entry.get('timeout', 300) <= 3600:
+            if type(entry.get('timeout', 300)) is not int or not 1 <= entry.get('timeout', 300) <= 10800:
                 raise ValueError('native tests require a bounded timeout')
     for name in data.get('clean', {}).get('paths', []):
         relative(root, name)

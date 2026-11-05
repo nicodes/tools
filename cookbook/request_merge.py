@@ -102,7 +102,7 @@ def workflow_acceptance(receipt, proof, run, jobs, environment=None):
     if (proof.get('recipe') != model['recipe'] or receipt.get('recipe') != model['recipe']
             or receipt['test_groups'] != model['test_groups']
             or proof.get('configuration_sha256') != receipt['configuration_sha256']
-            or proof.get('coverage') == 'native-partial'):
+            or proof.get('coverage') in {'native-partial', 'godot-partial'}):
         raise ValueError('validation differs from the exact candidate recipe declaration')
     context = proof.get('execution_context', {})
     for key in ['GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_WORKFLOW_REF']:
@@ -126,7 +126,8 @@ def workflow_acceptance(receipt, proof, run, jobs, environment=None):
     module = orchestration.matrix_module(declaration)
     namespace = 'native_matrix' if model['route'] == 'native' else 'godot_matrix'
     if module is not None:
-        if model['route'] == 'native' and proof.get('coverage') != 'complete-host-and-native-matrix':
+        expected_coverage = 'complete-host-and-' + ('native' if model['route'] == 'native' else 'godot') + '-matrix'
+        if proof.get('coverage') != expected_coverage:
             raise ValueError('native acceptance requires complete host and platform coverage together')
         module.validate_acceptance(proof.get(namespace), declaration, jobs, receipt['candidate'],
                                    receipt['cookbook_commit'], environment, receipt['configuration_sha256'])

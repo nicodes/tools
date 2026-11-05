@@ -102,10 +102,13 @@ def run(root, mode, source, tools, release_bump='', head='', base=''):
         from publication import identity as release_identity
         release_identity(root, config, release_bump)
     environment = {**os.environ, 'COOKBOOK_ROOT': str(TOOLS), 'COOKBOOK_STAGE': mode}
-    commands = ['setup', 'test:lint'] if mode == 'fast' else ['setup', 'build', 'test']
+    imported_build = mode == 'full' and matrix_module is not None and hasattr(matrix_module, 'revalidate_host_build')
+    commands = ['setup', 'test:lint'] if mode == 'fast' else ['setup', *([] if imported_build else ['build']), 'test']
     receipt = root / '.artifacts/cookbook-validation.json'
     receipt.unlink(missing_ok=True)
     for command in commands:
+        if command == 'test' and imported_build:
+            matrix_module.revalidate_host_build(root, config, matrix, environment)
         subprocess.run(['make', '--no-print-directory', command], cwd=root, env=environment, check=True)
     identity(root, source, tools)
     if mode == 'fast':
