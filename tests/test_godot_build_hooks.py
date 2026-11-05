@@ -47,7 +47,7 @@ class GodotBuildHooks(unittest.TestCase):
              patch.object(game.godot_package,'extensions'),patch.object(game.godot_package,'author'),\
              patch.object(game.godot_package,'runtime'),patch.object(game.godot_package,'packs'),\
              patch.object(game.godot_package,'package'),patch.object(game,'helper'),patch.object(game,'validate_outputs'),\
-             patch.object(game.images,'build',side_effect=lambda *args:events.append('images')),\
+             patch.object(game.images,'build',side_effect=lambda *args,**kwargs:events.append('images')),\
              patch.object(game.godot_static,'stage',side_effect=lambda *args:events.append('blueprint')),\
              patch.object(game.images,'package',side_effect=lambda *args:events.append('package')):
             game.compile_outputs(self.root,self.config,{'GODOT_BIN':'native-fixture'})

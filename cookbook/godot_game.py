@@ -40,7 +40,7 @@ def helper(name):
 
 def verification_scope(root, config):
     values = config.get('artifacts', {})
-    if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'definition', 'release_metadata'}:
+    if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'definition', 'release_metadata', 'evidence_paths'}:
         raise ValueError('unknown Godot build artifact selector')
     verification = helper('verification')
     if values.get('definition'):
@@ -128,7 +128,7 @@ def validate_config(root, config):
         raise ValueError('native imports belong to explicit setup or build stages')
     seen = set()
     for export in values.get('exports', []):
-        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility', 'project', 'timeout', 'import_timeout', 'import_arguments'}:
+        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility', 'project', 'timeout', 'import_timeout', 'import_arguments', 'privileged_directories', 'source_files'}:
             raise ValueError('unsupported native Godot export setting')
         if export.get('kind', 'release') not in {'release', 'debug'} or export.get('platform', 'web') not in {'web', 'linux', 'windows', 'macos'}:
             raise ValueError('unsupported Godot export kind or platform')
@@ -137,6 +137,8 @@ def validate_config(root, config):
             raise ValueError('native exports require an owned Godot project')
         if native_project != directory and not native_project.is_relative_to(root / 'tests'):
             raise ValueError('additional native Godot export projects belong to owned test fixtures')
+        helper('godot-export').variant_options(native_project,[export.get('kind','release')],
+            export.get('privileged_directories',[]),export.get('source_files',{}),root,read_sources=False)
         helper('godot-export').native_options(export.get('import_arguments', values.get('import_arguments', [])),
             export.get('timeout', 600), export.get('import_timeout', values.get('import_timeout', 180)))
         output = relative(root, export['output'])
@@ -559,11 +561,13 @@ def compile_outputs(root, config, env):
     for export in exports:
         native_project = relative(root, export.get('project', settings.get('project', 'app')), exists=True)
         arguments = tuple(export.get('import_arguments', settings.get('import_arguments', [])))
-        key = (native_project, arguments, export.get('timeout', 600), export.get('import_timeout', settings.get('import_timeout', 180)))
+        key = (native_project, arguments, export.get('timeout', 600), export.get('import_timeout', settings.get('import_timeout', 180)),
+            tuple(export.get('privileged_directories',[])),tuple(sorted(export.get('source_files',{}).items())))
         groups.setdefault(key, []).append((export['preset'], relative(root, export['output']), export.get('kind', 'release')))
-    for (native_project, arguments, timeout, import_timeout), presets in groups.items():
+    for (native_project, arguments, timeout, import_timeout, directories, sources), presets in groups.items():
         helper('godot-export').export(native_project, presets, binary=env['GODOT_BIN'],
-            import_arguments=arguments, timeout=timeout, import_timeout=import_timeout)
+            import_arguments=arguments, timeout=timeout, import_timeout=import_timeout,
+            privileged_directories=directories,source_files=dict(sources),source_root=root)
     godot_package.runtime(root, config)
     godot_package.packs(root, config, env)
     godot_package.author(root, config, env, run, 'postprocess')
