@@ -80,6 +80,31 @@ class LockedAddons(unittest.TestCase):
                 self.assertFalse((self.root / 'escape').exists())
                 self.assertFalse((self.project / 'addons/@owner_addon').exists())
 
+    def test_frozen_lock_identity_and_install_path_cannot_diverge(self):
+        self.entry['commit'] = 'a' * 40
+        self.save()
+        release = {'name': '@owner/addon', 'tag': 'v0.0.1', 'commit_sha': 'a' * 40,
+                   'asset_id': 17, 'asset_digest': 'sha256:' + self.entry['asset_sha256'],
+                   'installs': [{'path': 'addons/@owner_addon', 'required_by': ['gdam.json']}]}
+        frozen = {'version': 1, 'requirements': {'@owner/addon': 'v0.0.1'}, 'addons': {'@owner/addon@v0.0.1': release}}
+        (self.project / 'gdam.lock').write_text(json.dumps(frozen))
+        addons.restore(self.project, self.fetch)
+        for key, changed in [('asset_id', 99), ('commit_sha', 'b' * 40), ('asset_digest', 'sha256:' + 'f' * 64), ('installs', [])]:
+            value = {**frozen, 'addons': {'@owner/addon@v0.0.1': {**release, key: changed}}}
+            (self.project / 'gdam.lock').write_text(json.dumps(value))
+            with self.assertRaisesRegex(ValueError, 'identity or install path'):
+                addons.restore(self.project, self.fetch)
+
+    def test_reviewed_marker_requires_exact_asset_restore_and_uid_removal(self):
+        addons.restore(self.project, self.fetch)
+        marker = self.project / 'addons/.fixture-unverified'; marker.touch()
+        uid = self.project / 'addons/@owner_addon/generated.gd.uid'; uid.write_text('uid://fixture')
+        with self.assertRaises(ValueError):addons.verify(self.project)
+        with self.assertRaises(ValueError):addons.restore(self.project, self.fetch, taint_markers=['../escape'])
+        addons.restore(self.project, self.fetch, taint_markers=['.fixture-unverified'])
+        self.assertFalse(marker.exists()); self.assertFalse(uid.exists())
+        addons.verify(self.project)
+
 
 if __name__ == '__main__':
     unittest.main()

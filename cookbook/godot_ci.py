@@ -654,7 +654,7 @@ def setup_worker(root, config, environment, entry):
               '--expected-version', godot['GODOT_EXPECTED_VERSION'], '--binary-checksum', godot['GODOT_BINARY_CHECKSUM'],
               '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, environment)
     if (directory / 'gdam.json').exists():
-        game.helper('godot-addons').restore(directory)
+        game.helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []))
     game.import_native(root, config, environment)
 
 

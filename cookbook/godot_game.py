@@ -58,7 +58,7 @@ def project(root, config):
 def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
-               'import_ignored_patterns', 'preserve_import_defaults', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
+               'import_ignored_patterns', 'addon_taint_markers', 'preserve_import_defaults', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
                'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web', 'extensions'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
@@ -235,7 +235,7 @@ def setup(root, config, env):
          '--templates-checksum', pins['GODOT_TEMPLATES_CHECKSUM'], '--templates',
          '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, env)
     if (directory / 'gdam.json').exists():
-        helper('godot-addons').restore(directory)
+        helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []))
     if settings.get('import_stage', 'setup') == 'setup':
         import_native(root, config, env)
 
