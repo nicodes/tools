@@ -90,6 +90,9 @@ jobs:
         production = production.replace('group: ci-', 'group: deploy-source-', 1).replace('cancel-in-progress: true', 'cancel-in-progress: false', 1)
         production = production.replace("merge-gate: ${{ vars.COOKBOOK_REQUEST_MERGE == 'enabled' }}", 'merge-gate: false')
         files['.github/workflows/cd.yml'] = production + delivery_workflows.jobs(root, config, revision)
+    if config.get('preview'):
+        import preview_workflows
+        files.update(preview_workflows.workflow_files(root, revision, config))
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):
