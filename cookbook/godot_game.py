@@ -78,7 +78,7 @@ def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
                'import_ignored_patterns', 'addon_taint_markers', 'preserve_import_defaults', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
-               'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web', 'extensions'}
+               'prepare', 'postprocess', 'packs', 'web_releases', 'templates', 'import_stage', 'rust_web', 'extensions'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
     if values.get('origin', 'godot') not in {'godot', 'godot-builds'}:
@@ -108,6 +108,9 @@ def validate_config(root, config):
         if output in seen:
             raise ValueError('Godot export destinations must be distinct')
         seen.add(output)
+    if values.get('templates') is not None:
+        import godot_template
+        godot_template.declaration(root,config)
     components = config.get('components', {})
     for component in components.get('rust', []):
         rust_component.validate(component, root)
@@ -338,6 +341,9 @@ def setup(root, config, env):
          '--expected-version', pins['GODOT_EXPECTED_VERSION'], '--binary-checksum', pins['GODOT_BINARY_CHECKSUM'],
          '--templates-checksum', pins['GODOT_TEMPLATES_CHECKSUM'], '--templates',
          '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, env)
+    if settings.get('templates') is not None:
+        import godot_template
+        godot_template.setup(root,config,env)
     if (directory / 'gdam.json').exists():
         helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []))
     if settings.get('import_stage', 'setup') == 'setup':
@@ -479,6 +485,9 @@ def compile_outputs(root, config, env):
     exports = settings.get('exports', [])
     if not exports:
         raise ValueError('build requires at least one real native export')
+    if settings.get('templates') is not None:
+        import godot_template
+        godot_template.verify(root,config,env)
     # The shared exporter performs strict isolated imports and preserves authored
     # input files. No product tests or dependency installation occur here.
     groups = {}
