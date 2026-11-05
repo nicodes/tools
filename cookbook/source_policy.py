@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from configuration import relative
 
 TOOLS = Path(__file__).resolve().parents[1]
