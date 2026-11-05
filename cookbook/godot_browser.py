@@ -67,7 +67,7 @@ def declaration(root, config):
     return value,pin,checksum,runtime
 
 
-def setup(root, config, environment, *, capability=False):
+def setup(root, config, environment, *, capability=False, public_browsers=None):
     value,pin,checksum,runtime = declaration(root,config)
     destination=relative(root,'.artifacts/browser-sdk/gd-playwright-cli');receipt=relative(root,'.artifacts/browser-sdk/gd-playwright-cli.json')
     source={'repository':value['cli_tool'][7:],'version':pin['version'],'asset':pin['asset_pattern'],'sha256':checksum}
@@ -96,8 +96,11 @@ def setup(root, config, environment, *, capability=False):
     cache=relative(root,'.artifacts/playwright');cache.mkdir(parents=True,exist_ok=True)
     values={'PLAYWRIGHT_BROWSERS_PATH':str(cache),'GDPW_BIN':str(destination),'BROWSER_CACHE':str(cache)}
     if capability:
+        selected=public_browsers or ['chromium']
+        if selected not in [['chromium'],['chromium','firefox','webkit']]:
+            raise ValueError('public browser SDK setup must retain its literal declared engines')
         values['BROWSER_RUNTIME_IMAGE']=''
-        subprocess.run([str(playwright),'install','--with-deps','chromium'],cwd=package,env={**environment,**values},check=True,timeout=600)
+        subprocess.run([str(playwright),'install','--with-deps',*selected],cwd=package,env={**environment,**values},check=True,timeout=600)
     else:
         values['BROWSER_RUNTIME_IMAGE']=runtime
         subprocess.run(['docker','pull',runtime],cwd=root,env=environment,check=True,timeout=300)

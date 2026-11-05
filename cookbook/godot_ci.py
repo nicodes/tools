@@ -147,7 +147,7 @@ def plan(root, config):
     names = set()
     production = []
     for record in gate_records:
-        allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts'}
+        allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe'}
         if not isinstance(record, dict) or set(record) - allowed or not {'name', 'runner', 'timeout_minutes'} <= set(record):
             raise ValueError('invalid native auxiliary gate')
         name, kind = record['name'], record.get('kind', 'test')
@@ -155,6 +155,16 @@ def plan(root, config):
                 or name in names or record['runner'] not in RUNNERS or kind not in {'test', 'capability', 'production'}):
             raise ValueError('auxiliary gates require distinct names, native runners and coverage roles')
         names.add(name)
+        public_fields=set(record)&{'browsers','xvfb','probe'}
+        if public_fields and kind!='production':
+            raise ValueError('public production launcher policy must not alter product or capability coverage')
+        browsers=record.get('browsers',['chromium'])
+        if browsers not in [['chromium'],['chromium','firefox','webkit']]:
+            raise ValueError('public browser coverage must retain its actual one or three native engines')
+        xvfb=record.get('xvfb',[])
+        if (not isinstance(xvfb,list) or len(xvfb)!=len(set(xvfb)) or not set(xvfb)<=set(browsers)
+                or type(record.get('probe',False)) is not bool):
+            raise ValueError('public display and probe policy requires literal covered browsers and a boolean')
         setup = record.get('setup', 'native')
         if setup not in {'native', 'godot', 'browser'}:
             raise ValueError('native gate setup must select a shared SDK capability')
@@ -206,6 +216,8 @@ def plan(root, config):
             'suite': suite, 'cases': sorted(cases), 'setup': setup, 'packages': packages, 'artifacts': inputs}
         if kind != 'test':
             value['entry'] = entry
+        if kind=='production':
+            value.update({key:record[key] for key in ['browsers','xvfb','probe'] if key in record})
         (production if kind == 'production' else requirements).append(value)
     host_cases = sorted(set(declared) - assigned)
     host_groups = ['lint', 'unit', 'security', *[name for name in ['integration', 'e2e'] if config.get('tests', {}).get(name)]]

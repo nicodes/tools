@@ -77,6 +77,21 @@ class GodotTopologyControls(unittest.TestCase):
             self.assertEqual(godot_ci.run_cases(cases, 2, execute), 0)
 
 
+    def test_production_browser_display_probe_policy_preserves_actual_native_program_scope(self):
+        config=self.config()
+        config['ci']['godot']['gates']=[{'name':'production','kind':'production','runner':'blacksmith-4vcpu-ubuntu-2204',
+            'timeout_minutes':15,'setup':'browser','entry':{'runner':'node','path':'tests/browser/public.mjs','timeout':900},
+            'browsers':['chromium','firefox','webkit'],'xvfb':['chromium','firefox'],'probe':False}]
+        declaration=godot_ci.plan(None,config)
+        self.assertFalse(any(row['kind']=='production' for row in declaration['requirements']))
+        production=declaration['production']['include'][0]
+        self.assertEqual(production['browsers'],['chromium','firefox','webkit'])
+        self.assertEqual(production['xvfb'],['chromium','firefox']);self.assertIs(production['probe'],False)
+        for key,value in [('browsers',['firefox']),('browsers',['chromium','chromium']),('xvfb',['missing']),('probe','false')]:
+            candidate=copy.deepcopy(config);candidate['ci']['godot']['gates'][0][key]=value
+            with self.assertRaises(ValueError):godot_ci.plan(None,candidate)
+
+
 class SelectionEvidenceControls(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -111,6 +126,7 @@ class SelectionEvidenceControls(unittest.TestCase):
         path = self.root / '2/godot-test-selection.json'; saved = self.root / 'saved.json'
         path.rename(saved); path.symlink_to(saved)
         with self.assertRaises(ValueError): self.verify()
+
 
 
 if __name__ == '__main__':
