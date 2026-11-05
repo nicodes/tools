@@ -28,6 +28,24 @@ class NativeVariants(unittest.TestCase):
             self.assertEqual(rust_staging.artifact_paths(declared), [
                 '.artifacts/fixtures/localdev/api', '.artifacts/fixtures/engineering/api'])
 
+    def test_installed_filename_mapping_preserves_native_binary_identity_and_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); compiled=root/'target/debug'; compiled.mkdir(parents=True)
+            (compiled/'native-api').write_bytes(b'actual compiled API')
+            record=dict(manifest='Cargo.toml', binaries=['native-api'], profile='debug')
+            declared=record|{'output_directory':'api/bin', 'output_names':{'native-api':'server'}}
+            with patch.object(rust_staging.rust_component,'build'):
+                rust_staging.compile_and_stage(root,[declared],[record],{},None)
+            self.assertEqual((root/'api/bin/server').read_bytes(),b'actual compiled API')
+            self.assertEqual(rust_staging.artifact_paths([declared]),['api/bin/server'])
+            for mapping in [{'native-api':'../source'}, {'native-api':'/bin/server'}, {'other':'server'},
+                            {'native-api':'..'}, {'native-api':False}]:
+                with self.subTest(mapping=mapping),self.assertRaises(ValueError):
+                    rust_staging.artifact_paths([declared|{'output_names':mapping}])
+            (root/'api/bin/server').unlink();(root/'api/bin/server').symlink_to(compiled/'native-api')
+            with patch.object(rust_staging.rust_component,'build'),self.assertRaises(ValueError):
+                rust_staging.compile_and_stage(root,[declared],[record],{},None)
+
     def test_variant_outputs_cannot_overwrite_each_other_or_follow_compiler_links(self):
         with self.assertRaisesRegex(ValueError, 'distinct'):
             rust_staging.artifact_paths([dict(binaries=['api']), dict(binaries=['api'])])

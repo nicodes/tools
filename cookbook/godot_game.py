@@ -58,7 +58,7 @@ def rust_components(config):
 def cargo_records(config, environment):
     records = []
     for component in rust_components(config):
-        record = {key: value for key, value in component.items() if key != 'output_directory'}
+        record = {key: value for key, value in component.items() if key not in {'output_directory', 'output_names'}}
         if any(key in {'APP_VERSION', 'SOURCE_COMMIT', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
                 'TOOLS_VERIFICATION_SESSION', 'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
                 or key.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')) for key in record.get('environment', {})):
