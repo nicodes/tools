@@ -47,6 +47,12 @@ def declaration(root, config):
         if type(data.get(key)) is not int or not 1 <= data[key] <= maximum:
             raise ValueError('Preview must preserve bounded native effect/publication deadlines')
     backend = 'api' in components
+    if backend and config['recipe']=='react-native':
+        app=config.get('components',{}).get('app',{})
+        if (config.get('ci',{}).get('preview_environment')!='Preview'
+                or app.get('preview_environment',{}).get('EXPO_PUBLIC_API_URL')!='/api'
+                or app.get('preview_variables')!={'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':'COOKBOOK_PREVIEW_CLERK_KEY'}):
+            raise ValueError('native Preview builds must retain same-origin API and the bounded development public key')
     origins = data.get('origin_variables', {})
     if (not isinstance(origins,dict) or (backend and 'ALLOWED_ORIGINS' not in origins) or (not backend and origins)
             or set(origins)-{'ALLOWED_ORIGINS','CLERK_AUTHORIZED_PARTIES'}):
