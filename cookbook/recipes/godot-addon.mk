@@ -3,7 +3,8 @@ COOKBOOK_EXEC ?= env MISE_AUTO_INSTALL=false MISE_EXEC_AUTO_INSTALL=false MISE_T
 COOKBOOK_ADDON = $(COOKBOOK_EXEC) $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/godot_addon.py"
 
 define cookbook_setup
-env MISE_TRUSTED_CONFIG_PATHS="$(CURDIR)" $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/godot_addon.py" setup
+env MISE_TRUSTED_CONFIG_PATHS="$(CURDIR)" mise install python
+$(COOKBOOK_ADDON) setup
 endef
 define cookbook_fmt
 $(COOKBOOK_ADDON) fmt
