@@ -26,7 +26,7 @@ class StaticBlueprint(unittest.TestCase):
             'public/release-manifest.json':json.dumps({'source_commit':SOURCE,'release_id':'c'*64}),
             'mise.toml':'[tools]\npython="3.13.11"\n'}.items():
             path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(body)
-        selected={'config':'deploy/komizo.yml','compose':'deploy/compose.yml','release_manifest':'public/release-manifest.json','record':True,'recovery':True,'production':True,'recovery_test':'shipping'}
+        selected={'config':'deploy/komizo.yml','compose':'deploy/compose.yml','release_manifest':'public/release-manifest.json','record':True,'recovery':False,'production':False,'recovery_test':'shipping'}
         (self.root/'deploy/delivery.json').write_text(json.dumps({'mode':'godot-static','komizo_ref':'d'*40,'project':'game','static':selected}))
         (self.root/'deploy/release.json').write_text(json.dumps({'project':'game','image_base':'ghcr.io/example/game'}))
         self.config={'recipe':'godot-game','tests':{'integration':[{'name':'shipping','runner':'bash','path':'tests/gate.sh'}]},'delivery':{'definition':'deploy/delivery.json'},'artifacts':{'definition':'deploy/release.json',
@@ -92,7 +92,7 @@ class StaticBlueprint(unittest.TestCase):
     def test_lifecycle_and_metadata_declarations_cannot_invent_recovery_or_drop_accepted_blueprints(self):
         config=copy.deepcopy(self.config);config['artifacts']['release_metadata']=[]
         with self.assertRaisesRegex(ValueError,'full accepted artifacts'):static.declaration(self.root,config)
-        path=self.root/'deploy/delivery.json';value=json.loads(path.read_text());value['static']['record']=False;path.write_text(json.dumps(value))
+        path=self.root/'deploy/delivery.json';value=json.loads(path.read_text());value['static']['record']=False;value['static']['recovery']=True;path.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError,'real release records'):static.declaration(self.root,self.config)
 
 
