@@ -128,7 +128,7 @@ class ImageImportCacheControls(unittest.TestCase):
         admitted = self.reload()
         self.assertEqual(admitted, {ref: {'id': value['Id'], 'rootfs': value['RootFS']['Layers']} for ref, value in self.inspected.items()})
         mutations = self.mutations()
-        self.assertEqual(mutations[0], ['docker', 'image', 'rm', '--', *reversed(self.refs)])
+        self.assertEqual(mutations[0], ['docker', 'image', 'rm', '--no-prune', '--', *reversed(self.refs)])
         self.assertEqual(mutations[1:], [['docker', 'image', 'load', '--input', str(self.root / row['path'])] for row in self.archives])
         rm_index = next(i for i, (command, _) in enumerate(self.calls) if command[1:3] == ['image', 'rm'])
         checks = [command for command, _ in self.calls[:rm_index] if command[1:3] == ['container', 'ls']]
@@ -144,7 +144,7 @@ class ImageImportCacheControls(unittest.TestCase):
                 self.listing = rows
                 self.reload()
                 removals = [command for command in self.mutations() if command[2] == 'rm']
-                self.assertEqual(removals, [['docker', 'image', 'rm', '--', *removed]] if removed else [])
+                self.assertEqual(removals, [['docker', 'image', 'rm', '--no-prune', '--', *removed]] if removed else [])
 
     def test_blob_named_gzip_layers_use_config_diff_ids_and_preserve_archive(self):
         archive = self.archive('oci.tar.gz', self.refs, blob=True, compressed=True, oci=True)

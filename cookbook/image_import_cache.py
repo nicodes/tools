@@ -272,7 +272,7 @@ def reload(root, source, archives, expected, environment, timeout=600):
         unchanged(path)
     if present:
         ordered = sorted(present, key=lambda ref: (-len(admitted[ref]['rootfs']), ref))
-        execute(['docker', 'image', 'rm', '--', *ordered])
+        execute(['docker', 'image', 'rm', '--no-prune', '--', *ordered])
     for path in paths:
         unchanged(path)
         execute(['docker', 'image', 'load', '--input', str(path)], cap=600)

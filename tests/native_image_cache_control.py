@@ -137,6 +137,16 @@ def main():
             assert inspect(alias)['Id'] == expected[refs[1]]
             assert all(inspect(ref)['Id'] == value['id'] for ref, value in images.items())
             docker('image', 'rm', alias)
+            rows = [json.loads(value) for value in docker('image', 'ls', '--all', '--no-trunc',
+                '--format', '{{json .}}').stdout.splitlines()]
+            ancestors = {}
+            for row in rows:
+                if row['Repository'] == row['Tag'] == '<none>' and row['ID'] not in expected.values():
+                    value = inspect(row['ID'])
+                    layers = value['RootFS']['Layers']
+                    if any(len(layers) < len(image['rootfs']) and image['rootfs'][:len(layers)] == layers
+                           for image in images.values()):
+                        ancestors[row['ID']] = layers
             current = inspect(refs[1]); upper_path = Path(current['GraphDriver']['Data']['UpperDir'])
             store = directory / 'data/overlay2'
             assert upper_path.is_relative_to(store)
@@ -147,15 +157,27 @@ def main():
             broken.unlink()
             failed = docker('image', 'inspect', refs[1], check=False)
             assert failed.returncode and 'readlink ' in failed.stderr and 'no such file' in failed.stderr
-            repaired = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
+            commands = []
+            native_run = subprocess.run
+            def observed(command, *args, **kwargs):
+                commands.append(command)
+                return native_run(command, *args, **kwargs)
+            with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
+                repaired = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
+            removal, = [command for command in commands if command[:3] == ['docker', 'image', 'rm']]
+            assert removal[3:5] == ['--no-prune', '--'] and set(removal[5:]) == set(refs)
             assert repaired == images
             for ref, value in images.items():
                 observed = inspect(ref)
                 assert observed['Id'] == value['id'] and observed['RootFS']['Layers'] == value['rootfs']
             assert inspect(sentinel)['Id'] == sentinel_image['id']
+            for identity, layers in ancestors.items():
+                kept_ancestor = inspect(identity)
+                assert kept_ancestor['Id'] == identity and kept_ancestor['RootFS']['Layers'] == layers
             kept = json.loads(docker('container', 'inspect', unrelated).stdout)[0]
             assert kept['Image'] == sentinel_image['id'] and kept['State']['Status'] == 'created'
             print('NATIVE_IMAGE_CACHE_RESET_CONTROL_OK: real corruption repaired; unrelated image/container retained; alias/target refusals; no container started')
+            print('NATIVE_IMAGE_CACHE_NO_PRUNE_CONTROL_OK: exact nonforce removals passed --no-prune; exposed untagged ancestors retained=' + str(len(ancestors)))
         except BaseException:
             print((directory / 'daemon.log').read_text()[-3000:], file=sys.stderr)
             raise
