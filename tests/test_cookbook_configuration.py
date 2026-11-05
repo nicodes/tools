@@ -23,6 +23,18 @@ class RecipeConfiguration(unittest.TestCase):
         self.write('[[tests.unit]]\nrunner="python"\npath="tests/test_behavior.py"\nargs=["--case", "literal;value"]\n')
         self.assertEqual(configuration.load(self.root)['tests']['unit'][0]['args'], ['--case', 'literal;value'])
 
+    def test_deferred_autoloads_are_explicitly_limited_to_game_native_checks(self):
+        (self.root/'tests/node.gd').write_text('extends Node\n')
+        for recipe, runner, boolean, accepted in [('godot-game','godot-check','true',True),
+                ('godot-addon','godot-check','true',False),('godot-game','python','true',False),
+                ('godot-game','godot-check','"yes"',False)]:
+            (self.root/'cookbook.toml').write_text('version=1\nrecipe="'+recipe+'"\n[[tests.unit]]\n'
+                +'runner="'+runner+'"\npath="tests/node.gd"\npolicy={deferred_autoloads='+boolean+'}\n')
+            with self.subTest(recipe=recipe,runner=runner,boolean=boolean):
+                if accepted:configuration.load(self.root)
+                else:
+                    with self.assertRaises(ValueError):configuration.load(self.root)
+
     def test_declared_empty_or_unknown_suites_are_refused(self):
         for text in ['[tests]\nunit=[]\n', '[tests]\nunknown=[]\n', '[tasks]\nbuild="anything"\n']:
             with self.subTest(text=text):
