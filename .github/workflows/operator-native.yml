@@ -41,6 +41,11 @@ jobs:
     - name: Install static Linux linker
       if: runner.os == 'Linux'
       run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+    - name: Verify cache wrapper on the native macOS shell
+      if: runner.os == 'macOS'
+      env:
+        CACHE_TEST_SHELL: /bin/bash
+      run: python3 -m unittest discover -s tests -p test_compiler_cache.py -k test_shell_wrapper -v
     - name: Verify native Rust libraries and operator
       run: |-
         set -euo pipefail

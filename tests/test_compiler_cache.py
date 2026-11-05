@@ -42,7 +42,7 @@ class CompilerCaches(unittest.TestCase):
             environment = {**os.environ, 'PATH': str(commands) + os.pathsep + os.environ['PATH'],
                 'GITHUB_ACTION_PATH': '/fixture with spaces/compiler-cache', 'CACHE_MODE': mode,
                 'CACHE_TARGET': target, 'CALLS': str(self.root / 'calls.json')}
-            result = subprocess.run(['bash', '-c', program], env=environment, capture_output=True, text=True)
+            result = subprocess.run([os.environ.get('CACHE_TEST_SHELL', 'bash'), '-c', program], env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             expected = ['/fixture with spaces/compiler-cache/../cookbook/compiler_cache.py', '--target', target]
             self.assertEqual(json.loads((self.root / 'calls.json').read_text()), expected + (['--save'] if mode == 'save' else []))
