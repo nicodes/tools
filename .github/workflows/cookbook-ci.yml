@@ -17,6 +17,9 @@ name: Recipe CI
       preview-number:
         type: string
         default: ''
+      preview-public-key:
+        type: boolean
+        default: false
       head:
         type: string
         default: ''
@@ -98,6 +101,7 @@ jobs:
       base: ${{ inputs.base }}
       preview-number: ${{ inputs.preview-number }}
       preview-environment: ${{ inputs.preview-number != '' && 'Preview' || '' }}
+      preview-public-key: ${{ inputs.preview-public-key }}
   unsupported:
     name: Require implemented recipe orchestration
     if: (github.event_name != 'pull_request' || !inputs.merge-gate) && !contains(fromJSON('["godot-addon","react-native","rust-cli","godot-game"]'), inputs.recipe)

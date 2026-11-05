@@ -5,12 +5,62 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import subprocess
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import godot_ci
 
 
 class GodotTopologyControls(unittest.TestCase):
+    def delivery_source(self, root):
+        (root/'deploy').mkdir()
+        (root/'deploy/delivery.json').write_text(json.dumps({'version':1,'validation_timeout_minutes':60}))
+        def git(*args):
+            return subprocess.check_output(['git','-c','user.name=Fixture','-c','user.email=fixture@example.test',
+                '-c','commit.gpgsign=false','-C',str(root),*args],text=True,stderr=subprocess.DEVNULL).strip()
+        git('init');git('add','.');git('commit','-qm','Native deadline')
+        source=git('rev-parse','HEAD')
+        environment=dict(GITHUB_REPOSITORY='owner/demo',GITHUB_SHA=source,GITHUB_WORKFLOW_SHA=source,
+            GITHUB_WORKFLOW_REF='owner/demo/.github/workflows/cd.yml@refs/heads/main',
+            GITHUB_REF='refs/heads/main',GITHUB_EVENT_NAME='push',SOURCE_SHA=source,COOKBOOK_VALIDATION_TIMEOUT='60')
+        config=self.config();config['delivery']={'definition':'deploy/delivery.json'}
+        config['ci']['godot'].update(build_timeout_minutes=45,unit_timeout_minutes=45,host_timeout_minutes=45)
+        return config,environment
+
+    def test_only_exact_main_cd_retains_the_separate_tracked_host_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);config,environment=self.delivery_source(root)
+            actual=godot_ci.plan(root,config,environment)
+            self.assertEqual([row['timeout_minutes'] for row in actual['requirements']], [45,45,45,60])
+            for changes in [dict(GITHUB_EVENT_NAME='pull_request'),dict(GITHUB_EVENT_NAME='issue_comment'),
+                    dict(GITHUB_REF='refs/pull/1/merge'),dict(GITHUB_WORKFLOW_SHA='a'*40),
+                    dict(SOURCE_SHA='a'*40),dict(GITHUB_WORKFLOW_REF='owner/demo/.github/workflows/pr-preview.yml@refs/heads/main')]:
+                with self.subTest(changes=changes):
+                    plan=godot_ci.plan(root,config,environment|changes)
+                    self.assertEqual(plan['requirements'][-1]['timeout_minutes'],45)
+            with self.assertRaisesRegex(ValueError,'caller deadline'):
+                godot_ci.plan(root,config,environment|{'COOKBOOK_VALIDATION_TIMEOUT':'180'})
+            (root/'deploy/delivery.json').write_text(json.dumps({'version':1,'validation_timeout_minutes':60,'modified':True}))
+            with self.assertRaisesRegex(ValueError,'exact tracked source'):
+                godot_ci.plan(root,config,environment)
+
+    def test_publication_recomputes_the_effective_source_bound_matrix_instead_of_trusting_its_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);config,environment=self.delivery_source(root)
+            declaration=godot_ci.plan(root,config,environment);source=environment['GITHUB_SHA'];tools='a'*40
+            entries=[row for row in declaration['requirements'] if row['kind']!='host']
+            matrix={key:declaration[key] for key in ['version','requirements','host_groups','unit_inventory']}
+            matrix.update(source_commit=source,cookbook_commit=tools,jobs=['validated'],
+                proofs=[{'entry':row,'build':{'same':'build'}} for row in entries])
+            with patch.object(godot_ci,'validate_partial'),patch.object(godot_ci,'validate_jobs',return_value=['validated']):
+                self.assertEqual(godot_ci.validate_acceptance(matrix,config,{},source,tools,environment,'b'*64,root=root),['validated'])
+                mutated=copy.deepcopy(matrix);mutated['requirements'][-1]['timeout_minutes']=180
+                with self.assertRaisesRegex(ValueError,'candidate contract'):
+                    godot_ci.validate_acceptance(mutated,config,{},source,tools,environment,'b'*64,root=root)
+                with self.assertRaisesRegex(ValueError,'candidate contract'):
+                    godot_ci.validate_acceptance(matrix,config,{},source,tools,environment,'b'*64)
+
     def config(self):
         return {'recipe': 'godot-game', 'tests': {
             'unit': [{'name': 'test-case_' + str(index), 'runner': 'godot-check', 'path': f'app/tests/case_{index}.gd'} for index in range(59)] +

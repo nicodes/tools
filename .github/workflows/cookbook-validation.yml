@@ -49,6 +49,7 @@ jobs:
     env:
       COOKBOOK_PREVIEW_CLERK_KEY: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && vars.CLERK_PUBLISHABLE_KEY || '' }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
       COOKBOOK_MODE: ${{ inputs.mode }}

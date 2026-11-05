@@ -118,6 +118,50 @@ class PreviewDeclaration(unittest.TestCase):
         self.assertIn('      recipe: godot-game',body)
         self.assertIn('preview-number:',body)
         self.assertNotIn('secrets.CLERK_SECRET_KEY',body)
+        self.assertNotIn('preview-public-key:',body)
+
+    def test_backend_godot_keeps_readonly_preview_configuration_and_original_host_deadlines(self):
+        self.config['recipe']='godot-game'
+        self.config['ci'].pop('preview_environment')
+        self.config['ci']['timeout_minutes']=45
+        self.data.update(up_timeout_minutes=25,down_timeout_minutes=25,
+            clerk_urls={'CLERK_ISSUER':'issuer','CLERK_JWKS_URL':'jwks'})
+        self.write()
+        self.assertEqual(self.declaration()['clerk_urls'],self.data['clerk_urls'])
+        with patch.object(preview.images,'definition',return_value=self.definition):
+            body=preview.workflow_files(self.root,'d'*40,self.config)['.github/workflows/pr-preview.yml']
+        full=body.split('  full:\n',1)[1].split('  publish:\n',1)[0]
+        self.assertIn('      preview-public-key: true\n',full)
+        self.assertIn('      timeout-minutes: 45\n',full)
+        self.assertNotIn('secrets:',full)
+        for action in ['up','down']:
+            self.assertIn('      timeout-minutes: 25\n',body.split('  '+action+':\n',1)[1])
+        self.data['down_timeout_minutes']=36;self.write()
+        with self.assertRaises(ValueError):self.declaration()
+
+    def test_derived_provider_urls_are_closed_development_carriers(self):
+        for value in [{'CLERK_ISSUER':'command'}, {'OTHER':'issuer'}, {'CLERK_ISSUER':[]}, []]:
+            self.data['clerk_urls']=value;self.write()
+            with self.subTest(value=value),self.assertRaises(ValueError):self.declaration()
+        self.data['clerk_urls']={'CLERK_ISSUER':'issuer'}
+        self.data['environment']={'CLERK_ISSUER':'https://fixed.invalid'};self.write()
+        with self.assertRaises(ValueError):self.declaration()
+        self.data.update(components=['gate'],secrets=[],origin_variables={},health_paths={'app':'/'},environment={})
+        self.write()
+        with self.assertRaises(ValueError):self.declaration()
+
+    def test_godot_preview_public_key_is_opt_in_and_waits_for_the_trusted_controller_plan(self):
+        worker=(TOOLS/'.github/workflows/cookbook-godot.yml').read_text()
+        build=worker.split('  build:\n',1)[1].split('  units:\n',1)[0]
+        self.assertIn('    needs: plan\n',build)
+        self.assertIn("inputs.preview-public-key && inputs.preview-number != '' && inputs.preview-environment == 'Preview'",build)
+        self.assertIn('vars.CLERK_PUBLISHABLE_KEY',build)
+        self.assertNotIn('secrets.',build)
+        self.assertIn('"$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/pr-preview.yml@refs/heads/main"',worker)
+        self.assertIn('if [[ "$PREVIEW_PUBLIC_KEY" == true ]]; then [[ -n "$COOKBOOK_PREVIEW_NUMBER" ]]; fi',worker)
+        for name in ['cookbook-ci.yml','cookbook-godot.yml']:
+            self.assertIn('      preview-public-key:\n        type: boolean\n        default: false\n',
+                (TOOLS/'.github/workflows'/name).read_text())
 
     def test_generated_controller_keeps_authority_split_and_down_independent(self):
         with patch.object(preview.images,'definition',return_value=self.definition):

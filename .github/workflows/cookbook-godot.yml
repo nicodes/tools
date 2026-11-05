@@ -20,6 +20,9 @@ name: Godot cookbook validation
       preview-environment:
         type: string
         default: ''
+      preview-public-key:
+        type: boolean
+        default: false
       head:
         type: string
         default: ''
@@ -47,6 +50,7 @@ jobs:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
     steps:
@@ -54,6 +58,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIEW_ENVIRONMENT: ${{ inputs.preview-environment }}
+          PREVIEW_PUBLIC_KEY: ${{ inputs.preview-public-key }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
@@ -62,7 +67,9 @@ jobs:
             [[ "$COOKBOOK_PREVIEW_NUMBER" =~ ^[1-9][0-9]{0,9}$ && "$PREVIEW_ENVIRONMENT" == Preview ]]
             [[ "$SOURCE_SHA" == "$REQUEST_HEAD" && "$REQUEST_HEAD" =~ ^[a-f0-9]{40}$ && "$REQUEST_BASE" =~ ^[a-f0-9]{40}$ ]]
             [[ "$GITHUB_REF" == refs/heads/main && ( "$GITHUB_EVENT_NAME" == pull_request_target || "$GITHUB_EVENT_NAME" == issue_comment ) ]]
+            [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/pr-preview.yml@refs/heads/main" ]]
           fi
+          if [[ "$PREVIEW_PUBLIC_KEY" == true ]]; then [[ -n "$COOKBOOK_PREVIEW_NUMBER" ]]; fi
           relation="$(gh api "repos/nicodes/tools/compare/$COOKBOOK_SHA...main" --jq .status)"
           [[ "$relation" == ahead || "$relation" == identical ]]
       - name: Check out exact source
@@ -96,6 +103,7 @@ jobs:
     needs: plan
     runs-on: ${{ needs.plan.outputs.build-runner }}
     timeout-minutes: ${{ fromJSON(needs.plan.outputs.build-timeout) }}
+    environment: ${{ inputs.preview-public-key && inputs.preview-number != '' && inputs.preview-environment == 'Preview' && inputs.head != '' && inputs.base != '' && 'Preview' || '' }}
     permissions:
       contents: read
       actions: read
@@ -107,6 +115,8 @@ jobs:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
+      COOKBOOK_PREVIEW_CLERK_KEY: ${{ inputs.preview-public-key && inputs.preview-number != '' && inputs.preview-environment == 'Preview' && inputs.head != '' && inputs.base != '' && vars.CLERK_PUBLISHABLE_KEY || '' }}
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
       GODOT_ENTRY: build
@@ -210,6 +220,7 @@ jobs:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
       GODOT_ENTRY: ${{ matrix.id }}
@@ -307,6 +318,7 @@ jobs:
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
+      COOKBOOK_VALIDATION_TIMEOUT: ${{ inputs.timeout-minutes }}
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
       GODOT_ENTRY: ${{ matrix.id }}

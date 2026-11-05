@@ -25,7 +25,7 @@ def declaration(root, config):
     data = json.loads(path.read_text())
     keys = {'version', 'project', 'komizo_ref', 'components', 'runner', 'up_timeout_minutes',
             'down_timeout_minutes', 'publish_timeout_minutes', 'origin_variables',
-            'environment', 'secrets', 'health_paths', 'origin_layout'}
+            'environment', 'secrets', 'health_paths', 'origin_layout', 'clerk_urls'}
     if not isinstance(data, dict) or set(data)-keys or data.get('version') != 1:
         raise ValueError('unsupported Preview declaration')
     if config.get('recipe') not in {'react-native','godot-game'}:
@@ -43,10 +43,15 @@ def declaration(root, config):
     runner = data.get('runner', '')
     if not isinstance(runner,str) or not re.fullmatch('[A-Za-z0-9_.-]{1,80}',runner):
         raise ValueError('Preview must preserve its source-declared runner')
-    for key, maximum in [('up_timeout_minutes',35),('down_timeout_minutes',10),('publish_timeout_minutes',35)]:
+    for key, maximum in [('up_timeout_minutes',35),('down_timeout_minutes',35),('publish_timeout_minutes',35)]:
         if type(data.get(key)) is not int or not 1 <= data[key] <= maximum:
             raise ValueError('Preview must preserve bounded native effect/publication deadlines')
     backend = 'api' in components
+    clerk_urls = data.get('clerk_urls', {})
+    if (not isinstance(clerk_urls,dict) or (clerk_urls and not backend)
+            or set(clerk_urls)-{'CLERK_ISSUER','CLERK_JWKS_URL'}
+            or any(not isinstance(value,str) or value not in {'issuer','jwks'} for value in clerk_urls.values())):
+        raise ValueError('Preview Clerk URLs select only declared development issuer and JWKS carriers')
     if backend and config['recipe']=='react-native':
         app=config.get('components',{}).get('app',{})
         if (config.get('ci',{}).get('preview_environment')!='Preview'
@@ -66,7 +71,7 @@ def declaration(root, config):
             or (backend and 'CLERK_SECRET_KEY' not in secrets) or (not backend and secrets) or not set(secrets)<=SECRET_NAMES):
         raise ValueError('Preview accepts only explicitly named development credentials')
     literals = data.get('environment', {})
-    reserved = {'CLERK_SECRET_KEY','CLERK_PUBLISHABLE_KEY','CLERK_AUTHORIZED_PARTIES',
+    reserved = {'CLERK_SECRET_KEY','CLERK_PUBLISHABLE_KEY','CLERK_AUTHORIZED_PARTIES', *clerk_urls,
                 'ALLOWED_ORIGINS','RUNTIME_DATABASE_URL','DATABASE_URL','GITHUB_TOKEN','GH_TOKEN'}
     if not isinstance(literals,dict) or len(literals)>16:
         raise ValueError('Preview native environment must be bounded literal data')
@@ -135,6 +140,9 @@ def workflow_files(root, revision, config=None):
            '    with:','      tools-ref: '+revision,'      komizo-ref: '+pin,
            '      plan: '+expression('needs.request.outputs.plan'),'      runner: '+data['runner'],
            '      timeout-minutes: '+str(data['publish_timeout_minutes'])]
+    if data['recipe']=='godot-game' and data['backend']:
+        index=lines.index('  publish:')
+        lines.insert(index,'      preview-public-key: true')
     for action, needs, budget in [('up','[request, full, publish]',data['up_timeout_minutes']),('down','request',data['down_timeout_minutes'])]:
         lines += ['  '+action+':','    needs: '+needs,
                   '    if: '+expression("needs.request.outputs.enabled == 'true' && needs.request.outputs.action == '"+action+"'"),

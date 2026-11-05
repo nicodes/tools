@@ -94,7 +94,41 @@ def budget(value):
     return value
 
 
-def plan(root, config):
+def effective_host_budget(root, config, original, environment=None):
+    """A tracked delivery policy may retain a distinct exact-main CD deadline."""
+    selected=config.get('delivery')
+    if root is None or not isinstance(selected,dict) or set(selected)!={'definition'}:
+        return original
+    path=relative(Path(root),selected['definition'],exists=True)
+    if not path.is_file() or path.stat().st_size>32768:
+        raise ValueError('Godot delivery deadlines require bounded native source data')
+    data=json.loads(path.read_text())
+    if not isinstance(data,dict) or 'validation_timeout_minutes' not in data:
+        return original
+    value=data['validation_timeout_minutes']
+    if type(data.get('version')) is not int or data['version']!=1 or type(value) is not int or not 1<=value<=180:
+        raise ValueError('Godot CD validation requires its bounded native deadline')
+    environment=os.environ if environment is None else environment
+    repository=environment.get('GITHUB_REPOSITORY','')
+    source=environment.get('GITHUB_SHA','')
+    trusted=(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repository)
+        and SHA.fullmatch(source) and environment.get('GITHUB_REF')=='refs/heads/main'
+        and environment.get('GITHUB_WORKFLOW_SHA')==source
+        and environment.get('GITHUB_WORKFLOW_REF')==repository+'/.github/workflows/cd.yml@refs/heads/main'
+        and environment.get('GITHUB_EVENT_NAME') in {'push','workflow_dispatch'}
+        and environment.get('SOURCE_SHA',source)==source)
+    if not trusted:return original
+    requested=environment.get('COOKBOOK_VALIDATION_TIMEOUT',str(value))
+    if requested!=str(value):raise ValueError('CD caller deadline differs from native delivery policy')
+    subprocess.run(['git','-C',str(root),'ls-files','--error-unmatch','--',selected['definition']],
+        check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+    if (subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True,timeout=10).strip()!=source
+            or subprocess.check_output(['git','-C',str(root),'show','HEAD:'+selected['definition']],timeout=10)!=path.read_bytes()):
+        raise ValueError('CD validation deadline differs from its exact tracked source')
+    return value
+
+
+def plan(root, config, environment=None):
     if config.get('recipe') != 'godot-game':
         raise ValueError('Godot topology requires the native game recipe')
     values = config.get('ci', {}).get('godot')
@@ -223,7 +257,8 @@ def plan(root, config):
     host_cases = sorted(set(declared) - assigned)
     host_groups = ['lint', 'unit', 'security', *[name for name in ['integration', 'e2e'] if config.get('tests', {}).get(name)]]
     requirements.append({'id': 'host', 'kind': 'host', 'job': 'Godot host', 'runner': runner,
-        'timeout_minutes': budget(values.get('host_timeout_minutes', config.get('ci', {}).get('timeout_minutes', 30))),
+        'timeout_minutes': effective_host_budget(root,config,
+            budget(values.get('host_timeout_minutes', config.get('ci', {}).get('timeout_minutes', 30))),environment),
         'groups': host_groups, 'cases': host_cases, 'native_unit_name': native_name})
     result = {'version': 1, 'enrolled': True, 'requirements': requirements, 'unit_inventory': sorted([*groups, *([native_name] if native_name else [])]),
         'godot_unit_inventory': sorted(groups),
@@ -581,8 +616,8 @@ def finalize_host(host, matrix):
     return {**host, 'coverage': 'complete-host-and-godot-matrix', 'godot_matrix': matrix}
 
 
-def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256):
-    declaration = plan(None, config)
+def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, root=None):
+    declaration = plan(root, config, environment)
     if (not isinstance(matrix, dict) or matrix.get('version') != 1 or not declaration.get('enrolled')
             or matrix.get('source_commit') != source or matrix.get('cookbook_commit') != tools
             or matrix.get('requirements') != declaration['requirements'] or matrix.get('host_groups') != declaration['host_groups']
@@ -670,6 +705,7 @@ def setup_worker(root, config, environment, entry):
     if not tools <= pins.keys():
         raise ValueError('Godot worker SDK capabilities require exact caller pins')
     game.run(['mise', 'install', *sorted(tools)], root, environment)
+    game.komizo_sdk.setup(root,config,environment)
     sdk = lambda argv, directory, env: game.run(['mise', 'exec', '--', *argv], directory, env)
     node_component.install(root, packages, environment, sdk)
     if role=='host' and config.get('components',{}).get('playwright'):
