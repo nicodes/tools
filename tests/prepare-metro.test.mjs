@@ -13,7 +13,7 @@ async function fixture(handler, run) {
 test('readiness waits for the complete cold JavaScript bundle', async () => {
   let completed = false;
   await fixture((request, response) => {
-    if (request.url === '/signin') {
+    if (request.url === '/') {
       response.end('<script src="/entry.bundle?platform=web&amp;lazy=true" defer></script>');
     } else {
       assert.equal(request.url, '/entry.bundle?platform=web&lazy=true');
@@ -30,7 +30,7 @@ test('readiness waits for the complete cold JavaScript bundle', async () => {
 test('bad, missing, empty, and cross-origin bundles fail instead of masking an error', async () => {
   for (const mode of ['missing', 'external', 'failed', 'html', 'empty']) {
     await fixture((request, response) => {
-      if (request.url === '/signin') {
+      if (request.url === '/') {
         response.end(mode === 'missing' ? '<html></html>' : `<script src="${mode === 'external' ? 'https://example.invalid' : ''}/entry.bundle"></script>`);
       } else if (mode === 'failed') {
         response.writeHead(500).end('compile failure');
@@ -44,7 +44,30 @@ test('bad, missing, empty, and cross-origin bundles fail instead of masking an e
 
 test('a stalled compiler remains bounded by the caller deadline', async () => {
   await fixture((request, response) => {
-    if (request.url === '/signin') response.end('<script src="/entry.bundle"></script>');
+    if (request.url === '/') response.end('<script src="/entry.bundle"></script>');
     // Deliberately never finish the bundle response.
-  }, origin => assert.rejects(prepareMetro(origin, AbortSignal.timeout(100))));
+  }, origin => assert.rejects(prepareMetro(origin, '/', AbortSignal.timeout(100))));
+});
+
+test('the caller selects its native entry route', async () => {
+  const requests = [];
+  await fixture((request, response) => {
+    requests.push(request.url);
+    if (request.url === '/workspace') response.end('<script src="/entry.bundle"></script>');
+    else response.writeHead(200, { 'Content-Type': 'text/javascript' }).end('globalThis.ready = true;');
+  }, async origin => {
+    assert.equal(await prepareMetro(origin, '/workspace'), 1);
+    assert.deepEqual(requests, ['/workspace', '/entry.bundle']);
+  });
+});
+
+test('unsafe entry paths refuse before any local or external request', async () => {
+  let requests = 0;
+  await fixture((request, response) => { requests++; response.end('unexpected'); }, async origin => {
+    for (const entry of ['https://example.invalid/', '//example.invalid/', '/a/../b', '/a?key=value',
+      '/a#fragment', '/a\\b', '/line\nfeed', '', '/' + 'x'.repeat(2048)]) {
+      await assert.rejects(prepareMetro(origin, entry));
+    }
+    assert.equal(requests, 0);
+  });
 });

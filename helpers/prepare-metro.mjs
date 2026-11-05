@@ -13,9 +13,16 @@ function localOrigin(value) {
 }
 
 
-export async function prepareMetro(origin, signal = AbortSignal.timeout(900_000)) {
+export async function prepareMetro(origin, entryPath = '/', signal = AbortSignal.timeout(900_000)) {
   const base = localOrigin(origin);
-  const shell = await fetch(new URL('/signin', base), { signal, redirect: 'error' });
+  assert(typeof entryPath === 'string' && entryPath.length > 0 && entryPath.length <= 2048
+    && entryPath.startsWith('/') && !/[\\\s?#\x00-\x1f\x7f]/.test(entryPath),
+    'Metro entry requires a bounded literal pathname');
+  const entry = new URL(entryPath, base);
+  assert(entry.origin === base.origin && entry.pathname === entryPath
+    && entry.href === base.origin + entryPath,
+    'Metro entry must stay on its declared local origin');
+  const shell = await fetch(entry, { signal, redirect: 'error' });
   assert(shell.ok, `Metro HTML returned HTTP ${shell.status}`);
   const html = await shell.text();
   const sources = [...html.matchAll(/<script\b[^>]*\bsrc\s*=\s*(["'])(.*?)\1/gi)];
@@ -33,6 +40,6 @@ export async function prepareMetro(origin, signal = AbortSignal.timeout(900_000)
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
-  const count = await prepareMetro(process.argv[2]);
+  const count = await prepareMetro(process.argv[2], process.argv[3]);
   console.log(`Prepared ${count} live Metro entry bundle(s)`);
 }
