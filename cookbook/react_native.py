@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tomllib
@@ -20,6 +19,7 @@ import postgres_fixture
 import expo_exports
 import source_policy
 import application_fixtures
+import application_development
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -152,30 +152,15 @@ def run(arguments, root, environment, timeout=None):
     subprocess.run(arguments, cwd=root, env=environment, check=True, timeout=timeout)
 
 
+
+def development_api():
+    from types import SimpleNamespace
+    return SimpleNamespace(**{name:globals()[name] for name in [
+        'run','native','select_port','pinned_ghenv','development_project',
+        'isolated_operation','stop_services','helper']})
+
 def native(root, entries, environment, *, sdk=False, long_running=False):
-    for entry in entries:
-        if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'cwd', 'args', 'timeout', 'environment', 'phase', 'stages'}:
-            raise ValueError('invalid native product component entry')
-        path = relative(root, entry.get('path'), exists=True)
-        if not path.is_file() or Path(entry['path']).parts[0] not in {'app', 'api', 'internal', 'tests'}:
-            raise ValueError('native product generators and assertions must remain in their owning component')
-        runner = {'python': sys.executable, 'node': 'node', 'bun': 'bun', 'bash': 'bash'}.get(entry.get('runner'))
-        if runner is None:
-            raise ValueError('unknown native product component runner')
-        arguments = entry.get('args', [])
-        if not isinstance(arguments, list) or any(not isinstance(value, str) or '\0' in value for value in arguments):
-            raise ValueError('native product arguments must be literal strings')
-        timeout = None if long_running else entry.get('timeout', 300)
-        if not long_running and (type(timeout) is not int or not 1 <= timeout <= 3600):
-            raise ValueError('native product operations require bounded deadlines')
-        values = entry.get('environment', {})
-        if not isinstance(values, dict) or any(not ENVIRONMENT.fullmatch(key) or not isinstance(value, str) for key, value in values.items()):
-            raise ValueError('native product environment must use literal named values')
-        values = {key: value.replace('{revision}', environment['APP_VERSION']) for key, value in values.items()}
-        command = [runner, str(path), *arguments]
-        if sdk:
-            command = ['mise', 'exec', '--', *command]
-        run(command, relative(root, entry.get('cwd', '.'), exists=True), environment | values, timeout)
+    return application_development.native(root, entries, environment, api=development_api(), sdk=sdk, long_running=long_running, protected_environment=PROTECTED_ENVIRONMENT)
 
 
 def phase(root, config, environment, name, stage='full'):
@@ -480,118 +465,35 @@ def check_sdks(root, config, operation, environment, suite=None):
 
 
 def development_project(root, config=None):
-    # Preserve the existing checkout identity; retained database volumes continue
-    # to belong to exactly the same development project after this migration.
-    config = load(root) if config is None else config
-    prefix = config.get('dev', {}).get('project_prefix', 'komizo')
-    if not isinstance(prefix, str) or not re.fullmatch('[a-z][a-z0-9-]{0,31}', prefix):
-        raise ValueError('development project identity requires a bounded native prefix')
-    return prefix + '-' + hashlib.sha256(os.path.normpath(str(root)).encode()).hexdigest()[:16]
-
+    return application_development.development_project(root, config)
 
 def select_port(preferred, attempts=100):
-    if type(preferred) is not int or type(attempts) is not int or not 1 <= preferred <= 65535 or not 1 <= attempts <= 1000:
-        raise ValueError('development port and bounded attempt count must be positive native integers')
-    for port in range(preferred, min(preferred + attempts, 65536)):
-        with socket.socket() as listener:
-            try:
-                listener.bind(('127.0.0.1', port))
-            except OSError:
-                continue
-            return port
-    raise ValueError('no available checkout development port')
-
-
-def launch_development(root, config, environment):
-    values = config.get('dev', {})
-    if values.get('kind') == 'expo':
-        directory = relative(root, values.get('directory', 'app'), exists=True)
-        port = select_port(values.get('port', 8081), values.get('port_attempts', 100))
-        print('Development app: http://127.0.0.1:' + str(port), flush=True)
-        run(['bun', '--no-env-file', 'run', '--cwd', str(directory), 'start', '--port', str(port)],
-            root, environment | {'EXPO_NO_DOTENV': '1'})
-    elif values.get('kind') == 'native' and values.get('program'):
-        native(root, [values['program']], environment, long_running=True)
-    else:
-        raise ValueError('development requires an implemented Expo or native product driver')
-
-
-def clean_outputs(root, config, environment):
-    stop_services(root, config, environment)
-    paths = config.get('clean', {}).get('paths', [])
-    if not paths:
-        raise ValueError('clean requires explicit generated output paths')
-    helper('clean').clean(root, paths)
-
-
-def stop_services(root, config, environment):
-    for name in config.get('dev', {}).get('cleanup_compose', []):
-        source = relative(root, name, exists=True)
-        run(['docker', 'compose', '-p', development_project(root, config), '-f', str(source), 'down'], root, environment)
-    if config.get('dev', {}).get('cleanup'):
-        native(root, [config['dev']['cleanup']], environment)
-
-
-def isolated_operation(root, config, environment, operation):
-    selected = relative(root, config.get('dev', {}).get('identity', 'ghenv.json'), exists=True)
-    base = [pinned_ghenv(root, environment), 'local', '--', 'env', 'DEV_PROJECT=' + development_project(root, config),
-            'TOOLS_ROOT=' + str(TOOLS), sys.executable, str(Path(__file__).resolve()), operation]
-    if selected.name != 'ghenv.json' or selected.parent != root:
-        raise ValueError('application development identity uses the owned root ghenv.json')
-    return base
-
+    return application_development.select_port(preferred, attempts)
 
 def pinned_ghenv(root, environment):
-    pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
-    if 'github:nicodes/ghenv' not in pins:
-        raise ValueError('development identity requires an exact caller-owned ghenv SDK pin')
-    directory = Path(subprocess.check_output(['mise', 'where', 'github:nicodes/ghenv'],
-                     cwd=root, env=environment, text=True).strip()).resolve()
-    executable = Path(subprocess.check_output(['mise', 'which', 'ghenv'],
-                      cwd=root, env=environment, text=True).strip()).resolve()
-    if not executable.is_relative_to(directory) or not executable.is_file():
-        raise ValueError('ghenv must resolve inside its installed pinned SDK')
-    return str(executable)
+    return application_development.pinned_ghenv(root, environment)
 
+def launch_development(root, config, environment):
+    return application_development.launch_development(root, config, environment, api=development_api())
+
+def clean_outputs(root, config, environment):
+    return application_development.clean_outputs(root, config, environment, api=development_api())
+
+def stop_services(root, config, environment):
+    return application_development.stop_services(root, config, environment, api=development_api())
+
+def isolated_operation(root, config, environment, operation):
+    return application_development.isolated_operation(root, config, environment, operation, api=development_api())
 
 def development(root, config, environment, operation):
-    supervisor = [sys.executable, str(TOOLS / 'helpers/dev.py')]
-    if operation == 'dev:logs':
-        run([*supervisor, 'logs', '--state', '.local/dev'], root, environment)
-        return
-    if not config.get('dev'):
-        raise ValueError('application does not implement a development service')
-    if operation == 'dev:stop':
-        run([*supervisor, 'stop', '--state', '.local/dev'], root, environment)
-        cleanup = isolated_operation(root, config, environment, '_stop-services')
-        run([*supervisor, 'clean', '--state', '.local/dev', '--', *cleanup], root, environment)
-        return
-    cleanup = isolated_operation(root, config, environment, '_stop-services')
-    ghenv = pinned_ghenv(root, environment)
-    mode = environment.get('DEV_MODE', 'auto')
-    if mode not in {'auto', 'local', 'preview'}:
-        raise ValueError('development identity must be local, preview or the configured automatic mode')
-    command = [ghenv, 'dev', '--config', 'ghenv.json', '--mode', mode, '--', 'env',
-               'DEV_PROJECT=' + development_project(root, config), 'TOOLS_ROOT=' + str(TOOLS),
-               sys.executable, str(Path(__file__).resolve()), '_dev']
-    preparation = [ghenv, 'local', '--', 'env', 'COOKBOOK_STAGE=local', 'make', 'setup']
-    arguments = [*supervisor, 'run', '--state', '.local/dev', '--prepare', json.dumps(preparation),
-                 '--cleanup', json.dumps(cleanup), '--policy-input', 'mise.toml',
-                 '--policy-input', 'cookbook.toml', '--policy-input', 'ghenv.json']
-    if config['dev'].get('capture_output', False):
-        arguments += ['--log', '.local/dev/output.log']
-    run([*arguments, '--', *command], root, environment)
-
+    return application_development.development(root, config, environment, operation, api=development_api())
 
 def database(root, config, environment, operation):
-    name = operation.split(':', 1)[1]
-    entry = config.get('database', {}).get(name)
-    if not isinstance(entry, dict):
-        raise ValueError('database operation has no implemented native product entrypoint')
-    arguments = [*isolated_operation(root, config, environment, '_database'), '--suite', name]
-    if name == 'reset':
-        arguments = [sys.executable, str(TOOLS / 'helpers/dev.py'), 'clean', '--state', '.local/dev', '--', *arguments]
-    run(arguments, root, environment)
+    return application_development.database(root, config, environment, operation, api=development_api())
+
+
+def check_development_sdks(root, config, environment, operation, suite=None):
+    check_sdks(root, config, operation, environment, suite)
 
 
 def main():
