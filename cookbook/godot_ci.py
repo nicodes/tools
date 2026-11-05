@@ -454,6 +454,9 @@ def import_build(root, config, source_directory, proof):
         if archive not in files:
             raise ValueError('Godot image transfer requires its actually accepted image archive')
         subprocess.run(['docker', 'image', 'load', '--input', str(relative(root, archive, exists=True))], check=True, timeout=600)
+        import image_fixtures
+        image_fixtures.load(root,config,dict(os.environ)|{'SOURCE_COMMIT':proof['source_commit']},images,
+            lambda argv,cwd,env,timeout:subprocess.run(argv,cwd=cwd,env=env,check=True,timeout=timeout))
         for name, expected in images.items():
             value = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', name[6:]], text=True, timeout=60).strip()
             if value != expected:

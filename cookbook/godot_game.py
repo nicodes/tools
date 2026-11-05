@@ -18,6 +18,7 @@ import rust_component
 import rust_staging
 import godot_static
 import go_component
+import image_fixtures
 import godot_package
 import godot_sdk
 import node_component
@@ -49,7 +50,8 @@ def verification_scope(root, config):
             'environment': values.get('environment', []), 'revision_environment': values.get('revision_environment', [])}
     inputs = {key: list(value) for key, value in inputs.items()}
     inputs['artifacts'] += (values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
-        + go_component.artifact_paths(root,config))
+        + go_component.artifact_paths(root,config) + image_fixtures.artifact_paths(root,config))
+    inputs['images'] += image_fixtures.references(root,config)
     return verification.scope(**inputs)
 
 
@@ -151,6 +153,7 @@ def validate_config(root, config):
         relative(root, path)
     godot_static.declaration(root,config)
     go_component.declaration(root,config)
+    image_fixtures.declaration(root,config)
     for package in packages(config):
         node_component.validate(package, root)
     godot_sdk.inputs(root, config)
@@ -515,11 +518,14 @@ def validate_outputs(root, config, env, compiler=False):
         images.validate_release(root, config, env)
         if compiler:
             definition = images.definition(root, config)
+            fixtures=image_fixtures.declaration(root,config)
+            supported=set(images.components(definition))|set(fixtures['names'] if fixtures else [])
             for record in components.get('static_images', []):
-                if record['component'] not in images.components(definition):
+                if record['component'] not in supported:
                     raise ValueError('static image contract must name a declared shipping component')
                 images.static_image(definition['image_base'] + '-' + record['component'] + ':' + env['APP_VERSION'],
                     relative(root, record['source'], exists=True), record.get('installed', '/srv/public'))
+    image_fixtures.verify(root,config,env)
     godot_static.verify(root, config, env, run)
     helper('verification').artifacts(verification_scope(root, config))
 
@@ -567,6 +573,7 @@ def compile_outputs(root, config, env):
             images.validate_compose(root, config, env, run)
         images.build(root, config, env, run)
         godot_static.stage(root, config, env, run)
+        image_fixtures.package(root,config,env,run)
         images.package(root, config, env, run)
     validate_outputs(root, config, env, compiler=True)
 
