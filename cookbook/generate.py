@@ -77,6 +77,11 @@ jobs:
             files['.github/workflows/ci.yml'] += '      preview-environment: ' + ci['preview_environment'] + '\n'
     files['.github/workflows/ci.yml'] += ('      runner: ' + ci['runner'] + '\n'
         + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
+    if config.get('delivery'):
+        if config['recipe'] != 'react-native':
+            raise ValueError('this delivery composition is enrolled for application images only')
+        import delivery_workflows
+        files['.github/workflows/ci.yml'] += delivery_workflows.jobs(root, config, revision)
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):

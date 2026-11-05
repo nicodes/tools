@@ -53,7 +53,7 @@ def load(root):
         raise ValueError('recipe configuration must be a bounded regular source file')
     data = tomllib.loads(path.read_text())
     allowed = {'version', 'recipe', 'package', 'tests', 'lint', 'format', 'clean',
-               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication', 'ci'}
+               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication', 'ci', 'delivery'}
     if set(data) - allowed or data.get('version') != 1 or data.get('recipe') not in RECIPES:
         raise ValueError('unsupported cookbook configuration')
     if 'tasks' in data or 'commands' in data:
