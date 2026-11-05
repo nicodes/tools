@@ -42,7 +42,7 @@ def generated_report(root, path, config):
     return True
 
 
-def declaration(root, config, *, inspect=False, status=None):
+def declaration(root, config, *, inspect=False, status=None, entry=None):
     if config.get('recipe')!='godot-game':return []
     values=config.get('artifacts',{})
     registered=values.get('evidence_paths',[])
@@ -52,13 +52,27 @@ def declaration(root, config, *, inspect=False, status=None):
             or set(retained)-set(registered)):
         raise ValueError('native outputs select only explicitly registered evidence locations')
     if status not in {None,'success','failure','cancelled'}:raise ValueError('native output retention requires the actual job status')
+    if entry is not None and (not isinstance(entry,str) or not re.fullmatch('[a-z][a-z0-9-]{0,79}',entry)):
+        raise ValueError('native output requirements need a literal worker identity')
     root=Path(root).absolute()
     policies={}
     for name,policy in retained.items():
         if type(policy) is int:policy={'days':policy,'when':'always'}
-        if (not isinstance(policy,dict) or set(policy)-{'days','when'} or type(policy.get('days')) is not int
+        if (not isinstance(policy,dict) or set(policy)-{'days','when','required_for'} or type(policy.get('days')) is not int
                 or not 0<=policy['days']<=90 or policy.get('when','always') not in {'always','success','failure'}):
             raise ValueError('native output retention requires bounded days and success/failure/always admission')
+        required_for=policy.get('required_for',[])
+        gates=config.get('ci',{}).get('godot',{}).get('gates',[])
+        known={'gate-'+row['name'] for row in gates if isinstance(row,dict) and isinstance(row.get('name'),str)
+            and re.fullmatch('[a-z][a-z0-9-]{1,63}',row['name'])} if isinstance(gates,list) else set()
+        if (not isinstance(required_for,list) or len(required_for)>32
+                or ('required_for' in policy and not required_for)
+                or any(not isinstance(value,str) or value not in known for value in required_for)
+                or len(set(required_for))!=len(required_for)):
+            raise ValueError('required native reports select distinct actual declared gates')
+        if inspect and required_for and (entry is None or status is None):
+            raise ValueError('required native report inspection needs actual worker and job status')
+        required=inspect and entry in required_for and policy.get('when','always') in {'always',status}
         path=Path(name)
         if (not name or len(name)>240 or not re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/?',name)
                 or any(part in {'.','..','.git'} for part in path.parts)
@@ -72,16 +86,21 @@ def declaration(root, config, *, inspect=False, status=None):
         if any(path==other or path.is_relative_to(other) or other.is_relative_to(path) for other in policies):
             raise ValueError('native output locations must be distinct nonoverlapping paths')
         policies[path]=policy
+        if required and not target.exists():
+            raise ValueError('required native report is missing: '+name)
         if inspect and target.exists():
-            count,total=0,0
+            count,total,files=0,0,0
             entries=target.rglob('*') if target.is_dir() else [target]
             for value in entries:
                 count+=1
                 if count>20000 or value.is_symlink() or not (value.is_dir() or value.is_file()):
                     raise ValueError('native output must be a bounded unlinked regular file or tree')
                 if value.is_file():
+                    files+=1
                     size=value.stat().st_size;total+=size
                     if size>2<<30 or total>16<<30:raise ValueError('native output exceeds the retained evidence size bound')
+            if required and not files:
+                raise ValueError('required native report contains no files: '+name)
     days={value['days'] for value in policies.values()}
     if len(days)>3:raise ValueError('native output retention supports at most three native retention groups')
     groups=[]
@@ -92,7 +111,7 @@ def declaration(root, config, *, inspect=False, status=None):
     return groups
 
 
-def read(root, *, inspect=False, expected=None, status=None):
+def read(root, *, inspect=False, expected=None, status=None, entry=None):
     root=Path(root)
     source=root/'cookbook.toml'
     if source.is_symlink() or not source.is_file() or source.stat().st_size>262144:
@@ -100,7 +119,7 @@ def read(root, *, inspect=False, expected=None, status=None):
     body=source.read_bytes()
     if expected is not None and (not re.fullmatch('[a-f0-9]{64}',expected) or hashlib.sha256(body).hexdigest()!=expected):
         raise ValueError('native diagnostic declaration changed during validation')
-    return declaration(root,tomllib.loads(body.decode()),inspect=inspect,status=status)
+    return declaration(root,tomllib.loads(body.decode()),inspect=inspect,status=status,entry=entry)
 
 
 if __name__=='__main__':
@@ -109,8 +128,9 @@ if __name__=='__main__':
     parser.add_argument('--inspect',action='store_true')
     parser.add_argument('--expected-sha256')
     parser.add_argument('--status',choices=['success','failure','cancelled'])
+    parser.add_argument('--entry')
     args=parser.parse_args()
-    groups=read(args.root,inspect=args.inspect,expected=args.expected_sha256,status=args.status)
+    groups=read(args.root,inspect=args.inspect,expected=args.expected_sha256,status=args.status,entry=args.entry)
     if os.environ.get('GITHUB_OUTPUT'):
         identity=hashlib.sha256((args.root/'cookbook.toml').read_bytes()).hexdigest()
         with open(os.environ['GITHUB_OUTPUT'],'a') as output:
