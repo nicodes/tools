@@ -6,7 +6,7 @@ import tomllib
 RECIPES = {'rust-cli', 'react-native', 'godot-game', 'godot-addon', 'native'}
 SUITES = {'lint', 'unit', 'integration', 'e2e', 'security'}
 RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
-           'bash', 'godot', 'godot-suite', 'godot-check'}
+           'bash', 'godot', 'godot-suite', 'godot-check', 'playwright'}
 
 
 def ci_settings(data):
@@ -57,8 +57,11 @@ def load(root):
         if not isinstance(entries, list) or not entries:
             raise ValueError('declared test groups must contain real checks')
         for entry in entries:
-            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern', 'policy', 'python_environment'}:
+            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern', 'policy', 'python_environment', 'name'}:
                 raise ValueError('invalid native test entry')
+            if 'name' in entry and (not isinstance(entry['name'], str)
+                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', entry['name'])):
+                raise ValueError('native test coverage names must be bounded literal labels')
             if entry.get('runner') not in RUNNERS:
                 raise ValueError('unsupported native test runner')
             policy = entry.get('policy', {})
