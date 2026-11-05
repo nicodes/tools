@@ -80,6 +80,11 @@ jobs:
         command -v xvfb-run
         command -v Xvfb
         command -v xauth
+    - name: Prepare pinned scanner for offline native image controls
+      timeout-minutes: 5
+      run: |
+        python3 tests/native_image_security_control.py setup --directory "$RUNNER_TEMP/native-image-security"
+        printf 'TOOLS_NATIVE_IMAGE_SECURITY_ROOT=%s\n' "$RUNNER_TEMP/native-image-security" >> "$GITHUB_ENV"
     - name: Check libraries and disposable recovery
       run: mise run check
     - name: Verify isolated classic image-cache reset
