@@ -73,8 +73,9 @@ class BrowserControls(unittest.TestCase):
         value['journeys']=[{'name':'ordinary','path':'tests/browser/blackbox.mjs','image':'gate'},
                            {'name':'diagnostic','path':'tests/browser/run.mjs','image':'gate-diagnostic'}]
         value['forward_environment']=['BROWSER_SOLUTION_POSITION','BROWSER_BLOCK_POSITION']
-        definition={'image_base':'ghcr.io/fixture/game','inputs':{'images':[
-            'ghcr.io/fixture/game-gate:{revision}','ghcr.io/fixture/game-gate-diagnostic:{revision}']}}
+        definition={'image_base':'ghcr.io/fixture/game','inputs':{'images':['ghcr.io/fixture/game-gate:{revision}']}}
+        self.config['components']['images']=[{'name':'gate'},{'name':'gate-diagnostic'}]
+        self.config['components']['fixture_images']={'directory':'.artifacts/fixtures/images'}
         with patch.object(browser.images,'definition',return_value=definition),patch.object(browser.subprocess,'run') as run:
             for journey in value['journeys']:
                 browser.journeys(self.root,self.config,{'SOURCE_COMMIT':'c'*40,'EXPECTED_RELEASE_ID':'d'*64},

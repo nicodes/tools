@@ -37,11 +37,15 @@ def declaration(root, config):
         raise ValueError('browser image journeys require bounded native declarations')
     names=set();paths=set()
     shipping=set(images.components(images.definition(root,config))) if journeys else set()
+    if journeys:
+        import image_fixtures
+        fixtures=image_fixtures.declaration(root,config)
+        shipping.update(fixtures['names'] if fixtures else [])
     for journey in journeys:
         if (not isinstance(journey,dict) or set(journey)!={'name','path','image'}
                 or not re.fullmatch('[a-z][a-z0-9-]{0,63}',journey.get('name',''))
                 or journey['name'] in names or journey['path'] in paths or journey['image'] not in shipping):
-            raise ValueError('browser journeys require distinct native programs and declared shipping image components')
+            raise ValueError('browser journeys require distinct native programs and declared shipping or accepted fixture image components')
         path=relative(root,journey['path'],exists=True)
         if (not path.is_file() or path.suffix!='.mjs' or not any(part in {'tests','test'} for part in path.relative_to(root).parts)):
             raise ValueError('browser image journey must identify its real owned assertion program')
