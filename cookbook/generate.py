@@ -69,30 +69,8 @@ jobs:
       pull-request: ${{ inputs.pull-request }}
 '''.replace('PIN', revision)}
     if config.get('publication'):
-        files['.github/workflows/release.yml'] = header + '''name: Release
-'on':
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: Version bump; plugin.cfg must already match
-        type: choice
-        default: patch
-        options: [patch, minor, major]
-permissions: {}
-concurrency:
-  group: release-${{ github.repository }}
-  cancel-in-progress: false
-jobs:
-  release:
-    uses: nicodes/tools/.github/workflows/cookbook-addon-release.yml@PIN
-    permissions:
-      contents: write
-    with:
-      tools-ref: PIN
-      bump: ${{ inputs.bump }}
-    secrets:
-      gdam-key: ${{ secrets.GDAM_API_KEY }}
-'''.replace('PIN', revision)
+        import publication_workflows
+        files.update(publication_workflows.workflow_files(root, revision))
     return files
 
 

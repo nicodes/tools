@@ -49,6 +49,7 @@ class ValidationEvidence(unittest.TestCase):
         os.chdir(self.root)
         self.addCleanup(os.chdir, self.previous)
         self.config = ci.load(self.root)
+        self.config['publication'] = {'tag_prefix': 'v', 'initial': 'first'}
 
     def accept(self):
         self.succeeded('build')
@@ -77,7 +78,7 @@ class ValidationEvidence(unittest.TestCase):
         with patch.dict(os.environ, {'GITHUB_RUN_ID': '999'}), self.assertRaisesRegex(ValueError, 'another workflow'):
             publication.validate_proof(self.root, self.config, accepted, self.source)
         (self.root / 'dist/addon.zip').write_bytes(b'replaced after testing')
-        with self.assertRaisesRegex(ValueError, 'accepted build bytes'):
+        with self.assertRaisesRegex(ValueError, 'accepted build scope'):
             publication.validate_proof(self.root, self.config, accepted, self.source)
 
     def test_plugin_version_and_release_inputs_are_checked_before_publication(self):
