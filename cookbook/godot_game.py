@@ -18,6 +18,7 @@ import rust_component
 import godot_package
 import godot_sdk
 import node_component
+import images
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -92,6 +93,14 @@ def validate_config(root, config):
         node_component.validate(package, root)
     godot_sdk.inputs(root, config)
     godot_package.validate(root, config, verification_scope(root, config)['artifacts'])
+    for record in config.get('components', {}).get('static_images', []):
+        if (not isinstance(record, dict) or set(record) - {'component', 'source', 'installed'}
+                or not {'component', 'source'} <= set(record)):
+            raise ValueError('static image contracts require component and source data')
+        relative(root, record['source'])
+        installed = record.get('installed', '/srv/public')
+        if not isinstance(installed, str) or not installed.startswith('/') or '..' in Path(installed).parts or '\\' in installed:
+            raise ValueError('static image contracts require literal installed paths')
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
 
@@ -160,6 +169,13 @@ def environment(root, config):
               'RUNNER_TEMP': os.environ.get('RUNNER_TEMP', str(root / '.artifacts/tmp')),
               'PYTHONDONTWRITEBYTECODE': '1'}
     values['PATH'] = str(root / '.artifacts/godot/bin') + os.pathsep + os.environ.get('PATH', '')
+    values['APP_VERSION'] = source
+    if config.get('components', {}).get('images'):
+        definition = images.definition(root, config)
+        for key, expected in [('IMAGE_BASE', definition['image_base']), ('GATE_IMAGE', definition['image_base'] + '-gate:' + source)]:
+            if os.environ.get(key, expected) != expected:
+                raise ValueError('image selection differs from the caller release authority: ' + key)
+            values[key] = expected
     return values
 
 
@@ -179,6 +195,12 @@ def run(argv, root, env, timeout=None):
 
 
 def setup(root, config, env):
+    if env.get('COOKBOOK_GODOT_HOST'):
+        import godot_ci
+        matrix = godot_ci.host_matrix(root, config, env)
+        entry = next(value for value in matrix['requirements'] if value['kind'] == 'host')
+        godot_ci.setup_worker(root, config, env, entry)
+        return
     stage = os.environ.get('COOKBOOK_STAGE', 'full')
     selected = required_tools(root, config, stage)
     run(['mise', 'install', *selected], root, env)
@@ -250,7 +272,8 @@ def native_godot(root, config, entry, env):
 
 
 def native_tests(root, config, env, suite):
-    entries = config.get('tests', {}).get(suite, [])
+    import godot_ci
+    entries = godot_ci.selected_entries(root, config, env, suite)
     _, settings = project(root, config)
     godot_entries = [entry for entry in entries if entry['runner'] == 'godot-check']
     others = [entry for entry in entries if entry['runner'] != 'godot-check']
@@ -310,6 +333,15 @@ def validate_outputs(root, config, env, compiler=False):
     if compiler:
         for source in settings.get('art_sources', []):
             run(['bun', '--no-macros', str(TOOLS / 'helpers/godot-art-sources.mjs'), str(relative(root, source, exists=True))], root, env)
+    if components.get('images'):
+        images.validate_release(root, config, env)
+        if compiler:
+            definition = images.definition(root, config)
+            for record in components.get('static_images', []):
+                if record['component'] not in images.components(definition):
+                    raise ValueError('static image contract must name a declared shipping component')
+                images.static_image(definition['image_base'] + '-' + record['component'] + ':' + env['APP_VERSION'],
+                    relative(root, record['source'], exists=True), record.get('installed', '/srv/public'))
     helper('verification').artifacts(verification_scope(root, config))
 
 
@@ -348,6 +380,11 @@ def compile_outputs(root, config, env):
     godot_package.packs(root, config, env)
     godot_package.author(root, config, env, run, 'postprocess')
     godot_package.package(root, config, env)
+    if config.get('components', {}).get('images'):
+        if config.get('components', {}).get('compose'):
+            images.validate_compose(root, config, env, run)
+        images.build(root, config, env, run)
+        images.package(root, config, env, run)
     validate_outputs(root, config, env, compiler=True)
 
 
@@ -372,7 +409,11 @@ def main():
             stage = 'fast' if args.operation == 'test:lint' or (args.operation == '_test' and args.suite == 'lint') else 'full'
             if args.operation == 'test:security' or (args.operation == '_test' and args.suite == 'security'):
                 stage = 'security'
-            selected = required_tools(root, config, stage)
+            if env.get('COOKBOOK_GODOT_ENTRY') or env.get('COOKBOOK_GODOT_HOST'):
+                import godot_ci
+                selected = godot_ci.worker_tools(root, config, env)
+            else:
+                selected = required_tools(root, config, stage)
             for name in selected:
                 subprocess.run(['mise', 'where', name], cwd=root, env=env, check=True, stdout=subprocess.DEVNULL)
         verify = helper('verification')
@@ -404,7 +445,9 @@ def main():
             suites = test_suites(root, config)
             verify.run_session(suites, ['make', '--no-print-directory', '_cookbook-tests'], Path('.artifacts/verification'))
         elif args.operation == '_test':
-            if args.suite == 'lint':
+            if env.get('COOKBOOK_GODOT_ENTRY'):
+                native_tests(root, config, env, args.suite)
+            elif args.suite == 'lint':
                 lint(root, config, env)
             elif args.suite == 'security':
                 security(root, config, env)
@@ -417,6 +460,9 @@ def main():
                 if (directory / 'gdam.json').exists():
                     helper('godot-addons').verify(directory)
                 native_tests(root, config, env, args.suite)
+                if args.suite == 'unit' and env.get('COOKBOOK_GODOT_HOST'):
+                    import godot_ci
+                    godot_ci.require_units(root, config, env)
         elif args.operation.startswith('test:'):
             suite = args.operation.split(':', 1)[1]
             if suite in {'integration', 'e2e'}:

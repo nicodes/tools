@@ -1,0 +1,275 @@
+name: Godot cookbook validation
+'on':
+  workflow_call:
+    inputs:
+      tools-ref:
+        type: string
+        required: true
+      source:
+        type: string
+        required: true
+      runner:
+        type: string
+        default: ubuntu-24.04
+      timeout-minutes:
+        type: number
+        default: 30
+      head:
+        type: string
+        default: ''
+      base:
+        type: string
+        default: ''
+permissions: {}
+jobs:
+  plan:
+    name: Godot plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      units: ${{ steps.plan.outputs.units }}
+      gates: ${{ steps.plan.outputs.gates }}
+      has-units: ${{ steps.plan.outputs.has-units }}
+      has-gates: ${{ steps.plan.outputs.has-gates }}
+      build-runner: ${{ steps.plan.outputs.build-runner }}
+      build-timeout: ${{ steps.plan.outputs.build-timeout }}
+      host-runner: ${{ steps.plan.outputs.host-runner }}
+      host-timeout: ${{ steps.plan.outputs.host-timeout }}
+    env:
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.tools-ref }}
+    steps:
+      - name: Validate accepted immutable cookbook
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/tools/compare/$COOKBOOK_SHA...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: _cookbook
+          persist-credentials: false
+      - name: Exclude helper checkout from source and engine imports
+        run: |
+          printf '/_cookbook/\n' >> "$(git rev-parse --git-path info/exclude)"
+          python3 -c 'from pathlib import Path; Path("_cookbook/.gdignore").touch()'
+      - name: Bootstrap caller-pinned Python
+        uses: ./_cookbook/setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Derive exact source-owned Godot topology
+        id: plan
+        run: python3 _cookbook/cookbook/godot_ci.py plan --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA"
+  build:
+    name: Godot build
+    needs: plan
+    runs-on: ${{ needs.plan.outputs.build-runner }}
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.build-timeout) }}
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.tools-ref }}
+      GODOT_ENTRY: build
+      COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
+      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Preserve source line endings
+        run: git config --global core.autocrlf false
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: _cookbook
+          persist-credentials: false
+      - name: Exclude helper checkout from source and engine imports
+        run: |
+          printf '/_cookbook/\n' >> "$(git rev-parse --git-path info/exclude)"
+          python3 -c 'from pathlib import Path; Path("_cookbook/.gdignore").touch()'
+      - name: Bootstrap caller-pinned Python
+        uses: ./_cookbook/setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Create protected checkout outputs
+        run: python3 -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Run shared Make worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 _cookbook/cookbook/godot_ci.py run --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --entry "$GODOT_ENTRY"
+      - name: Upload actual source-bound partial evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-godot-${{ inputs.source }}-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/godot-export/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+  units:
+    name: Godot unit (${{ matrix.shard }})
+    needs: [plan, build]
+    if: needs.plan.outputs.has-units == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.units) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.tools-ref }}
+      GODOT_ENTRY: ${{ matrix.id }}
+      COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
+      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Preserve source line endings
+        run: git config --global core.autocrlf false
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: _cookbook
+          persist-credentials: false
+      - name: Exclude helper checkout from source and engine imports
+        run: |
+          printf '/_cookbook/\n' >> "$(git rev-parse --git-path info/exclude)"
+          python3 -c 'from pathlib import Path; Path("_cookbook/.gdignore").touch()'
+      - name: Bootstrap caller-pinned Python
+        uses: ./_cookbook/setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Create protected checkout outputs
+        run: python3 -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Run shared Make worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 _cookbook/cookbook/godot_ci.py run --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --entry "$GODOT_ENTRY"
+      - name: Upload actual source-bound partial evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-godot-${{ inputs.source }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/godot-export/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+  gates:
+    name: Godot gate (${{ matrix.name }})
+    needs: [plan, build]
+    if: needs.plan.outputs.has-gates == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.gates) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      SOURCE_SHA: ${{ inputs.source }}
+      COOKBOOK_SHA: ${{ inputs.tools-ref }}
+      GODOT_ENTRY: ${{ matrix.id }}
+      COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
+      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Preserve source line endings
+        run: git config --global core.autocrlf false
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: _cookbook
+          persist-credentials: false
+      - name: Exclude helper checkout from source and engine imports
+        run: |
+          printf '/_cookbook/\n' >> "$(git rev-parse --git-path info/exclude)"
+          python3 -c 'from pathlib import Path; Path("_cookbook/.gdignore").touch()'
+      - name: Bootstrap caller-pinned Python
+        uses: ./_cookbook/setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Create protected checkout outputs
+        run: python3 -c 'from pathlib import Path; p=Path(".artifacts"); assert not p.is_symlink(); p.mkdir(mode=0o700, exist_ok=True)'
+      - name: Run shared Make worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 _cookbook/cookbook/godot_ci.py run --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --entry "$GODOT_ENTRY"
+      - name: Upload actual source-bound partial evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cookbook-godot-${{ inputs.source }}-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/godot-export/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+  full_host:
+    name: Godot host
+    needs: [plan, build, units, gates]
+    if: always() && needs.plan.result == 'success' && needs.build.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.units.result) && contains(fromJSON('["success","skipped"]'), needs.gates.result)
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/cookbook-validation.yml
+    with:
+      tools-ref: ${{ inputs.tools-ref }}
+      source: ${{ inputs.source }}
+      mode: full
+      runner: ${{ needs.plan.outputs.host-runner }}
+      timeout-minutes: ${{ fromJSON(needs.plan.outputs.host-timeout) }}
+      head: ${{ inputs.head }}
+      base: ${{ inputs.base }}

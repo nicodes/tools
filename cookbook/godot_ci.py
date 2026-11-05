@@ -201,7 +201,7 @@ def plan(root, config):
         known_packages = {value if isinstance(value, str) else value['directory'] for value in config.get('node', {}).get('packages', [])}
         if not set(packages) <= known_packages:
             raise ValueError('native gate packages must select declared locked Node components')
-        value = {'id': 'gate-' + name, 'kind': kind, 'job': 'Godot gate (' + name + ')',
+        value = {'id': 'gate-' + name, 'name': name, 'kind': kind, 'job': 'Godot gate (' + name + ')',
             'runner': record['runner'], 'timeout_minutes': budget(record['timeout_minutes']),
             'suite': suite, 'cases': sorted(cases), 'setup': setup, 'packages': packages, 'artifacts': inputs}
         if kind != 'test':
@@ -221,3 +221,546 @@ def plan(root, config):
     if len(json.dumps(result)) > 200000:
         raise ValueError('Godot topology exceeds the bounded Actions matrix output')
     return result
+
+# Partial worker evidence deliberately has a different schema from a full host
+# acceptance. Only the host join may issue the complete product test receipt.
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tomllib
+
+TOOLS = Path(__file__).resolve().parents[1]
+CONTEXT = ('GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA')
+HASH = re.compile(r'[a-f0-9]{64}\Z')
+MAX_FILES = 20000
+MAX_FILE = 2 << 30
+MAX_TOTAL = 16 << 30
+
+
+def read_json(path):
+    path = Path(path)
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 << 20:
+        raise ValueError('Godot evidence must be bounded regular JSON')
+    value = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError('Godot evidence must be an object')
+    return value
+
+
+def digest(path):
+    path = Path(path)
+    if (path.is_symlink() or not path.is_file() or not 0 <= path.stat().st_size <= MAX_FILE
+            or any(parent.is_symlink() for parent in path.parents)):
+        raise ValueError('Godot transport requires bounded unlinked regular files')
+    with path.open('rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def configuration_hash(root):
+    return hashlib.sha256(subprocess.check_output(['git', '-C', str(root), 'show', 'HEAD:cookbook.toml'], timeout=30)).hexdigest()
+
+
+def context_matches(context, environment, job=None):
+    if (not isinstance(context, dict) or any(not environment.get(key) or context.get(key) != environment[key] for key in CONTEXT)
+            or (job is not None and context.get('GITHUB_JOB') != job)):
+        raise ValueError('Godot evidence belongs to another Actions execution or job')
+
+
+def execution_job(entry):
+    return {'build': 'build', 'unit': 'units', 'test': 'gates', 'capability': 'gates', 'production': 'production'}[entry['kind']]
+
+
+def run_identity(environment):
+    repository, run, attempt = (environment.get(key, '') for key in CONTEXT[:3])
+    if (not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository)
+            or not re.fullmatch(r'[1-9][0-9]{0,23}', run) or not re.fullmatch(r'[1-9][0-9]{0,8}', attempt)):
+        raise ValueError('Godot orchestration requires the actual current repository/run/attempt')
+    return repository, run, attempt
+
+
+def artifact_name(source, entry, environment):
+    _, run, attempt = run_identity(environment)
+    return f'cookbook-godot-{source}-{entry["id"]}-{run}-{attempt}'
+
+
+def github(repository, suffix):
+    return json.loads(subprocess.check_output(['gh', 'api', 'repos/' + repository + suffix], timeout=30, text=True))
+
+
+def validate_jobs(requirements, jobs):
+    if not isinstance(jobs, dict) or jobs.get('total_count') != len(jobs.get('jobs', [])):
+        raise ValueError('complete same-attempt job records are required')
+    accepted = []
+    for entry in requirements:
+        matches = [row for row in jobs['jobs'] if row.get('name', '').endswith(entry['job'])]
+        if (len(matches) != 1 or matches[0].get('status') != 'completed' or matches[0].get('conclusion') != 'success'
+                or entry['runner'] not in matches[0].get('labels', [])):
+            raise ValueError('every declared Godot job must succeed on its exact runner')
+        accepted.append({'entry': entry['id'], 'id': matches[0]['id'], 'name': matches[0]['name']})
+    return accepted
+
+
+def declaration_entry(root, config, entry_id):
+    matches = [row for row in plan(root, config)['requirements'] if row['id'] == entry_id and row['kind'] != 'host']
+    if len(matches) != 1:
+        raise ValueError('select one exact source-declared Godot worker')
+    return matches[0]
+
+
+def validate_partial(proof, entry, source, tools, environment, canonical_hash):
+    if (not isinstance(proof, dict) or proof.get('version') != 1 or proof.get('coverage') != 'godot-partial'
+            or proof.get('complete_host') is not False or proof.get('status') != 'passed'
+            or proof.get('source_commit') != source or proof.get('cookbook_commit') != tools
+            or proof.get('configuration_sha256') != canonical_hash or proof.get('entry') != entry
+            or proof.get('repository') != environment.get('GITHUB_REPOSITORY')
+            or not isinstance(proof.get('source_tree'), str) or not SHA.fullmatch(proof['source_tree'])):
+        raise ValueError('Godot partial evidence differs from exact source, cookbook or declared coverage')
+    context_matches(proof.get('execution_context'), environment, execution_job(entry))
+    expected_cases = entry.get('cases', [])
+    if proof.get('executed_cases') != expected_cases:
+        raise ValueError('Godot partial evidence omitted or invented written assertion coverage')
+    build = proof.get('build')
+    if (not isinstance(build, dict) or not HASH.fullmatch(build.get('identity', ''))
+            or not isinstance(build.get('artifacts'), dict) or not build['artifacts']):
+        raise ValueError('Godot worker requires the accepted build identity and artifact closure')
+    provenance = build.get('provenance', {})
+    if (provenance.get('source_commit') != source or provenance.get('source_tree') != proof['source_tree']
+            or provenance.get('tracked_source_clean') is not True or provenance.get('input_identity') != build['identity']):
+        raise ValueError('Godot build provenance changed')
+    context_matches(provenance.get('execution_context'), environment, 'build')
+    if len(build['artifacts']) > MAX_FILES:
+        raise ValueError('Godot artifact inventory exceeds its reviewed bound')
+    for name, value in build['artifacts'].items():
+        if (not isinstance(name, str) or not isinstance(value, str) or
+                (not re.fullmatch(r'image:[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9/._-]*:' + re.escape(source), name)
+                 if name.startswith('image:') else not HASH.fullmatch(value))):
+            raise ValueError('Godot artifact identity is not a bounded exact source image or file digest')
+        if name.startswith('image:') and not re.fullmatch(r'sha256:[a-f0-9]{64}', value):
+            raise ValueError('Godot image requires its immutable native identity')
+    if entry['kind'] != 'build':
+        receipt = proof.get('receipt', {})
+        if (receipt.get('tested_commit') != source or receipt.get('source_commit') != source
+                or receipt.get('source_tree') != proof['source_tree'] or receipt.get('tracked_source_clean') is not True
+                or receipt.get('input_identity') != proof.get('worker_identity') or not HASH.fullmatch(proof.get('worker_identity', ''))):
+            raise ValueError('Godot worker did not prove its actually executed source inputs')
+        context_matches(receipt.get('execution_context'), environment, execution_job(entry))
+    return proof
+
+
+def allowed_output(name, config, root):
+    import godot_game
+    return any(name == path or name.startswith(path.rstrip('/') + '/') for path in godot_game.artifact_paths(root, config))
+
+
+def export_packet(root, proof):
+    import godot_game
+    stage = root / '.artifacts/godot-export'
+    godot_game.helper('clean').clean(root, ['.artifacts/godot-export'])
+    stage.mkdir(parents=True, mode=0o700)
+    if proof['entry']['kind'] == 'build':
+        files = {name: value for name, value in proof['build']['artifacts'].items() if not name.startswith('image:')}
+        if not files or len(files) > MAX_FILES or sum(relative(root, name, exists=True).stat().st_size for name in files) > MAX_TOTAL:
+            raise ValueError('Godot build transport exceeds the reviewed file/byte budget')
+        modes = {}
+        for name, expected in files.items():
+            path = relative(root, name, exists=True)
+            if digest(path) != expected:
+                raise ValueError('Godot build output changed before transport')
+            destination = relative(stage / 'payload', name)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, destination)
+            modes[name] = bool(path.stat().st_mode & 0o111)
+        proof['executables'] = modes
+    (stage / 'godot-proof.json').write_text(json.dumps(proof, indent=2) + '\n')
+    return stage
+
+
+def packet(root, directory, config, source, tools, entry, environment):
+    import ci
+    proof = validate_partial(read_json(Path(directory) / 'godot-proof.json'), entry, source, tools, environment, configuration_hash(root))
+    if proof['source_tree'] != ci.git(root, 'rev-parse', 'HEAD^{tree}'):
+        raise ValueError('Godot packet belongs to another source tree')
+    expected_files = {'godot-proof.json'}
+    if entry['kind'] == 'build':
+        files = {name: value for name, value in proof['build']['artifacts'].items() if not name.startswith('image:')}
+        if (not files or len(files) > MAX_FILES or set(proof.get('executables', {})) != set(files)
+                or any(type(value) is not bool for value in proof['executables'].values())):
+            raise ValueError('Godot packet omitted executable metadata or complete build outputs')
+        total = 0
+        for name, value in files.items():
+            if not HASH.fullmatch(value) or not allowed_output(name, config, root):
+                raise ValueError('Godot packet contains an undeclared output')
+            incoming = relative(Path(directory) / 'payload', name, exists=True)
+            total += incoming.stat().st_size
+            if digest(incoming) != value:
+                raise ValueError('Godot packet differs from its accepted output bytes')
+            expected_files.add('payload/' + name)
+        if total > MAX_TOTAL:
+            raise ValueError('Godot packet exceeds the reviewed transfer budget')
+    actual = set()
+    for path in Path(directory).rglob('*'):
+        if path.is_symlink():
+            raise ValueError('Godot transport may not contain links')
+        if path.is_file():
+            actual.add(path.relative_to(directory).as_posix())
+    if actual != expected_files:
+        raise ValueError('Godot transport contains missing or unexpected files')
+    return proof
+
+
+def download(root, source, environment, entries):
+    import godot_game
+    repository, run, _ = run_identity(environment)
+    directory = root / '.artifacts/godot-downloads'
+    godot_game.helper('clean').clean(root, ['.artifacts/godot-downloads'])
+    directory.mkdir(parents=True, mode=0o700)
+    for entry in entries:
+        destination = directory / artifact_name(source, entry, environment)
+        subprocess.run(['gh', 'run', 'download', run, '--repo', repository, '--name', destination.name,
+                        '--dir', str(destination)], check=True, timeout=300)
+    return directory
+
+
+def import_build(root, config, source_directory, proof):
+    import ci
+    files = {name: value for name, value in proof['build']['artifacts'].items() if not name.startswith('image:')}
+    for name in files:
+        if not allowed_output(name, config, root):
+            raise ValueError('Godot output is outside the exact declared build scope')
+        destination = relative(root, name)
+        if destination.exists() and digest(destination) != files[name]:
+            raise ValueError('Godot import would replace different existing build bytes')
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(relative(Path(source_directory) / 'payload', name, exists=True), destination)
+        destination.chmod(0o755 if proof['executables'][name] else 0o644)
+    images = {name: value for name, value in proof['build']['artifacts'].items() if name.startswith('image:')}
+    if images:
+        archive = '.artifacts/release/images.tar.gz'
+        if archive not in files:
+            raise ValueError('Godot image transfer requires its actually accepted image archive')
+        subprocess.run(['docker', 'image', 'load', '--input', str(relative(root, archive, exists=True))], check=True, timeout=600)
+        for name, expected in images.items():
+            value = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', name[6:]], text=True, timeout=60).strip()
+            if value != expected:
+                raise ValueError('loaded image differs from the immutable accepted build identity')
+    ci.verification().write(root / '.artifacts/verification/build.json', proof['build'])
+
+
+def matrix_path(root):
+    return root / '.artifacts/godot-host-matrix.json'
+
+
+def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
+    declaration = plan(root, config)
+    if not declaration.get('enrolled'):
+        raise ValueError('Godot full validation requires an explicit source-owned CI topology')
+    entries = [row for row in declaration['requirements'] if row['kind'] != 'host']
+    environment = dict(os.environ)
+    directory = Path(directory) if directory is not None else download(root, source, environment, entries)
+    if {path.name for path in directory.iterdir()} != {artifact_name(source, row, environment) for row in entries}:
+        raise ValueError('Godot matrix artifacts are incomplete or contain unexpected executions')
+    proofs = [packet(root, directory / artifact_name(source, row, environment), config, source, tools, row, environment) for row in entries]
+    build = next(value for value in proofs if value['entry']['kind'] == 'build')
+    if any(value['build'] != build['build'] for value in proofs):
+        raise ValueError('Godot workers accepted different product builds')
+    repository, run, attempt = run_identity(environment)
+    jobs = jobs if jobs is not None else github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
+    accepted = validate_jobs(entries, jobs)
+    import_build(root, config, directory / artifact_name(source, build['entry'], environment), build)
+    matrix = {'version': 1, 'source_commit': source, 'cookbook_commit': tools, 'requirements': declaration['requirements'],
+              'host_groups': declaration['host_groups'], 'unit_inventory': declaration['unit_inventory'], 'proofs': proofs, 'jobs': accepted}
+    matrix_path(root).write_text(json.dumps(matrix, indent=2) + '\n')
+    os.environ['COOKBOOK_GODOT_HOST'] = str(matrix_path(root))
+    os.environ.pop('COOKBOOK_GODOT_ENTRY', None)
+    return matrix
+
+
+def host_matrix(root, config, environment):
+    expected = str(matrix_path(root))
+    if environment.get('COOKBOOK_GODOT_HOST') != expected:
+        raise ValueError('Godot host join requires its checkout-bound accepted matrix')
+    matrix = read_json(matrix_path(root))
+    declaration = plan(root, config)
+    if matrix.get('requirements') != declaration['requirements'] or matrix.get('host_groups') != declaration['host_groups']:
+        raise ValueError('Godot host join source contract changed')
+    for proof in matrix.get('proofs', []):
+        entry = declaration_entry(root, config, proof.get('entry', {}).get('id'))
+        validate_partial(proof, entry, matrix['source_commit'], matrix['cookbook_commit'], environment, configuration_hash(root))
+    if {proof['entry']['id'] for proof in matrix.get('proofs', [])} != {row['id'] for row in declaration['requirements'] if row['kind'] != 'host'}:
+        raise ValueError('Godot host join omitted partial worker coverage')
+    return matrix
+
+
+def revalidate_host_build(root, config, matrix, environment):
+    import godot_game
+    import ci
+    if matrix != host_matrix(root, config, environment):
+        raise ValueError('Godot host build join differs from the imported matrix')
+    accepted = next(value['build'] for value in matrix['proofs'] if value['entry']['kind'] == 'build')
+    scope = godot_game.verification_scope(root, config)
+    if ci.verification().artifacts(scope) != accepted['artifacts']:
+        raise ValueError('Godot imported products changed before host verification')
+    ci.verification().run_command('build', 'build', scope,
+        [sys.executable, str(TOOLS / 'cookbook/godot_ci.py'), 'validate-import', '--source', matrix['source_commit'], '--tools', matrix['cookbook_commit']],
+        root / '.artifacts/verification')
+
+
+def selected_entries(root, config, environment, suite):
+    declared = config.get('tests', {}).get(suite, [])
+    if environment.get('COOKBOOK_GODOT_HOST'):
+        matrix = host_matrix(root, config, environment)
+        host = next(value for value in matrix['requirements'] if value['kind'] == 'host')
+        return [entry for entry in declared if case_id(suite, entry) in host['cases']]
+    if environment.get('COOKBOOK_GODOT_ENTRY'):
+        row = declaration_entry(root, config, environment['COOKBOOK_GODOT_ENTRY'])
+        if row['kind'] == 'build' or (row['kind'] == 'unit' and suite != 'unit') or (row['kind'] != 'unit' and row['suite'] != suite):
+            raise ValueError('partial Godot worker may execute only its declared assertion group')
+        if row['kind'] == 'capability':
+            return [row['entry']]
+        return [entry for entry in declared if case_id(suite, entry) in row['cases']]
+    return declared
+
+
+def require_units(root, config, environment):
+    matrix = host_matrix(root, config, environment)
+    declaration = plan(root, config)
+    actual = [value['entry'] for value in matrix['proofs'] if value['entry']['kind'] == 'unit']
+    expected = declaration['units']['include']
+    if sorted(actual, key=lambda row: row['id']) != sorted(expected, key=lambda row: row['id']):
+        raise ValueError('Godot whole-unit acceptance requires every declared disjoint shard')
+    return declaration['unit_inventory']
+
+
+def finalize_host(host, matrix):
+    if (not isinstance(matrix, dict) or host.get('status') != 'passed' or host.get('build_verified') is not True
+            or host.get('tests_verified') is not True or set(host.get('test_groups', [])) != set(matrix['host_groups'])
+            or host.get('coverage') == 'godot-partial' or host.get('source_commit') != matrix['source_commit']
+            or host.get('cookbook_commit') != matrix['cookbook_commit']):
+        raise ValueError('Godot partial coverage cannot replace complete host validation')
+    return {**host, 'coverage': 'complete-host-and-godot-matrix', 'godot_matrix': matrix}
+
+
+def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256):
+    declaration = plan(None, config)
+    if (not isinstance(matrix, dict) or matrix.get('version') != 1 or not declaration.get('enrolled')
+            or matrix.get('source_commit') != source or matrix.get('cookbook_commit') != tools
+            or matrix.get('requirements') != declaration['requirements'] or matrix.get('host_groups') != declaration['host_groups']
+            or matrix.get('unit_inventory') != declaration['unit_inventory']):
+        raise ValueError('Godot accepted matrix differs from the exact candidate contract')
+    entries = [row for row in declaration['requirements'] if row['kind'] != 'host']
+    proofs = matrix.get('proofs', [])
+    if not isinstance(proofs, list) or len(proofs) != len(entries):
+        raise ValueError('Godot matrix omitted or repeated partial worker coverage')
+    by_id = {proof.get('entry', {}).get('id'): proof for proof in proofs if isinstance(proof, dict)}
+    if len(by_id) != len(proofs) or set(by_id) != {entry['id'] for entry in entries}:
+        raise ValueError('Godot matrix changed declared worker coverage')
+    for entry in entries:
+        validate_partial(by_id[entry['id']], entry, source, tools, environment, configuration_sha256)
+    build = by_id['build']['build']
+    if any(value['build'] != build for value in proofs):
+        raise ValueError('Godot accepted matrix combines different product builds')
+    accepted = validate_jobs(entries, jobs)
+    if accepted != matrix.get('jobs'):
+        raise ValueError('Godot acceptance belongs to different actual Actions jobs')
+    return accepted
+
+
+
+def worker_tools(root, config, environment):
+    import godot_game as game
+    if environment.get('COOKBOOK_GODOT_HOST'):
+        matrix = host_matrix(root, config, environment)
+        entry = next(value for value in matrix['requirements'] if value['kind'] == 'host')
+    else:
+        entry = declaration_entry(root, config, environment.get('COOKBOOK_GODOT_ENTRY'))
+    if entry['kind'] == 'build':
+        return game.required_tools(root, config, 'full')
+    tools = {'python'}
+    if entry['kind'] == 'host':
+        tools.update(game.required_tools(root, config, 'security'))
+        tools.update(game.required_tools(root, config, 'fast'))
+    packages = game.packages(config) if entry['kind'] == 'host' else [value for value in game.packages(config) if value['directory'] in entry.get('packages', [])]
+    for package in packages:
+        tools.add('bun' if package.get('manager', 'npm') == 'bun' else 'node')
+    entries = [value for suite in config.get('tests', {}) for value in selected_entries(root, config, environment, suite)] if entry['kind'] == 'host' else [
+        value for suite, records in config.get('tests', {}).items() for value in records if case_id(suite, value) in entry.get('cases', [])]
+    if entry.get('entry'):
+        entries.append(entry['entry'])
+    for value in entries:
+        if value['runner'] in {'node', 'node-test', 'bun', 'bun-test'}:
+            tools.add(value['runner'].split('-')[0])
+    pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
+    if not tools <= pins.keys():
+        raise ValueError('Godot worker SDK capabilities require exact caller pins')
+    return sorted(tools)
+
+def setup_worker(root, config, environment, entry):
+    """Install only the SDK capabilities used by this declared worker, explicitly."""
+    import godot_game as game
+    from configuration import godot_pins
+    import node_component
+    role = entry['kind']
+    if role == 'build':
+        game.setup(root, config, environment)
+        return
+    packages = game.packages(config) if role == 'host' else [value for value in game.packages(config) if value['directory'] in entry.get('packages', [])]
+    tools = {'python'}
+    if role == 'host':
+        tools.update(game.required_tools(root, config, 'security'))
+        tools.update(game.required_tools(root, config, 'fast'))
+    for value in packages:
+        tools.add('bun' if value.get('manager', 'npm') == 'bun' else 'node')
+    native_entries = [value for suite in config.get('tests', {}) for value in selected_entries(root, config, environment, suite)] if role == 'host' else [
+        value for suite, entries in config.get('tests', {}).items() for value in entries if case_id(suite, value) in entry.get('cases', [])]
+    if entry.get('entry'):
+        native_entries.append(entry['entry'])
+    for value in native_entries:
+        if value['runner'] in {'node', 'node-test', 'bun', 'bun-test'}:
+            tools.add(value['runner'].split('-')[0])
+    pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
+    if not tools <= pins.keys():
+        raise ValueError('Godot worker SDK capabilities require exact caller pins')
+    game.run(['mise', 'install', *sorted(tools)], root, environment)
+    sdk = lambda argv, directory, env: game.run(['mise', 'exec', '--', *argv], directory, env)
+    node_component.install(root, packages, environment, sdk)
+    if config.get('components', {}).get('python'):
+        sdk(['python3', str(TOOLS / 'cookbook/python_component.py'), 'setup'], root, environment)
+    if role == 'host':
+        import rust_component
+        components = [value for value in config.get('components', {}).get('rust', []) if value.get('test', {}).get('enabled', True)]
+        if components:
+            rust_component.setup(root, components, environment, sdk)
+    if entry.get('setup') == 'browser':
+        for package in packages:
+            directory = relative(root, package['directory'], exists=True)
+            executable = relative(directory, 'node_modules/.bin/playwright', exists=True)
+            game.run([str(executable), 'install', '--with-deps', 'chromium'], directory, environment, timeout=600)
+    if role not in {'unit', 'host'} and entry.get('setup') != 'godot':
+        return
+    directory, settings = game.project(root, config)
+    godot = godot_pins(root)
+    (root / '.artifacts/tmp').mkdir(parents=True, exist_ok=True)
+    (root / '.artifacts/.gdignore').touch()
+    game.run([sys.executable, str(TOOLS / 'helpers/godot-setup.py'), '--version', godot['GODOT_VERSION'],
+              '--expected-version', godot['GODOT_EXPECTED_VERSION'], '--binary-checksum', godot['GODOT_BINARY_CHECKSUM'],
+              '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, environment)
+    if (directory / 'gdam.json').exists():
+        game.helper('godot-addons').restore(directory)
+    game.import_native(root, config, environment)
+
+
+def collect_partial(root, config, source, tools, entry, build):
+    import ci
+    import godot_game
+    tree = ci.identity(root, source, tools)
+    verify = ci.verification()
+    proof = {'version': 1, 'coverage': 'godot-partial', 'complete_host': False, 'status': 'passed',
+             'repository': os.environ.get('GITHUB_REPOSITORY'), 'source_commit': source, 'source_tree': tree,
+             'cookbook_commit': tools, 'configuration_sha256': configuration_hash(root), 'entry': entry,
+             'execution_context': verify.execution_context(), 'executed_cases': entry.get('cases', []), 'build': build}
+    if entry['kind'] == 'build':
+        scope = godot_game.verification_scope(root, config)
+        if build.get('identity') != verify.identity(scope) or build.get('artifacts') != verify.artifacts(scope):
+            raise ValueError('Godot build outputs or inputs changed before transport')
+    else:
+        suite = 'unit' if entry['kind'] == 'unit' else entry['suite']
+        proof['receipt'] = read_json(root / '.artifacts/verification' / (suite + '.json'))
+        proof['worker_identity'] = verify.identity(godot_game.verification_scope(root, config))
+    validate_partial(proof, entry, source, tools, os.environ, configuration_hash(root))
+    return proof
+
+
+def execute_entry(root, source, tools, entry_id):
+    import ci
+    import godot_game
+    from configuration import load
+    config = load(root)
+    entry = declaration_entry(root, config, entry_id)
+    os.environ.update(godot_game.configure_environment(root, config))
+    if entry['kind'] == 'build':
+        subprocess.run(['make', '--no-print-directory', 'build'], cwd=root, env=os.environ, check=True)
+        build = read_json(root / '.artifacts/verification/build.json')
+    else:
+        build = read_json(root / '.artifacts/godot-imported-build.json')
+        # Verify every transferred product still matches before native assertions.
+        if ci.verification().artifacts(godot_game.verification_scope(root, config)) != build['artifacts']:
+            raise ValueError('Godot worker products differ from the declared builder')
+        suite = 'unit' if entry['kind'] == 'unit' else entry['suite']
+        os.environ['COOKBOOK_GODOT_ENTRY'] = entry_id
+        subprocess.run(['make', '--no-print-directory', 'test:' + suite], cwd=root, env=os.environ, check=True)
+    export_packet(root, collect_partial(root, config, source, tools, entry, build))
+
+
+def run_entry(root, source, tools, entry_id):
+    import ci
+    import godot_game
+    from configuration import load
+    config = load(root)
+    ci.identity(root, source, tools)
+    entry = declaration_entry(root, config, entry_id)
+    os.environ.update(COOKBOOK_STAGE='full', COOKBOOK_ROOT=str(TOOLS), COOKBOOK_GODOT_ENTRY=entry_id)
+    os.environ.pop('COOKBOOK_GODOT_HOST', None)
+    os.environ.update(godot_game.configure_environment(root, config))
+    if entry['kind'] != 'build':
+        build_entry = declaration_entry(root, config, 'build')
+        directory = download(root, source, os.environ, [build_entry])
+        source_directory = directory / artifact_name(source, build_entry, os.environ)
+        proof = packet(root, source_directory, config, source, tools, build_entry, os.environ)
+        repository, run, attempt = run_identity(os.environ)
+        validate_jobs([build_entry], github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100'))
+        import_build(root, config, source_directory, proof)
+        (root / '.artifacts/godot-imported-build.json').write_text(json.dumps(proof['build']) + '\n')
+        godot_game.helper('clean').clean(root, ['.artifacts/godot-downloads'])
+    setup_worker(root, config, dict(os.environ), entry)
+    subprocess.run(['mise', 'exec', '--', 'python3', str(TOOLS / 'cookbook/godot_ci.py'), 'execute',
+                    '--source', source, '--tools', tools, '--entry', entry_id], cwd=root, env=os.environ, check=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('operation', choices=['plan', 'run', 'execute', 'validate-import'])
+    parser.add_argument('--source', required=True)
+    parser.add_argument('--tools', required=True)
+    parser.add_argument('--entry')
+    arguments = parser.parse_args()
+    root = Path.cwd().resolve()
+    try:
+        import ci
+        from configuration import load
+        ci.identity(root, arguments.source, arguments.tools)
+        config = load(root)
+        if arguments.operation == 'plan':
+            declaration = plan(root, config)
+            if not declaration.get('enrolled'):
+                raise ValueError('Godot full CI is not enrolled for this retained source-only client')
+            if os.environ.get('GITHUB_OUTPUT'):
+                with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                    for name in ['units', 'gates']:
+                        output.write(name + '=' + json.dumps(declaration[name], separators=(',', ':')) + '\n')
+                        output.write('has-' + name + '=' + ('true' if declaration[name]['include'] else 'false') + '\n')
+                    for name, kind in [('build', 'build'), ('host', 'host')]:
+                        value = next(row for row in declaration['requirements'] if row['kind'] == kind)
+                        output.write(name + '-runner=' + value['runner'] + '\n')
+                        output.write(name + '-timeout=' + str(value['timeout_minutes']) + '\n')
+            print(json.dumps(declaration, indent=2))
+        elif arguments.operation == 'validate-import':
+            import godot_game
+            matrix = host_matrix(root, config, os.environ)
+            build = next(value['build'] for value in matrix['proofs'] if value['entry']['kind'] == 'build')
+            godot_game.validate_outputs(root, config, dict(os.environ))
+            if ci.verification().artifacts(godot_game.verification_scope(root, config)) != build['artifacts']:
+                raise ValueError('Godot imported product bytes changed during validation')
+        elif not arguments.entry:
+            raise ValueError('Godot workers require one exact declared entry')
+        elif arguments.operation == 'execute':
+            execute_entry(root, arguments.source, arguments.tools, arguments.entry)
+        else:
+            run_entry(root, arguments.source, arguments.tools, arguments.entry)
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+        parser.exit(1, str(error) + '\n')
+
+
+if __name__ == '__main__':
+    main()
