@@ -9,6 +9,26 @@ import godot_static_workflows as workflows
 
 
 class StaticCallers(unittest.TestCase):
+    def test_manual_workflow_inputs_source_policy_and_historical_restore_authority_are_preserved(self):
+        data={'komizo_ref':'a'*40,'deploy_runner':'blacksmith-4vcpu-ubuntu-2404','deploy_timeout':15}
+        static={'repository':'example/game','production':True,'recovery':True,
+          'production_inputs':{'source':'source_commit','release':'release_id'},'production_current_source':False}
+        plan={'production':{'include':[{'runner':'blacksmith-4vcpu-ubuntu-2204','timeout_minutes':15}]}}
+        with patch('delivery_workflows.declaration',return_value=data),patch.object(workflows.godot_static,'declaration',return_value=static),patch.object(workflows.godot_ci,'plan',return_value=plan):
+            files=workflows.files(Path('.'),{},'b'*40)
+        public=files['.github/workflows/production-verification.yml']
+        self.assertIn('inputs.source_commit',public);self.assertIn('inputs.release_id',public)
+        self.assertIn('source: ${{ github.sha }}',public);self.assertNotIn('secrets.',public)
+        recovery=files['.github/workflows/recovery.yml']
+        verification,restore=recovery.split('  restore:',1)
+        self.assertNotIn('secrets.',verification);self.assertNotIn('packages: write',verification)
+        self.assertIn('needs: verify',restore);self.assertIn('environment: production',restore)
+        self.assertIn('needs.verify.outputs.proof-sha256',restore)
+        self.assertIn('KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}',restore)
+        self.assertNotIn('KOMIZO\n',recovery)
+        self.assertNotIn('id-token: write',restore)
+        self.assertIn('source_run_id:',recovery)
+
     def test_source_cd_retains_host_identity_while_readonly_production_uses_existing_gate(self):
         data={'komizo_ref':'a'*40,'publish_runner':'blacksmith-4vcpu-ubuntu-2404','deploy_runner':'blacksmith-4vcpu-ubuntu-2404',
           'publish_timeout':15,'deploy_timeout':15,'notification_url':'https://game.example.test/'}
