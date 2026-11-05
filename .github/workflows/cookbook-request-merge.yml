@@ -8,6 +8,12 @@ name: Request validated merge
       pull-request:
         type: string
         required: true
+      expected-head:
+        type: string
+        default: ''
+      expected-base:
+        type: string
+        default: ''
 permissions: {}
 jobs:
   snapshot:
@@ -40,7 +46,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST: ${{ inputs.pull-request }}
-        run: python3 _cookbook/cookbook/request_merge.py snapshot --repository "$GITHUB_REPOSITORY" --pull-request "$PULL_REQUEST" --receipt .artifacts/merge-request.json
+          EXPECTED_HEAD: ${{ inputs.expected-head }}
+          EXPECTED_BASE: ${{ inputs.expected-base }}
+        run: python3 _cookbook/cookbook/request_merge.py snapshot --expected-head "$EXPECTED_HEAD" --expected-base "$EXPECTED_BASE" --repository "$GITHUB_REPOSITORY" --pull-request "$PULL_REQUEST" --receipt .artifacts/merge-request.json
       - name: Preserve immutable request identity
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:

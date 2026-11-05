@@ -118,6 +118,14 @@ class RequestedMerge(unittest.TestCase):
             self.finish()
         self.assertFalse(any(path.endswith('/dispatches') for path, _, _ in self.calls))
 
+    def test_dependency_request_refuses_changed_or_incomplete_source_selection(self):
+        merge.expected_candidate(self.receipt)
+        merge.expected_candidate(self.receipt, self.receipt['head'], self.receipt['base'])
+        for head, base in [('9'*40, self.receipt['base']), (self.receipt['head'], '9'*40),
+                           (self.receipt['head'], ''), ('', self.receipt['base']), ('bad', 'bad')]:
+            with self.subTest(head=head, base=base), self.assertRaises(ValueError):
+                merge.expected_candidate(self.receipt, head, base)
+
     def test_only_main_branch_owner_dispatch_is_eligible(self):
         merge.dispatch_context('owner/project', self.environment)
         for override in [{'GITHUB_REF': 'refs/heads/feature'}, {'GITHUB_EVENT_NAME': 'pull_request'},
