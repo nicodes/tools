@@ -33,6 +33,10 @@ runs:
         working_directory: ${{ inputs.directory }}
         install_args: ${{ inputs.tools }}
         sha256: ${{ steps.mise.outputs.sha256 }}
+    - name: Prepare the reviewed Windows Make task runner
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: python3 "$env:GITHUB_ACTION_PATH/../helpers/make-setup.py"
     - name: Select reviewed CI helpers
       shell: bash
       env:
