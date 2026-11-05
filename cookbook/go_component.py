@@ -53,7 +53,13 @@ def environment(root,record,values,*,offline):
 
 def setup(root,config,values,run):
     for record in declaration(root,config):
-        run(['go','mod','download'],relative(root,record['directory'],exists=True),environment(root,record,values,offline=False))
+        directory=relative(root,record['directory'],exists=True)
+        prepared=environment(root,record,values,offline=False)
+        run(['go','mod','download'],directory,prepared)
+        if record.get('test_packages'):
+            # External packages can have test-only imports outside mod download's
+            # lazy closure. Resolve their metadata during setup, without compiling.
+            run(['go','list','-mod=readonly','-deps','-test',*record['test_packages']],directory,prepared)
 
 
 def build(root,config,values,run):

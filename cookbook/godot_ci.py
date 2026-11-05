@@ -409,7 +409,7 @@ def allowed_output(name, config, root):
     return any(name == path or name.startswith(path.rstrip('/') + '/') for path in godot_game.verification_scope(root, config)['artifacts'])
 
 
-def export_packet(root, proof):
+def export_packet(root, proof, config=None):
     import godot_game
     stage = root / '.artifacts/godot-export'
     godot_game.helper('clean').clean(root, ['.artifacts/godot-export'])
@@ -428,6 +428,11 @@ def export_packet(root, proof):
             shutil.copyfile(path, destination)
             modes[name] = bool(path.stat().st_mode & 0o111)
         proof['executables'] = modes
+    if proof.get('browser_evidence') is not None:
+        if config is None:
+            raise ValueError('browser report export requires its actual configured source scope')
+        import godot_browser_evidence
+        godot_browser_evidence.stage(root, stage, config, proof)
     (stage / 'godot-proof.json').write_text(json.dumps(proof, indent=2) + '\n')
     return stage
 
@@ -438,6 +443,8 @@ def packet(root, directory, config, source, tools, entry, environment):
     if proof['source_tree'] != ci.git(root, 'rev-parse', 'HEAD^{tree}'):
         raise ValueError('Godot packet belongs to another source tree')
     expected_files = {'godot-proof.json'}
+    import godot_browser_evidence
+    expected_files.update(godot_browser_evidence.packet(config, proof, directory))
     if entry['kind'] == 'build':
         files = {name: value for name, value in proof['build']['artifacts'].items() if not name.startswith('image:')}
         if (not files or len(files) > MAX_FILES or set(proof.get('executables', {})) != set(files)
@@ -557,7 +564,12 @@ def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
     repository, run, attempt = run_identity(environment)
     jobs = jobs if jobs is not None else github(repository, f'/actions/runs/{run}/attempts/{attempt}/jobs?per_page=100')
     accepted = validate_jobs(entries, jobs)
+    import godot_browser_evidence
+    report_join = godot_browser_evidence.join_plan(root, config, proofs, directory,
+        lambda proof: artifact_name(source, proof['entry'], environment))
     import_build(root, config, directory / artifact_name(source, build['entry'], environment), build)
+    godot_browser_evidence.join(report_join)
+    godot_browser_evidence.verify_host(root, config, proofs)
     matrix = {'version': 1, 'source_commit': source, 'cookbook_commit': tools, 'requirements': declaration['requirements'],
               'host_groups': declaration['host_groups'], 'unit_inventory': declaration['unit_inventory'], 'proofs': proofs, 'jobs': accepted}
     matrix_path(root).write_text(json.dumps(matrix, indent=2) + '\n')
@@ -577,6 +589,8 @@ def host_matrix(root, config, environment):
     for proof in matrix.get('proofs', []):
         entry = declaration_entry(root, config, proof.get('entry', {}).get('id'))
         validate_partial(proof, entry, matrix['source_commit'], matrix['cookbook_commit'], environment, configuration_hash(root))
+    import godot_browser_evidence
+    godot_browser_evidence.verify_host(root, config, matrix.get('proofs', []))
     required = [row for row in declaration['requirements'] if row['kind'] != 'host']
     if (len(matrix.get('proofs', [])) != len(required) or
             {proof['entry']['id'] for proof in matrix.get('proofs', [])} != {row['id'] for row in required}):
@@ -653,10 +667,13 @@ def finalize_host(host, matrix):
             or host.get('coverage') == 'godot-partial' or host.get('source_commit') != matrix['source_commit']
             or host.get('cookbook_commit') != matrix['cookbook_commit']):
         raise ValueError('Godot partial coverage cannot replace complete host validation')
+    import godot_browser_evidence
+    godot_browser_evidence.verify_final(host, matrix['proofs'])
     return {**host, 'coverage': 'complete-host-and-godot-matrix', 'godot_matrix': matrix}
 
 
-def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, root=None):
+def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, root=None, host=None):
+    """Validate the matrix, and final report hashes when an aggregate is supplied."""
     declaration = plan(root, config, environment)
     if (not isinstance(matrix, dict) or matrix.get('version') != 1 or not declaration.get('enrolled')
             or matrix.get('source_commit') != source or matrix.get('cookbook_commit') != tools
@@ -672,12 +689,16 @@ def validate_acceptance(matrix, config, jobs, source, tools, environment, config
         raise ValueError('Godot matrix changed declared worker coverage')
     for entry in entries:
         validate_partial(by_id[entry['id']], entry, source, tools, environment, configuration_sha256)
+        import godot_browser_evidence
+        godot_browser_evidence.validate(config, by_id[entry['id']])
     build = by_id['build']['build']
     if any(value['build'] != build for value in proofs):
         raise ValueError('Godot accepted matrix combines different product builds')
     accepted = validate_jobs(entries, jobs)
     if accepted != matrix.get('jobs'):
         raise ValueError('Godot acceptance belongs to different actual Actions jobs')
+    if host is not None:
+        finalize_host(host, matrix)
     return accepted
 
 
@@ -821,6 +842,8 @@ def collect_partial(root, config, source, tools, entry, build):
         proof['receipt'] = read_json(root / '.artifacts/verification' / (suite + '.json'))
         proof['worker_identity'] = verify.identity(godot_game.verification_scope(root, config))
     validate_partial(proof, entry, source, tools, os.environ, configuration_hash(root))
+    import godot_browser_evidence
+    godot_browser_evidence.capture(root, config, proof)
     return proof
 
 
@@ -862,7 +885,7 @@ def execute_entry(root, source, tools, entry_id):
             if selection is not None:
                 selection['status'] = 'passed' if completed else 'failed'
                 ci.verification().write(Path('.artifacts/godot-test-selection.json'), selection)
-    export_packet(root, collect_partial(root, config, source, tools, entry, build))
+    export_packet(root, collect_partial(root, config, source, tools, entry, build), config)
 
 
 def run_entry(root, source, tools, entry_id):
