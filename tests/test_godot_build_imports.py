@@ -69,7 +69,7 @@ class BuildImportBoundary(unittest.TestCase):
             godot_ci.import_build(worker,self.config,packet,accepted)
             scope=godot_game.verification_scope(worker,self.config)
             self.assertEqual(self.verify.artifacts(scope),build['artifacts'])
-            godot_game.prepare_export_import_boundaries(worker,self.config)
+            godot_game.prepare_export_import_boundaries(worker,self.config,imported=True)
             self.assertEqual(self.verify.artifacts(scope),build['artifacts'])
             (worker/'app/build/web/unexpected.import').write_bytes(b'foreign output')
             with self.assertRaisesRegex(ValueError,'stale'):
@@ -78,6 +78,14 @@ class BuildImportBoundary(unittest.TestCase):
             (worker/'app/build/.gdignore').write_bytes(b'changed marker')
             with self.assertRaisesRegex(ValueError,'stale'):
                 godot_game.current_build(worker,self.config,self.verify)
+            for mode in [{'COOKBOOK_GODOT_ENTRY':'unit-1-1'}, {'COOKBOOK_GODOT_HOST':'accepted-host-matrix'}]:
+                with self.subTest(mode=mode),self.assertRaisesRegex(ValueError,'accepted artifact bytes'):
+                    godot_game.import_native(worker,self.config,mode)
+            (worker/'app/build/.gdignore').unlink()
+            for mode in [{'COOKBOOK_GODOT_ENTRY':'unit-1-1'}, {'COOKBOOK_GODOT_HOST':'accepted-host-matrix'}]:
+                with self.subTest(mode=mode),self.assertRaisesRegex(ValueError,'may not repair'):
+                    godot_game.import_native(worker,self.config,mode)
+                self.assertFalse((worker/'app/build/.gdignore').exists())
         marker=packet/'payload/app/build/.gdignore';marker.write_bytes(b'substituted marker')
         with self.assertRaisesRegex(ValueError,'accepted output bytes'):
             godot_ci.packet(worker,packet,self.config,self.source,'b'*40,entry,self.environment)
@@ -93,8 +101,9 @@ class BuildImportBoundary(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('GODOT_BIN'),'real native import requires explicitly prepared GODOT_BIN')
     def test_real_native_import_preserves_closed_exports_and_markerless_control_drifts(self):
         build=self.build();scope=godot_game.verification_scope(self.root,self.config)
-        env=dict(os.environ,GODOT_BIN=os.environ['GODOT_BIN'])
+        env=dict(os.environ,GODOT_BIN=os.environ['GODOT_BIN'],COOKBOOK_GODOT_ENTRY='build')
         with chdir(self.root):
+            (self.root/'app/build/.gdignore').unlink()
             godot_game.import_native(self.root,self.config,env)
             self.assertEqual(self.verify.artifacts(scope),build['artifacts'])
             (self.root/'app/build/.gdignore').unlink();shutil.rmtree(self.root/'app/.godot')
