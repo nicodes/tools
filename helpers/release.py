@@ -78,12 +78,64 @@ def source_binding():
     return verification.checkout_binding()
 
 
+def preview_pr(repository, number):
+    result = subprocess.run(['gh', 'api', f'repos/{repository}/pulls/{number}'],
+                            check=True, capture_output=True, text=True, timeout=30)
+    return json.loads(result.stdout)
+
+
+def preview_relationship(revision, event, environment, lookup=preview_pr):
+    """Authenticate exact head/base bytes requested by a trusted-main Preview controller."""
+    number = environment.get('COOKBOOK_PREVIEW_NUMBER', '')
+    repository = environment.get('GITHUB_REPOSITORY', '')
+    event_name = environment.get('GITHUB_EVENT_NAME', '')
+    head, base = (environment.get(key, '') for key in ['REQUEST_HEAD', 'REQUEST_BASE'])
+    controller = environment.get('GITHUB_SHA', '')
+    if (not re.fullmatch('[1-9][0-9]{0,9}', number)
+            or not re.fullmatch('[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', repository)
+            or event_name not in {'pull_request_target', 'issue_comment'}
+            or environment.get('GITHUB_REF') != 'refs/heads/main'
+            or environment.get('GITHUB_WORKFLOW_REF') != repository + '/.github/workflows/pr-preview.yml@refs/heads/main'
+            or not all(re.fullmatch('[a-f0-9]{40}', value) for value in [revision, head, base, controller])
+            or environment.get('GITHUB_WORKFLOW_SHA') != controller or revision != head):
+        raise ValueError('Preview publication requires exact requested head/base and a trusted-main controller')
+    if event_name == 'issue_comment':
+        comment, issue = event.get('comment', {}), event.get('issue', {})
+        if (event.get('action') != 'created' or issue.get('number') != int(number)
+                or not issue.get('pull_request') or comment.get('body', '').strip() != '/preview'
+                or comment.get('author_association') not in {'OWNER', 'MEMBER', 'COLLABORATOR'}):
+            raise ValueError('Preview source relationship requires an authorized up request')
+    else:
+        request = event.get('pull_request', {})
+        if (event.get('action') not in {'synchronize', 'reopened'} or request.get('number') != int(number)
+                or request.get('head', {}).get('sha') != head
+                or 'preview' not in {label.get('name') for label in request.get('labels', []) if isinstance(label, dict)}):
+            raise ValueError('Preview source relationship requires the labeled exact-head up request')
+    request = lookup(repository, int(number))
+    if (request.get('number') != int(number) or request.get('state') != 'open' or request.get('draft') is not False
+            or request.get('author_association') not in {'OWNER', 'MEMBER', 'COLLABORATOR'}
+            or request.get('user', {}).get('login') == 'dependabot[bot]'
+            or request.get('head', {}).get('repo', {}).get('full_name') != repository
+            or request.get('base', {}).get('repo', {}).get('full_name') != repository
+            or request.get('base', {}).get('ref') != 'main'
+            or request.get('head', {}).get('sha') != head or request.get('base', {}).get('sha') != base):
+        raise ValueError('Preview head/base is stale or no longer an authorized same-repository request')
+    return {'version': 1, 'number': int(number), 'head': head, 'base': base,
+            'controller_commit': controller}
+
+
 def source_relationship(revision):
     relationship = {'source_commit': revision, 'workflow_commit': os.environ.get('GITHUB_SHA') or None,
                     'pull_request_head': None, 'pull_request_base': None, 'pull_request_merge': None}
     event_path = os.environ.get('GITHUB_EVENT_PATH')
+    event = json.loads(Path(event_path).read_text()) if event_path else {}
+    if os.environ.get('COOKBOOK_PREVIEW_NUMBER'):
+        preview = preview_relationship(revision, event, os.environ, preview_pr)
+        relationship.update(pull_request_head=preview['head'], pull_request_base=preview['base'],
+                            preview_request=preview)
+        return relationship
     if event_path:
-        request = json.loads(Path(event_path).read_text()).get('pull_request')
+        request = event.get('pull_request')
         if request is not None:
             values = {'pull_request_head': request.get('head', {}).get('sha'),
                       'pull_request_base': request.get('base', {}).get('sha'),
@@ -109,7 +161,9 @@ def validate_provenance(manifest, revision):
     relationship = source_relationship(revision)
     workflow = os.environ.get('GITHUB_SHA')
     if workflow and workflow != revision:
-        if os.environ.get('GITHUB_EVENT_NAME') != 'pull_request' or relationship['pull_request_head'] != revision:
+        ordinary_pr = os.environ.get('GITHUB_EVENT_NAME') == 'pull_request' and relationship['pull_request_head'] == revision
+        authenticated_preview = relationship.get('preview_request', {}).get('head') == revision
+        if not ordinary_pr and not authenticated_preview:
             raise ValueError('publisher source is neither its workflow commit nor its authenticated PR head')
     proof = manifest.get('provenance')
     if not isinstance(proof, dict) or type(proof.get('version')) is not int or proof['version'] != 1 or proof.get('source_commit') != revision:

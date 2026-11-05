@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 
 /**
  * Three environments, three identity sources, and the boundaries between them.
@@ -276,7 +278,31 @@ function previewBundleNamesTheDevelopmentInstance(root) {
   return [{ level: 'fail', text: 'this product has Clerk in the browser and no API, so the bundle\'s publishable key decides which tenant a preview reaches -- and no workflow builds a pull request against the development instance. Pass CLERK_PUBLISHABLE_KEY_DEV, or vars.CLERK_PUBLISHABLE_KEY from a job declaring environment: Preview, on the pull_request path.' }];
 }
 
+function cookbookPreviewContract(root, declared) {
+  if (!fs.existsSync(path.join(root, 'cookbook.toml'))) return null;
+  const driver = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../cookbook/preview_workflows.py');
+  const result = spawnSync('python3', ['-I', driver, 'auth'], {cwd: root, encoding: 'utf8', timeout: 30000, maxBuffer: 1024 * 1024});
+  if (result.error || result.status !== 0) {
+    return [{level:'fail', text:'the declared cookbook Preview contract could not be verified; run make setup and preserve its canonical caller: ' + String(result.stderr || result.error || '').slice(0, 2000)}];
+  }
+  let contract;
+  try {contract = JSON.parse(result.stdout);} catch {return [{level:'fail', text:'the reviewed cookbook returned no valid Preview declaration'}];}
+  if (contract.present === false) return null;
+  if (contract.present !== true || contract.origin_layout !== 'subdomain' || !Array.isArray(contract.origin_variables)) {
+    return [{level:'fail', text:'the cookbook Preview must retain the explicit development-tenant and PR-origin contract'}];
+  }
+  if (declared?.api !== true) return [{level:'fail', text:'this native Preview declaration requires its real authenticated API boundary'}];
+  const server = sourceFiles(root, {within:['api'], extensions:['.rs','.go']}).map(file => read(root,file)).join('\n');
+  const missing = contract.origin_variables.filter(name => typeof name !== 'string' || !server.includes(name));
+  const findings = missing.map(name => ({level:'fail',text:'the declared Preview origin carrier does not reach native API configuration: ' + name}));
+  if (!/\bazp\b|AuthorizedPartyHandler|authorizedPart/i.test(server)) findings.push({level:'fail',text:'the native Preview API must retain its token authorized-party decision'});
+  if (!findings.length) findings.push({level:'info',text:'the canonical trusted-main Preview caller retains readonly full validation, a development tenant and host-resolved PR origins'});
+  return findings;
+}
+
 function previewNamesItsOwnOrigin(root, files, declared) {
+  const cookbook = cookbookPreviewContract(root, declared);
+  if (cookbook !== null) return cookbook;
   const workflows = sourceFiles(root, { within: ['.github'], extensions: ['.yml', '.yaml'] })
     .filter(file => /preview/i.test(file));
   if (!workflows.length) {
