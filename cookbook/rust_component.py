@@ -7,7 +7,7 @@ import tomllib
 from configuration import relative
 
 NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.+/-]*\Z')
-TARGET = re.compile(r'[a-z0-9_]+(?:-[a-z0-9_]+){2,}\Z')
+TARGET = re.compile(r'[a-z0-9_]+(?:-[a-z0-9_]+){1,}\Z')
 BASE_FIELDS = {'name', 'manifest', 'binaries', 'packages', 'features', 'all_features',
                'no_default_features', 'workspace', 'all_targets', 'release',
                'targets', 'target', 'target_directory', 'profile', 'test', 'build', 'lint', 'environment',

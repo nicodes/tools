@@ -33,6 +33,14 @@ class NativeCargoComponent(unittest.TestCase):
         self.assertEqual(argv[argv.index('--features') + 1], 'sdk/mock')
         self.assertEqual(argv[argv.index('--target') + 1], 'aarch64-apple-darwin')
 
+    def test_standard_two_part_wasi_target_is_a_real_pinned_sdk_target(self):
+        argv = cargo.cargo_args({'manifest': 'fixture/Cargo.toml', 'target': 'wasm32-wasip1'}, 'build')
+        self.assertEqual(argv[argv.index('--target') + 1], 'wasm32-wasip1')
+        self.assertIn('--offline', argv)
+        for value in ['--target', 'wasm32-wasip1;echo', 'wasm32/wasip1']:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                cargo.cargo_args({'target': value}, 'build')
+
     def test_shell_commands_and_flag_like_identifiers_are_not_component_data(self):
         for declaration in [{'commands': {'build': 'anything'}}, {'binaries': ['--offline']},
                             {'features': ['feature;run']}, {'manifest': '../Cargo.toml'},
