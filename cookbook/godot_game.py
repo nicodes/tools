@@ -14,6 +14,7 @@ from configuration import godot_pins, load, relative
 from native_tests import run_entries
 import rust_component
 import godot_package
+import godot_sdk
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -51,7 +52,7 @@ def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
                'import_ignored_patterns', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
-               'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage'}
+               'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
     if values.get('origin', 'godot') not in {'godot', 'godot-builds'}:
@@ -83,6 +84,7 @@ def validate_config(root, config):
         relative(root, package['path'], exists=True)
         if package.get('manager', 'npm') != 'npm' or type(package.get('ignore_scripts', False)) is not bool:
             raise ValueError('native Node package setup requires reviewed npm data')
+    godot_sdk.inputs(root, config)
     godot_package.validate(root, config, verification_scope(root, config)['artifacts'])
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
@@ -114,6 +116,7 @@ def environment(root, config):
         raise ValueError('SOURCE_COMMIT must identify this exact checkout')
     values = {**os.environ, 'TOOLS_ROOT': str(TOOLS), 'SOURCE_COMMIT': source,
               'GODOT_BIN': str(root / '.artifacts/godot/bin/godot'),
+              'GDRUST_GODOT_BIN': str(root / '.artifacts/godot/bin/godot'),
               'XDG_DATA_HOME': str(root / '.artifacts/godot-data'),
               'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright'),
               'RUNNER_TEMP': os.environ.get('RUNNER_TEMP', str(root / '.artifacts/tmp')),
@@ -141,6 +144,9 @@ def setup(root, config, env):
     selected = required_tools(root, config, stage)
     run(['mise', 'install', *selected], root, env)
     components = config.get('components', {})
+    if stage == 'full':
+        env = godot_sdk.setup(root, config, env)
+        os.environ.update(env)
     sdk = lambda argv, directory, environment: run(['mise', 'exec', '--', *argv], directory, environment)
     if components.get('rust'):
         if stage == 'full':
@@ -274,6 +280,8 @@ def validate_outputs(root, config, env, compiler=False):
 
 
 def compile_outputs(root, config, env):
+    env = godot_sdk.activate(root, config, env)
+    os.environ.update(env)
     directory, settings = project(root, config)
     if (directory / 'gdam.json').exists():
         helper('godot-addons').verify(directory)
