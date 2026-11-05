@@ -19,10 +19,6 @@ class ImageSecurityControls(unittest.TestCase):
         self.definition={'image_base':'ghcr.io/fixture/game','inputs':{'images':['ghcr.io/fixture/game-gate:{revision}']}}
         self.commands=[];self.report={'SchemaVersion':2,'Results':[{}]}
 
-    def run(self, result=None):
-        # unittest's run method remains intact; callbacks use execute below.
-        return super().run(result)
-
     def execute(self, argv, root, env, **kwargs):
         self.commands.append((argv,kwargs))
         if '--output' in argv:

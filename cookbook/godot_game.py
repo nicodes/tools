@@ -47,14 +47,22 @@ def artifact_paths(root, config):
     paths=list(verification_scope(root, config)['artifacts'])
     if config.get('components',{}).get('image_security'):
         paths.append(config['components']['image_security']['reports'])
+    if config.get('components',{}).get('browser'):
+        paths.append(config['components']['browser']['reports'])
     return paths
 
 
 def evidence_paths(root, config):
+    paths=[]
     if config.get('components',{}).get('image_security'):
         import godot_security
-        return godot_security.evidence_paths(root,config)
-    return []
+        paths.extend(godot_security.evidence_paths(root,config))
+    if config.get('components',{}).get('browser'):
+        reports=relative(root,config['components']['browser']['reports'],exists=True)
+        paths.extend(path.relative_to(root).as_posix() for path in sorted(reports.rglob('*.json')))
+        if len(paths)>2000:
+            raise ValueError('native browser evidence exceeds its file bound')
+    return paths
 
 
 def project(root, config):

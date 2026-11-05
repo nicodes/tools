@@ -35,7 +35,7 @@ class BrowserControls(unittest.TestCase):
             browser.journeys(self.root,self.config,environment,entry)
             call=run.call_args
             self.assertEqual(call.kwargs['env']['BROWSER'],'chromium firefox webkit')
-            self.assertEqual(call.kwargs['env']['BROWSER_TEST_MODE'],'canonical')
+            self.assertEqual(call.kwargs['env']['BROWSER_TEST_MODE'],'')
             self.assertEqual(call.kwargs['env']['BROWSER_STARTUP'],'0')
             self.assertEqual(call.kwargs['timeout'],900)
             self.assertEqual(call.kwargs['env']['GODOT_BROWSER_RUNNER'],'tests/browser/run.mjs')
