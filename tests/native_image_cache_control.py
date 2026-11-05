@@ -110,12 +110,18 @@ def main():
                 '--bridge=none', '--ip-forward=false', '--ip-masq=false', '--log-level=error'],
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=environment)
             ready = None
-            for _ in range(80):
+            startup_deadline = time.monotonic() + 30
+            while time.monotonic() < startup_deadline:
                 if proc.poll() is not None: break
-                response = docker('info', '--format', '{{json .}}', check=False, timeout=3)
+                budget = startup_deadline - time.monotonic()
+                if budget <= 0: break
+                try:
+                    response = docker('info', '--format', '{{json .}}', check=False, timeout=min(3, budget))
+                except subprocess.TimeoutExpired:
+                    continue  # A starting daemon may accept its socket before answering info.
                 if response.returncode == 0:
                     ready = json.loads(response.stdout); break
-                time.sleep(.25)
+                time.sleep(min(.25, max(0, startup_deadline - time.monotonic())))
             assert ready and ready['DockerRootDir'] == str(directory / 'data') and ready['Driver'] == 'overlay2'
             assert image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120) == images
             # Exercise the running engine's native save format as well as the
