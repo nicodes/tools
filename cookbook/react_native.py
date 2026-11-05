@@ -47,6 +47,12 @@ def rust_components(config):
     return config.get('components', {}).get('rust', [])
 
 
+def preview_context(environment):
+    return (environment.get('GITHUB_EVENT_NAME') == 'pull_request' or
+            bool(re.fullmatch('[a-f0-9]{40}', environment.get('REQUEST_HEAD', '')) and
+                 re.fullmatch('[a-f0-9]{40}', environment.get('REQUEST_BASE', ''))))
+
+
 def configure_environment(root, config):
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     values = {'APP_VERSION': revision, 'CI': '1', 'GOTOOLCHAIN': 'local',
@@ -64,7 +70,7 @@ def configure_environment(root, config):
         if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str) or '\0' in value:
             raise ValueError('application build environment contains an invalid literal')
         values[name] = os.environ.get(name, value)
-    if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request':
+    if preview_context(os.environ):
         for name, value in app.get('preview_environment', {}).items():
             if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str):
                 raise ValueError('preview public environment must use literal named values')
@@ -73,9 +79,8 @@ def configure_environment(root, config):
             if not ENVIRONMENT.fullmatch(name) or source != 'COOKBOOK_PREVIEW_CLERK_KEY':
                 raise ValueError('preview variables must select the bounded public Clerk key input')
             value = os.environ.get(source, '')
-            if not value:
-                raise ValueError('the declared Preview public Clerk variable is unavailable')
-            values[name] = value
+            if value:
+                values[name] = value
     os.environ.update(values)
     return dict(os.environ)
 
@@ -238,6 +243,10 @@ def lint(root, config, environment):
 
 def build(root, config, environment):
     app = config.get('components', {}).get('app', {})
+    if preview_context(environment):
+        for name, source in app.get('preview_variables', {}).items():
+            if not environment.get(source) or environment.get(name) != environment[source]:
+                raise ValueError('the declared Preview public Clerk variable is unavailable for this build')
     for name in app.get('forbidden_environment', []):
         if not ENVIRONMENT.fullmatch(name) or environment.get(name):
             raise ValueError('development-only environment cannot enter a shipping build: ' + name)
@@ -391,12 +400,34 @@ def native_behavioral_tests(root, config, environment, suite):
     if config.get('tests', {}).get(suite):
         if suite == 'e2e':
             with images.gate_fixture(root, config, environment) as selected:
-                run_entries(root, config, selected, suite)
+                run_entries(root, config, selected, suite, custom_runners={'playwright': playwright})
         else:
-            run_entries(root, config, environment, suite)
+            run_entries(root, config, environment, suite, custom_runners={'playwright': playwright})
         count += 1
     if not count:
         raise ValueError('native behavioral test group has no real implemented checks: ' + suite)
+
+
+def playwright(root, entry, environment):
+    config = relative(root, entry['path'], exists=True)
+    if entry.get('args') or config.suffix not in {'.ts', '.js', '.mjs'}:
+        raise ValueError('native Playwright groups must run their actual declared config without skip/list flags')
+    cwd = relative(root, entry.get('cwd', 'app'), exists=True)
+    command = ['bun', 'x', '--no-install', 'playwright', 'test', '--config', str(config)]
+    timeout = entry.get('timeout', 900)
+    if sys.platform != 'linux':
+        expo_exports.compile_native(command, cwd, environment, timeout)
+        return
+    # Reuse the proven pidfd/subreaper mechanism without acquiring a dev lease.
+    # Playwright servers can open separate process groups; they remain our children.
+    processes = helper('dev')
+    processes.adopt_descendants()
+    child = subprocess.Popen(command, cwd=cwd, env=environment, start_new_session=True)
+    try:
+        if child.wait(timeout=timeout):
+            raise ValueError('native Playwright assertions failed')
+    finally:
+        processes.stop_descendants(child)
 
 
 def check_sdks(root, config, operation, environment, suite=None):

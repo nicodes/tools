@@ -37,16 +37,19 @@ class ReactNativeRecipe(unittest.TestCase):
             self.assertEqual(result['GITHUB_SHA'], 'a' * 40)
             self.assertEqual(result['GH_TOKEN'], 'test-context')
 
-    def test_preview_uses_the_declared_public_variable_and_refuses_missing_input(self):
+    def test_preview_requires_public_input_only_when_compiling_the_app(self):
         config = {'components': {'app': {'preview_environment': {'EXPO_PUBLIC_API_URL': '/api'},
                  'preview_variables': {'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY': 'COOKBOOK_PREVIEW_CLERK_KEY'}}}}
         with patch.dict(os.environ, {'GITHUB_EVENT_NAME': 'pull_request'}, clear=True):
+            # Lint/source setup can run without a delivery environment.
+            result = recipe.configure_environment(self.root, config)
             with self.assertRaisesRegex(ValueError, 'unavailable'):
-                recipe.configure_environment(self.root, config)
+                recipe.build(self.root, config, result)
             os.environ['COOKBOOK_PREVIEW_CLERK_KEY'] = 'pk_test_fixture'
             result = recipe.configure_environment(self.root, config)
             self.assertEqual(result['EXPO_PUBLIC_API_URL'], '/api')
             self.assertEqual(result['EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY'], 'pk_test_fixture')
+        self.assertTrue(recipe.preview_context({'GITHUB_EVENT_NAME': 'workflow_dispatch', 'REQUEST_HEAD': 'a' * 40, 'REQUEST_BASE': 'b' * 40}))
 
     def test_native_components_are_owned_programs_with_literal_arguments(self):
         directory = self.root / 'internal/compiler'
@@ -123,6 +126,24 @@ mprocs="0.9.6"
             recipe.stop_services(self.root, config, {})
         self.assertEqual(calls[0][0], ['docker', 'compose', '-p', expected, '-f', str(self.root / 'deploy/local.compose.yml'), 'down'])
         self.assertNotIn('--volumes', calls[0][0])
+
+    def test_browser_assertion_failure_cleans_only_the_owned_sdk_descendants(self):
+        from unittest.mock import Mock
+        directory = self.root / 'app/tests'
+        directory.mkdir(parents=True)
+        (directory / 'e2e.config.ts').write_text('export default {};\n')
+        entry = {'runner': 'playwright', 'path': 'app/tests/e2e.config.ts', 'cwd': 'app', 'timeout': 30}
+        child = Mock()
+        child.wait.return_value = 1
+        processes = Mock()
+        with patch.object(recipe, 'helper', return_value=processes), patch.object(recipe.subprocess, 'Popen', return_value=child):
+            with self.assertRaisesRegex(ValueError, 'assertions failed'):
+                recipe.playwright(self.root, entry, {})
+        processes.adopt_descendants.assert_called_once()
+        processes.stop_descendants.assert_called_once_with(child)
+        with patch.object(recipe.subprocess, 'Popen') as popen, self.assertRaisesRegex(ValueError, 'skip/list'):
+            recipe.playwright(self.root, entry | {'args': ['--list']}, {})
+        popen.assert_not_called()
 
     def test_port_selection_refuses_an_occupied_port_without_killing_its_owner(self):
         with socket.socket() as listener:

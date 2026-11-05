@@ -4,8 +4,10 @@ import json
 from pathlib import Path
 import re
 import secrets
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 
 from configuration import relative
@@ -15,6 +17,22 @@ ENVIRONMENT = re.compile(r'[A-Z][A-Z0-9_]*\Z')
 IMAGE = re.compile(r'postgres@sha256:[a-f0-9]{64}\Z')
 CONTAINER = re.compile(r'[a-f0-9]{64}\Z')
 LABEL = 'tools.postgres-fixture'
+
+
+@contextlib.contextmanager
+def termination_cleanup():
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.getsignal(signal.SIGTERM)
+    def terminate(signum, _frame):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def declaration(root, config):
@@ -99,7 +117,7 @@ def context(root, config, environment, suite, *, execute=subprocess.run, now=tim
     owner_password, runtime_password = secrets.token_hex(32), secrets.token_hex(32)
     fixture_env = {**environment, 'POSTGRES_PASSWORD': owner_password, 'PGPASSWORD': owner_password}
     container = ''
-    with tempfile.TemporaryDirectory(prefix='postgres-fixture-') as directory:
+    with tempfile.TemporaryDirectory(prefix='postgres-fixture-') as directory, termination_cleanup():
         cid_file = Path(directory) / 'container.id'
         try:
             result = docker(['run', '--detach', '--rm', '--pull=missing', '--cidfile', str(cid_file),

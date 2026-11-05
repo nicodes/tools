@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import signal
 import subprocess
 import sys
 import tempfile
@@ -113,6 +114,15 @@ class DisposablePostgresControls(unittest.TestCase):
         with postgres_fixture.context(self.root, self.config, {'ordinary': 'value'}, 'unit', execute=self.execute) as selected:
             self.assertEqual(selected, {'ordinary': 'value'})
         self.assertEqual(self.calls, [])
+
+    def test_graceful_termination_cleans_the_fixture_and_restores_caller_signal_policy(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        with self.assertRaises(SystemExit) as result:
+            with postgres_fixture.context(self.root, self.config, {}, 'integration', execute=self.execute):
+                signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        self.assertEqual(result.exception.code, 143)
+        self.assertEqual(self.removed, [self.container])
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
 
 
 if __name__ == '__main__':
