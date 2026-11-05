@@ -42,5 +42,7 @@ def contract(config):
         declaration = module.plan(None, config)
         if values['route'] == 'native' and not declaration['requirements']:
             raise ValueError('Rust CLI validation requires its complete declared native matrix')
+        if values['route'] == 'godot' and not declaration.get('enrolled'):
+            raise ValueError('Godot application validation requires its source-owned worker topology')
         values['matrix'] = declaration
     return values

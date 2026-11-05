@@ -74,9 +74,23 @@ jobs:
       timeout-minutes: ${{ inputs.timeout-minutes }}
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
+  godot:
+    name: Godot source checks
+    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && inputs.recipe == 'godot-game'
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/cookbook-godot.yml
+    with:
+      tools-ref: ${{ inputs.tools-ref }}
+      source: ${{ inputs.source }}
+      runner: ${{ inputs.runner }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
+      head: ${{ inputs.head }}
+      base: ${{ inputs.base }}
   unsupported:
     name: Require implemented recipe orchestration
-    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && !contains(fromJSON('["godot-addon","react-native","rust-cli"]'), inputs.recipe)
+    if: (github.event_name != 'pull_request' || !inputs.merge-gate) && !contains(fromJSON('["godot-addon","react-native","rust-cli","godot-game"]'), inputs.recipe)
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions: {}
