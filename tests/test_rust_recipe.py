@@ -105,6 +105,26 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
         self.assertTrue((self.root / '.artifacts/verification/build.json').is_file())
         self.assertEqual(len(list((self.root / '.artifacts/native-package').iterdir())), 2)
 
+    def test_named_native_cargo_selection_never_claims_complete_unit_or_test_coverage(self):
+        data = self.root / 'cookbook.toml'
+        data.write_text(data.read_text() + '\n[[components.rust_tests]]\nname="native-library"\ncomponent="cli"\nselectors={lib=true}\n')
+        self.environment['COOKBOOK_NATIVE_TESTS'] = '["native-library"]'
+        directory = self.root / '.artifacts/verification'
+        directory.mkdir(parents=True)
+        (directory / 'test.json').write_text('{"old":"aggregate"}')
+        self.passed('test:unit')
+        slug = 'native-cargo-' + hashlib.sha256(b'native-library').hexdigest()[:24]
+        self.assertTrue((directory / (slug + '.json')).is_file())
+        self.assertFalse((directory / 'unit.json').exists())
+        self.assertFalse((directory / 'test.json').exists())
+        commands = [json.loads(line) for line in (self.root / '.artifacts/commands.jsonl').read_text().splitlines()]
+        self.assertEqual(commands[0][0], 'test')
+        self.assertIn('--lib', commands[0])
+        self.assertNotEqual(self.make('test').returncode, 0)
+        self.environment['COOKBOOK_NATIVE_TESTS'] = '["undeclared"]'
+        self.assertNotEqual(self.make('test:unit').returncode, 0)
+        self.assertEqual(len((self.root / '.artifacts/commands.jsonl').read_text().splitlines()), 1)
+
     def test_api_wave_binds_only_its_outputs_and_cannot_claim_the_full_boundary_group(self):
         data = self.root / 'cookbook.toml'
         data.write_text(data.read_text() + '\n[[components.native]]\nname="api"\nrole="api"\ncomponent="cli"\nbinary="example"\noutput=".artifacts/native-api/example_{platform}_{arch}"\nchecks=["tests/boundary.py"]\n')

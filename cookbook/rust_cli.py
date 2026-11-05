@@ -18,6 +18,7 @@ import rust_component
 import node_component
 import ui_component
 import native_components
+import rust_tests
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -394,6 +395,21 @@ def main():
                 raise ValueError('native check selection must be a nonempty unique JSON path array')
             if args.operation not in {'test:integration', '_test'} or (args.operation == '_test' and args.suite != 'integration'):
                 raise ValueError('filtered native checks cannot claim an aggregate or another test group')
+        selected_cargo = os.environ.get('COOKBOOK_NATIVE_TESTS')
+        if selected_cargo:
+            aggregate = root / '.artifacts/verification/test.json'
+            if aggregate.is_symlink():
+                raise ValueError('test aggregate may not be a link')
+            aggregate.unlink(missing_ok=True)
+            if len(selected_cargo) > 65536:
+                raise ValueError('native Cargo selection exceeds its bound')
+            selected_cargo = json.loads(selected_cargo)
+            if (selected or not isinstance(selected_cargo, list) or not selected_cargo or len(selected_cargo) > 128
+                    or any(not isinstance(name, str) for name in selected_cargo)
+                    or len(selected_cargo) != len(set(selected_cargo))
+                    or args.operation not in {'test:unit', '_test'}
+                    or (args.operation == '_test' and args.suite != 'unit')):
+                raise ValueError('explicit native Cargo selections cannot claim an aggregate or another test group')
         if args.operation == 'setup':
             setup(root, config, env)
         elif args.operation == 'fmt':
@@ -411,6 +427,9 @@ def main():
             if graph:
                 if not env.get('NATIVE_CLI_ARCHIVES'):
                     contexts = native_components.build(root, config, record, env, run)
+                else:
+                    for value in native_components.selection(config, env):
+                        native_components.dependencies(root, config, value, native_components.platform(record), env, materialize=True)
                 native_components.verify(root, config, record, env)
             elif not env.get('NATIVE_CLI_ARCHIVES'):
                 rust_component.build(root, components(config), env, run, target=env.get('RUST_TARGET'))
@@ -422,6 +441,11 @@ def main():
                     rust_component.validate_build(root, [component], values, run, target=env.get('RUST_TARGET'))
             else:
                 rust_component.validate_build(root, components(config), env, run, target=env.get('RUST_TARGET'))
+            if config.get('components', {}).get('rust_tests'):
+                record = selected_target(package_data(root, config), env)
+                names = [item['name'] for item in rust_tests.eligible(root, config, env, native_components.platform(record), 'build')]
+                if names:
+                    rust_tests.run_selected(root, config, env, record, names, run, 'build')
             build_checks(root, config, env)
         elif args.operation == 'validate':
             if config.get('components', {}).get('native'):
@@ -446,9 +470,17 @@ def main():
                 elif args.suite == 'security':
                     security(root, config, env)
                 elif args.suite == 'unit':
-                    rust_component.test(root, components(config), env, run, target=env.get('RUST_TARGET'))
-                    node_component.test(root, config.get('node', {}).get('packages', []), env, run)
-                    product_tests(root, config, env, 'unit')
+                    if selected_cargo:
+                        rust_tests.run_selected(root, config, env, selected_target(package_data(root, config), env), selected_cargo, run)
+                    else:
+                        rust_component.test(root, components(config), env, run, target=env.get('RUST_TARGET'))
+                        if config.get('components', {}).get('rust_tests'):
+                            record = selected_target(package_data(root, config), env)
+                            names = [item['name'] for item in rust_tests.eligible(root, config, env, native_components.platform(record))]
+                            if names:
+                                rust_tests.run_selected(root, config, env, record, names, run)
+                        node_component.test(root, config.get('node', {}).get('packages', []), env, run)
+                        product_tests(root, config, env, 'unit')
                 elif not product_tests(root, config, env, args.suite, selected):
                     raise ValueError('native test group has no real declared product checks')
             else:
@@ -457,7 +489,24 @@ def main():
                     current_build(root, config)
                     if config.get('components', {}).get('native') and not any(value['role'] == 'cli' for value in native_components.selection(config, env)) and not selected:
                         raise ValueError('a partial native role build may run only declared filtered boundary checks')
-                if selected:
+                if selected_cargo:
+                    record = selected_target(package_data(root, config), env)
+                    allowed = {item['name'] for item in rust_tests.eligible(root, config, env, native_components.platform(record))}
+                    if not set(selected_cargo) <= allowed:
+                        raise ValueError('native Cargo selection does not match this source/platform/role')
+                    for name in selected_cargo:
+                        proof_name = 'native-cargo-' + hashlib.sha256(name.encode()).hexdigest()[:24]
+                        previous = os.environ.get('COOKBOOK_NATIVE_TESTS')
+                        os.environ['COOKBOOK_NATIVE_TESTS'] = json.dumps([name])
+                        try:
+                            verify.run_command('test', proof_name, declaration,
+                                [sys.executable, str(Path(__file__).resolve()), '_test', '--suite', 'unit'], directory)
+                        finally:
+                            if previous is None:
+                                os.environ.pop('COOKBOOK_NATIVE_TESTS', None)
+                            else:
+                                os.environ['COOKBOOK_NATIVE_TESTS'] = previous
+                elif selected:
                     allowed = set(selected_target(package_data(root, config), env).get('checks', []))
                     if config.get('components', {}).get('native'):
                         allowed = {path for value in native_components.selection(config, env) for path in value.get('checks', [])}
