@@ -104,6 +104,34 @@ jobs:
     if config.get('preview'):
         import preview_workflows
         files.update(preview_workflows.workflow_files(root, revision, config))
+    dependency_policy = Path(root) / '.github/dependency-policy.json'
+    if dependency_policy.is_file():
+        import json
+        policy = json.loads(dependency_policy.read_text())
+        if policy.get('version') == 2:
+            files['.github/workflows/dependency-policy.yml'] = header + """name: Dependency Policy
+'on':
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_run:
+    workflows: [Build & Test]
+    types: [completed]
+  workflow_dispatch: {}
+  schedule:
+    - cron: '4 6 * * *'
+permissions: {}
+jobs:
+  request:
+    uses: nicodes/tools/.github/workflows/cookbook-dependencies.yml@PIN
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: write
+      checks: read
+      statuses: read
+    with:
+      tools-ref: PIN
+""".replace('PIN', revision)
     if config.get('publication') and config['recipe'] not in {'godot-addon', 'rust-cli'}:
         raise ValueError('this recipe release caller is not enrolled yet; preserve its existing publication authority')
     if config.get('publication'):
