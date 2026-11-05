@@ -1,0 +1,33 @@
+name: Ubuntu SDK bootstrap
+'on':
+  pull_request:
+    paths:
+      - setup/**
+      - helpers/select-tools.py
+      - .github/workflows/ubuntu-bootstrap.yml
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: ubuntu-bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  bootstrap:
+    name: Ubuntu 22 SDK bootstrap
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up the caller's exact Python and actionlint
+        uses: ./setup
+        with:
+          tools: python actionlint
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify the selected parser and tools
+        run: |
+          python3 -c 'import tomllib; assert tomllib.loads("version=1")["version"] == 1'
+          python3 helpers/select-tools.py --tools 'python actionlint'
+          actionlint -version

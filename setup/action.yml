@@ -18,7 +18,15 @@ runs:
       env:
         SDK_OS: ${{ runner.os }}
         SDK_ARCH: ${{ runner.arch }}
-      run: python3 "$GITHUB_ACTION_PATH/../helpers/mise-platform.py" --os "$SDK_OS" --arch "$SDK_ARCH" >> "$GITHUB_OUTPUT"
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../helpers/mise-platform.py" --os "$SDK_OS" --arch "$SDK_ARCH" >> "$GITHUB_OUTPUT"
+        python3 -c 'import sys; print("bootstrap-python=" + str(sys.version_info < (3, 11)).lower())' >> "$GITHUB_OUTPUT"
+    - name: Bootstrap the SDK configuration parser
+      if: steps.mise.outputs.bootstrap-python == 'true'
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      with:
+        python-version: '3.13.11'
+        check-latest: false
     - name: Validate selected caller tools
       if: inputs.tools != ''
       shell: bash
