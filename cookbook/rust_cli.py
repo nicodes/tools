@@ -301,11 +301,8 @@ def setup(root, config, environment):
                 raise ValueError('runtime setup requires one caller-owned input manifest')
             relative(root, runtime['manifest'], exists=True)
             helper('runtime-inputs').prepare(root, runtime['manifest'])
-        for package in config.get('components', {}).get('python', []):
-            requirements = relative(root, package['requirements'], exists=True)
-            destination = relative(root, package['target'])
-            pinned(['python3', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-cache-dir',
-                    '--require-hashes', '--target', str(destination), '-r', str(requirements)], root, environment)
+        if config.get('components', {}).get('python'):
+            pinned(['python3', str(TOOLS / 'cookbook/python_component.py'), 'setup'], root, environment)
         for fixture in config.get('components', {}).get('fixtures', []):
             helper('native_cli').immutable_fixture(root, fixture, install=True)
     if config.get('node', {}).get('packages'):
