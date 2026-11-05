@@ -112,7 +112,14 @@ if __name__ == '__main__':
         subprocess.run(['bash', str(TOOLS / 'tests/source-secret-policy.test.sh')], check=True,
                        env=dict(os.environ, SOURCE_POLICY_PYTHON=interpreter(root)), timeout=180)
     elif sys.argv[1:2] == ['check']:
-        raise SystemExit(subprocess.run([interpreter(root), '-I', str(CHECKER), *sys.argv[2:]],
+        arguments = sys.argv[2:]
+        sdk_root = root
+        if arguments[:1] == ['--sdk-root']:
+            if len(arguments) < 3:
+                raise SystemExit('check --sdk-root requires a prepared source checkout and checker arguments')
+            sdk_root = Path(arguments[1]).resolve(strict=True)
+            arguments = arguments[2:]
+        raise SystemExit(subprocess.run([interpreter(sdk_root), '-I', str(CHECKER), *arguments],
                                        cwd=root, env=dict(os.environ), timeout=180).returncode)
     else:
         raise SystemExit('usage: source_policy.py setup|test|check [checker arguments]')
