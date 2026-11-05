@@ -106,6 +106,7 @@ def journeys(root, config, environment, entry=None):
     if entry is not None:
         if selected!=value['runner']:
             raise ValueError('canonical browser coverage must execute the declared full journey')
-        values.update(BROWSER=' '.join(value['browsers']),BROWSER_TEST_MODE='canonical',BROWSER_ROUTE_CYCLES='0',BROWSER_SOAK_SECONDS='0',BROWSER_STARTUP='0')
+        values.pop('BROWSER_EXECUTABLE',None)
+        values.update(BROWSER=' '.join(value['browsers']),BROWSER_TEST_MODE='',BROWSER_ROUTE_CYCLES='0',BROWSER_SOAK_SECONDS='0',BROWSER_STARTUP='0')
     subprocess.run(['bash',str(TOOLS/'helpers/godot-browser.sh')],cwd=root,env=values,check=True,
                    timeout=entry.get('timeout',1800) if entry else 1800)
