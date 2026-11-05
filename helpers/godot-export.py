@@ -8,15 +8,36 @@ import subprocess
 import tempfile
 
 
-def checked(command):
+def checked(command, timeout=600):
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, timeout=600)
+                            text=True, timeout=timeout)
     print(result.stdout, end='')
     if result.returncode or re.search(r'(?m)^(?:SCRIPT ERROR:|ERROR:|FAIL:)', result.stdout):
         raise RuntimeError('Godot import/export failed; retained output above')
 
 
-def export(project, presets, binary='godot', run=checked):
+def native_options(import_arguments=(), timeout=600, import_timeout=None):
+    if (not isinstance(import_arguments, (list, tuple)) or len(import_arguments) > 16
+            or any(not isinstance(value, str) or not value or '\0' in value for value in import_arguments)):
+        raise ValueError('native import arguments must be bounded literal flags')
+    position = 0
+    while position < len(import_arguments):
+        flag = import_arguments[position]
+        if flag in {'--verbose', '--no-header'}:
+            position += 1
+        elif (flag == '--frame-delay' and position + 1 < len(import_arguments)
+              and import_arguments[position + 1].isdigit() and 0 <= int(import_arguments[position + 1]) <= 10000):
+            position += 2
+        else:
+            raise ValueError('native import flags may not replace the setup/import operation')
+    for deadline in [timeout, import_timeout if import_timeout is not None else timeout]:
+        if type(deadline) is not int or not 1 <= deadline <= 3600:
+            raise ValueError('native export deadlines must be bounded')
+
+def export(project, presets, binary='godot', run=None, *, import_arguments=(), timeout=600, import_timeout=None):
+    native_options(import_arguments, timeout, import_timeout)
+    execute = lambda command, importing=False: (run(command) if run is not None else
+        checked(command, timeout=import_timeout if importing and import_timeout is not None else timeout))
     project = Path(project).resolve()
     if not (project / 'project.godot').is_file():
         raise ValueError('Expected a Godot project')
@@ -39,17 +60,17 @@ def export(project, presets, binary='godot', run=checked):
         config = copied / 'project.godot'
         original = config.read_bytes()
         bootstrap = re.sub(rb'(?m)^theme/custom="[^"\r\n]*"$', b'theme/custom=""', original)
-        command = [binary, '--headless', '--editor', '--quit', '--path', str(copied), '--import']
+        command = [binary, '--headless', '--editor', '--quit', '--path', str(copied), '--import', *import_arguments]
         if bootstrap != original:
             try:
                 config.write_bytes(bootstrap)
-                run(command)
+                execute(command, True)
             finally:
                 config.write_bytes(original)
-        run(command)
+        execute(command, True)
         for preset, output, kind in normalized:
             output.parent.mkdir(parents=True, exist_ok=True)
-            run([binary, '--headless', '--path', str(copied), '--export-' + kind, preset, str(output)])
+            execute([binary, '--headless', '--path', str(copied), '--export-' + kind, preset, str(output)])
 
 
 def main():

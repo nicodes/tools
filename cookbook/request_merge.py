@@ -2,6 +2,7 @@
 """Validate a requested candidate, merge current accepted source and request main CI."""
 import argparse
 import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -11,6 +12,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from configuration import ci_settings
+import orchestration
 
 TOOLS = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('request_merge_candidate', TOOLS / 'helpers/merge-candidate.py')
@@ -57,12 +59,9 @@ def source_file(repository, revision, path):
 
 def recipe_pin(makefile, declaration):
     pins = re.findall(r'^COOKBOOK_REF := ([a-f0-9]{40})$', makefile, re.M)
-    if len(pins) != 1 or declaration.get('version') != 1 or declaration.get('recipe') != 'godot-addon':
-        raise ValueError('this request gate requires the implemented pinned addon recipe')
-    tests = declaration.get('tests', {})
-    if not isinstance(tests, dict) or not tests.get('unit'):
-        raise ValueError('the recipe must declare real unit checks')
-    return pins[0], sorted({'lint', 'unit', 'security', *[s for s in ['integration', 'e2e'] if s in tests]})
+    if len(pins) != 1:
+        raise ValueError('this request gate requires one exact cookbook pin')
+    return pins[0], orchestration.contract(declaration)['test_groups']
 
 
 def status(repository, head, state, description):
@@ -77,14 +76,18 @@ def snapshot(repository, number):
     commit = api(f'repos/{repository}/git/commits/{revision}')
     receipt = candidate.snapshot(repository, pull, commit)
     makefile = source_file(repository, revision, 'Makefile')
-    declaration = tomllib.loads(source_file(repository, revision, 'cookbook.toml'))
+    source = source_file(repository, revision, 'cookbook.toml')
+    declaration = tomllib.loads(source)
     tools, groups = recipe_pin(makefile, declaration)
     accepted = api(f'repos/nicodes/tools/compare/{tools}...main')
     if accepted.get('status') not in {'ahead', 'identical'}:
         raise ValueError('recipe cookbook pin must already be accepted on Tools main')
-    receipt.update(cookbook_commit=tools, test_groups=groups)
+    model = orchestration.contract(declaration)
+    receipt.update(cookbook_commit=tools, test_groups=groups, recipe=model['recipe'], declaration=declaration,
+                   configuration_sha256=hashlib.sha256(source.encode()).hexdigest())
     settings = ci_settings(declaration)
     receipt.update(validation_runner=settings['runner'], validation_timeout=str(settings['timeout_minutes']))
+    receipt['preview_environment'] = settings.get('preview_environment', '')
     status(repository, receipt['head'], 'pending', 'Validating current head with base ' + receipt['base'][:12])
     return receipt
 
@@ -94,6 +97,13 @@ def workflow_acceptance(receipt, proof, run, jobs, environment=None):
     candidate.tested_candidate(receipt, proof)
     if proof.get('cookbook_commit') != receipt['cookbook_commit'] or proof.get('test_groups') != receipt['test_groups']:
         raise ValueError('validation used another cookbook or omitted test groups')
+    declaration = receipt['declaration']
+    model = orchestration.contract(declaration)
+    if (proof.get('recipe') != model['recipe'] or receipt.get('recipe') != model['recipe']
+            or receipt['test_groups'] != model['test_groups']
+            or proof.get('configuration_sha256') != receipt['configuration_sha256']
+            or proof.get('coverage') in {'native-partial', 'godot-partial'}):
+        raise ValueError('validation differs from the exact candidate recipe declaration')
     context = proof.get('execution_context', {})
     for key in ['GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_WORKFLOW_REF']:
         if context.get(key) != environment.get(key):
@@ -107,10 +117,22 @@ def workflow_acceptance(receipt, proof, run, jobs, environment=None):
     if jobs.get('total_count') != len(jobs.get('jobs', [])):
         raise ValueError('complete current-run jobs are required')
     completed = [job for job in jobs['jobs'] if not job['name'].endswith('Merge validated candidate')]
-    if (len(completed) != 2 or not any(job['name'].endswith('Snapshot current candidate') for job in completed)
-            or not any(job['name'].endswith('Make full') for job in completed)
-            or any(job.get('conclusion') != 'success' for job in completed)):
+    snapshots = [job for job in completed if job['name'].endswith('Snapshot current candidate')]
+    hosts = [job for job in completed if job['name'].endswith('Make full')]
+    if (len(snapshots) != 1 or len(hosts) != 1
+            or any(job.get('conclusion') != 'success' for job in snapshots + hosts)
+            or any(job.get('conclusion') not in {'success', 'skipped'} for job in completed)):
         raise ValueError('all snapshot and full validation jobs must actually succeed')
+    module = orchestration.matrix_module(declaration)
+    namespace = 'native_matrix' if model['route'] == 'native' else 'godot_matrix'
+    if module is not None:
+        expected_coverage = 'complete-host-and-' + ('native' if model['route'] == 'native' else 'godot') + '-matrix'
+        if proof.get('coverage') != expected_coverage:
+            raise ValueError('native acceptance requires complete host and platform coverage together')
+        module.validate_acceptance(proof.get(namespace), declaration, jobs, receipt['candidate'],
+                                   receipt['cookbook_commit'], environment, receipt['configuration_sha256'])
+    elif any(name in proof for name in ['native_matrix', 'godot_matrix']):
+        raise ValueError('host-only recipe cannot accept unrelated partial matrix evidence')
 
 
 def finish(receipt, proof, validation_result):
@@ -171,7 +193,7 @@ def main():
             args.receipt.write_text(json.dumps(value, indent=2) + '\n')
             if os.environ.get('GITHUB_OUTPUT'):
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-                    for name in ['head', 'base', 'candidate', 'tree', 'cookbook_commit', 'validation_runner', 'validation_timeout']:
+                    for name in ['head', 'base', 'candidate', 'tree', 'cookbook_commit', 'validation_runner', 'validation_timeout', 'recipe', 'preview_environment']:
                         output.write(name + '=' + value[name] + '\n')
         else:
             value = read_json(args.receipt)

@@ -21,11 +21,14 @@ class RequestedMerge(unittest.TestCase):
                         'head': 'b' * 40, 'base': 'a' * 40, 'candidate': 'c' * 40,
                         'tree': 'd' * 40, 'cookbook_commit': 'e' * 40,
                         'test_groups': ['lint', 'security', 'unit']}
+        self.receipt.update(recipe='godot-addon', configuration_sha256='1' * 64,
+            declaration={'version': 1, 'recipe': 'godot-addon', 'tests': {'unit': [{'path': 'tests/unit.py'}]}})
         self.proof = {'repository': 'owner/project', 'source_commit': 'c' * 40,
                       'source_tree': 'd' * 40, 'head': 'b' * 40, 'base': 'a' * 40,
                       'cookbook_commit': 'e' * 40, 'test_groups': self.receipt['test_groups'],
                       'status': 'passed', 'tracked_source_clean': True,
                       'build_verified': True, 'tests_verified': True, 'execution_context': self.environment}
+        self.proof.update(recipe='godot-addon', configuration_sha256='1' * 64)
         self.run = {'id': 123, 'run_attempt': 1, 'event': 'workflow_dispatch',
                     'head_branch': 'main', 'path': '.github/workflows/request-merge.yml',
                     'repository': {'full_name': 'owner/project'}}
@@ -130,6 +133,51 @@ class RequestedMerge(unittest.TestCase):
         for makefile in ['COOKBOOK_REF := main', 'COOKBOOK_REF := ' + 'e' * 40 + '\nCOOKBOOK_REF := ' + 'e' * 40]:
             with self.assertRaises(ValueError):
                 merge.recipe_pin(makefile, declaration)
+
+    def test_source_recipe_hash_and_partial_coverage_cannot_authorize_merge(self):
+        for overrides in [{'configuration_sha256': '2' * 64}, {'recipe': 'rust-cli'},
+                          {'coverage': 'native-partial'}, {'native_matrix': {}}]:
+            with self.subTest(overrides=overrides), self.assertRaises(ValueError):
+                merge.workflow_acceptance(self.receipt, self.proof | overrides, self.run, self.jobs, self.environment)
+
+    def test_native_matrix_acceptance_is_rederived_from_snapshot_declaration(self):
+        import test_native_ci
+        fixture = test_native_ci.NativeMatrix()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.config['version'] = 1
+        plan = fixture.declaration()
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            proofs = []
+            for entry in plan['requirements']:
+                target = Path(directory) / entry['id']
+                target.mkdir()
+                proofs.append(fixture.packet(entry, target))
+        jobs = fixture.jobs(plan['requirements'])
+        matrix = {'version': 1, 'requirements': plan['requirements'], 'host_groups': plan['host_groups'],
+                  'source_commit': fixture.source, 'cookbook_commit': fixture.tools, 'proofs': proofs,
+                  'jobs': merge.orchestration.matrix_module(fixture.config).validate_jobs(plan['requirements'], jobs)}
+        receipt = self.receipt | {'recipe': 'rust-cli', 'declaration': fixture.config,
+                  'candidate': fixture.source, 'tree': fixture.tree, 'cookbook_commit': fixture.tools,
+                  'test_groups': sorted(plan['host_groups']), 'configuration_sha256': proofs[0]['configuration_sha256']}
+        environment = fixture.environment | self.environment
+        # The fixture packet context and controller share the same exact run/attempt.
+        environment['GITHUB_RUN_ATTEMPT'] = fixture.environment['GITHUB_RUN_ATTEMPT']
+        run = self.run | {'run_attempt': int(environment['GITHUB_RUN_ATTEMPT'])}
+        proof = self.proof | {'recipe': 'rust-cli', 'source_commit': fixture.source, 'source_tree': fixture.tree,
+                  'cookbook_commit': fixture.tools, 'test_groups': receipt['test_groups'],
+                  'configuration_sha256': receipt['configuration_sha256'], 'execution_context': environment,
+                  'native_matrix': matrix, 'coverage': 'complete-host-and-native-matrix'}
+        # Native packets bind all protected workflow context, not merely run IDs.
+        for packet in proofs:
+            packet['execution_context'].update(environment)
+        jobs['jobs'] += self.jobs['jobs']
+        jobs['total_count'] = len(jobs['jobs'])
+        merge.workflow_acceptance(receipt, proof, run, jobs, environment)
+        matrix['proofs'].pop()
+        with self.assertRaisesRegex(ValueError, 'omitted or repeated'):
+            merge.workflow_acceptance(receipt, proof, run, jobs, environment)
 
 
 if __name__ == '__main__':

@@ -37,7 +37,8 @@ def component(root, config, value):
         candidates = [item for item in candidates if item.get('name') == value['component']]
     else:
         manifest = value.get('manifest', 'Cargo.toml')
-        relative(root, manifest, exists=True)
+        if root is not None:
+            relative(root, manifest, exists=True)
         candidates = [item for item in candidates if item.get('manifest', 'Cargo.toml') == manifest]
     if len(candidates) != 1:
         raise ValueError('native Cargo test must select exactly one native component')

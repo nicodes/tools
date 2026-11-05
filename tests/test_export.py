@@ -35,6 +35,22 @@ if __name__ == '__main__':
     unittest.main()
 
 class CompilerCacheBoundaries(unittest.TestCase):
+    def test_current_mise_pin_changes_select_fresh_compiler_namespaces(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root)
+            app = source/'app'; app.mkdir()
+            cache = source/'cache'
+            pins = source/'mise.toml'
+            pins.write_text('[tools]\nnode="24.18.1"\n')
+            with module.compiler_cache(app, 'dist', cache) as env:
+                before = env['TMPDIR']
+            pins.write_text('[tools]\nnode="26.7.0"\n')
+            with module.compiler_cache(app, 'dist', cache) as env:
+                self.assertNotEqual(env['TMPDIR'], before)
+            (source/'.mise.toml').write_text(pins.read_text())
+            with self.assertRaisesRegex(ValueError, 'one Mise'):
+                with module.compiler_cache(app, 'dist', cache): pass
+
     def test_variant_isolation_and_corrupt_transform_refusal(self):
         import os
         from unittest.mock import patch

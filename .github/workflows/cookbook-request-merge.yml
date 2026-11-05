@@ -23,6 +23,8 @@ jobs:
       head: ${{ steps.candidate.outputs.head }}
       base: ${{ steps.candidate.outputs.base }}
       cookbook: ${{ steps.candidate.outputs.cookbook_commit }}
+      recipe: ${{ steps.candidate.outputs.recipe }}
+      preview-environment: ${{ steps.candidate.outputs.preview_environment }}
       runner: ${{ steps.candidate.outputs.validation_runner }}
       timeout: ${{ steps.candidate.outputs.validation_timeout }}
     steps:
@@ -52,13 +54,16 @@ jobs:
     needs: snapshot
     permissions:
       contents: read
-    uses: ./.github/workflows/cookbook-validation.yml
+      actions: read
+    uses: ./.github/workflows/cookbook-ci.yml
     with:
       tools-ref: ${{ needs.snapshot.outputs.cookbook }}
       source: ${{ needs.snapshot.outputs.candidate }}
       head: ${{ needs.snapshot.outputs.head }}
       base: ${{ needs.snapshot.outputs.base }}
-      mode: full
+      merge-gate: false
+      recipe: ${{ needs.snapshot.outputs.recipe }}
+      preview-environment: ${{ needs.snapshot.outputs.preview-environment }}
       runner: ${{ needs.snapshot.outputs.runner }}
       timeout-minutes: ${{ fromJSON(needs.snapshot.outputs.timeout) }}
   finalize:

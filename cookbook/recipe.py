@@ -1,6 +1,7 @@
 """Known recipe adapters behind shared source, SDK and evidence contracts."""
 import importlib
 import os
+import sdk_environment
 
 MODULES = {'godot-addon': 'godot_addon', 'godot-game': 'godot_game',
            'react-native': 'react_native', 'rust-cli': 'rust_cli'}
@@ -25,6 +26,7 @@ def test_suites(root, config):
 
 
 def configure_environment(root, config):
+    os.environ.update(sdk_environment.preserve_mise())
     module = adapter(config)
     protected = {key: value for key, value in os.environ.items()
                  if key.startswith('GITHUB_') or key in {'GH_TOKEN', 'TOOLS_VERIFICATION_SESSION'}}

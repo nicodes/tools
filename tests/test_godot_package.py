@@ -83,6 +83,27 @@ class PackageControls(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'owned native components'):
             godot_package.validate(self.root, self.config, ['public'])
 
+    def test_native_extensions_and_digest_evidence_preserve_compiled_bytes(self):
+        record = {'source': '.artifacts/compiled/native.wasm',
+                  'destination': 'app/extensions/native/bin/native.wasm', 'format': 'wasm',
+                  'record': '.artifacts/native-extension.json', 'target': 'web', 'profile': 'release'}
+        self.config['components']['godot']['extensions'] = [record]
+        source = self.root / record['source']; source.parent.mkdir(parents=True)
+        original = b'\0asm\x01\0\0\0'; source.write_bytes(original)
+        artifacts = ['public', record['source'], record['destination'], record['record']]
+        godot_package.validate(self.root, self.config, artifacts)
+        godot_package.extensions(self.root, self.config, {'SOURCE_COMMIT': 'a' * 40})
+        self.assertEqual((self.root / record['destination']).read_bytes(), original)
+        evidence = json.loads((self.root / record['record']).read_text())
+        self.assertEqual(evidence['sha256'], hashlib.sha256(original).hexdigest())
+        self.assertEqual(evidence['source_commit'], 'a' * 40)
+        source.write_bytes(b'wrong binary format')
+        with self.assertRaisesRegex(ValueError, 'wrong compiled binary format'):
+            godot_package.extensions(self.root, self.config, {'SOURCE_COMMIT': 'a' * 40})
+        self.assertEqual((self.root / record['destination']).read_bytes(), original)
+        with self.assertRaisesRegex(ValueError, 'verified artifact scope'):
+            godot_package.validate(self.root, self.config, ['public'])
+
     def test_old_native_pack_cannot_mask_a_generator_that_wrote_nothing(self):
         self.config['components']['godot']['packs'] = [{'program': 'app/art/pack.gd', 'output': 'app/build/web/extra.pck'}]
         output = self.source / 'extra.pck'; output.write_bytes(b'stale prior output')

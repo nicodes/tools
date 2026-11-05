@@ -184,16 +184,27 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
     print(json.dumps(manifest, indent=2))
 
 
-def validate_hosting(root, policy):
+def hosting_errors(root, policy):
     root = Path(root)
     for name in ['max_file_bytes', 'max_tree_bytes']:
         if type(policy.get(name, 0)) is not int or policy.get(name, 0) < 0:
             raise ValueError('Hosting byte limits must be nonnegative integers')
-    physical = [path for path in root.rglob('*') if path.is_file()]
-    if policy.get('max_file_bytes') and any(path.stat().st_size > policy['max_file_bytes'] for path in physical):
-        raise ValueError('Release file exceeds the caller hosting byte limit')
-    if policy.get('max_tree_bytes') and sum(path.stat().st_size for path in physical) > policy['max_tree_bytes']:
-        raise ValueError('Release tree exceeds the caller hosting byte limit')
+    physical = sorted(path for path in root.rglob('*') if path.is_file())
+    errors = []
+    for path in physical:
+        size = path.stat().st_size
+        if policy.get('max_file_bytes') and size > policy['max_file_bytes']:
+            errors.append(f"{path.relative_to(root)} is {size:,} bytes, exceeds caller file limit {policy['max_file_bytes']:,}")
+    total = sum(path.stat().st_size for path in physical)
+    if policy.get('max_tree_bytes') and total > policy['max_tree_bytes']:
+        errors.append(f"release tree is {total:,} bytes, exceeds caller tree limit {policy['max_tree_bytes']:,}")
+    return errors
+
+
+def validate_hosting(root, policy):
+    errors = hosting_errors(root, policy)
+    if errors:
+        raise ValueError('Release exceeds the caller hosting byte limit:\n' + '\n'.join(errors))
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 """Image build and verification primitives shared by application recipes."""
 import gzip
+import contextlib
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -10,6 +12,9 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import time
+import urllib.error
+import urllib.request
 
 from configuration import relative
 
@@ -51,26 +56,42 @@ def references(value, revision):
     return [value['image_base'] + '-' + name + ':' + revision for name in components(value)]
 
 
-def validate_compose(root, config, environment, run):
+@contextlib.contextmanager
+def compose_command(root, config):
     settings = config.get('components', {}).get('compose', {})
     source = relative(root, settings.get('path', 'deploy/compose.yml'), exists=True)
     placeholders = settings.get('environment_files', [])
-    if not isinstance(placeholders, list) or any(not isinstance(name, str) or Path(name).name != name for name in placeholders):
-        raise ValueError('Compose validation placeholders must be flat native environment filenames')
-    if placeholders:
-        with tempfile.TemporaryDirectory(prefix='compose-validation-') as directory:
-            target = Path(directory)
-            shutil.copy2(source, target / 'compose.yml')
-            for name in placeholders:
-                if not re.fullmatch('[a-zA-Z0-9_.-]+', name) or name in {'.', '..', 'compose.yml'}:
-                    raise ValueError('invalid Compose placeholder filename')
-                (target / name).touch(mode=0o600)
-            (target / 'interpolation.env').touch(mode=0o600)
-            run(['docker', 'compose', '--env-file', str(target / 'interpolation.env'),
-                 '--project-directory', str(target), '-p', 'engineering-validation',
-                 '-f', str(target / 'compose.yml'), 'config', '--quiet'], root, environment)
-    else:
-        run(['docker', 'compose', '-f', str(source), 'config', '--no-env-resolution', '--quiet'], root, environment)
+    if not isinstance(placeholders, list):
+        raise ValueError('Compose validation placeholders must be native environment filenames')
+    with tempfile.TemporaryDirectory(prefix='compose-validation-') as directory:
+        target = Path(directory)
+        shutil.copy2(source, target / 'compose.yml')
+        for name in placeholders:
+            if (not isinstance(name, str) or not re.fullmatch('[a-zA-Z0-9_./-]+', name)
+                    or Path(name).name in {'.', '..', 'compose.yml', 'interpolation.env'}):
+                raise ValueError('invalid Compose placeholder filename')
+            placeholder = relative(target, name)
+            placeholder.parent.mkdir(parents=True, exist_ok=True)
+            placeholder.touch(mode=0o600)
+        (target / 'interpolation.env').touch(mode=0o600)
+        command = ['docker', 'compose', '--env-file', str(target / 'interpolation.env'),
+                   '--project-directory', str(target), '-p', 'engineering-validation',
+                   '-f', str(target / 'compose.yml'), 'config']
+        if not placeholders:
+            command.append('--no-env-resolution')
+        yield command
+
+
+def validate_compose(root, config, environment, run):
+    with compose_command(root, config) as command:
+        run([*command, '--quiet'], root, environment)
+
+
+def compose_model(root, config, environment):
+    """Read the deployment model without reading or writing checkout credentials."""
+    with compose_command(root, config) as command:
+        return json.loads(subprocess.check_output([*command, '--format', 'json'], cwd=root,
+                                                 env=environment, text=True, timeout=30))
 
 
 def stage_caddy(root, *, host=False):
@@ -83,6 +104,29 @@ def stage_caddy(root, *, host=False):
     for name, destination in names.items():
         shutil.copy2(TOOLS / 'helpers' / name, directory / destination)
     return directory
+
+
+def stage_empty_directories(root, config):
+    records = config.get('components', {}).get('empty_directories', [])
+    if not isinstance(records, list):
+        raise ValueError('empty runtime staging directories require typed native records')
+    planned = []
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {'path', 'mode'}:
+            raise ValueError('empty runtime staging requires an explicit path and mode')
+        path = relative(root, record['path'])
+        if not path.is_relative_to(root / '.artifacts') or path == root / '.artifacts':
+            raise ValueError('runtime staging directories must stay in generated artifacts')
+        if type(record['mode']) is not int or record['mode'] not in {0o700, 0o750, 0o755}:
+            raise ValueError('runtime staging must use a reviewed directory permission mode')
+        if path.exists() and (not path.is_dir() or any(item.name != '.keep' or item.is_symlink()
+                or not item.is_file() or item.stat().st_size for item in path.iterdir())):
+            raise ValueError('empty runtime staging may not contain retained or private data')
+        planned.append((path, record['mode']))
+    for path, mode in planned:
+        path.mkdir(parents=True, exist_ok=True)
+        os.chmod(path, mode)
+        (path / '.keep').touch()
 
 
 def host_caddy(root, environment, run):
@@ -310,3 +354,73 @@ def rust_image(root, image, contract):
                     raise ValueError('development authority entered the shipping Rust image')
     finally:
         subprocess.run(['docker', 'rm', '-v', container], check=True, stdout=subprocess.DEVNULL, timeout=30)
+
+
+@contextlib.contextmanager
+def gate_fixture(root, config, environment):
+    settings = config.get('components', {}).get('browser_gate')
+    if not settings:
+        yield environment
+        return
+    if set(settings) - {'hostname', 'component', 'user'}:
+        raise ValueError('unknown packaged gate browser fixture setting')
+    hostname = settings.get('hostname')
+    if not isinstance(hostname, str) or not re.fullmatch('[a-z0-9][a-z0-9.-]*', hostname):
+        raise ValueError('packaged gate browser hostname must be a literal host')
+    value = definition(root, config)
+    name = settings.get('component', 'gate')
+    if name not in components(value):
+        raise ValueError('browser fixture must select a declared shipping image')
+    reference = value['image_base'] + '-' + name + ':' + environment['APP_VERSION']
+    receipt = json.loads((root / '.artifacts/verification/build.json').read_text())
+    image = receipt.get('artifacts', {}).get('image:' + reference, '')
+    if not re.fullmatch('sha256:[a-f0-9]{64}', image):
+        raise ValueError('browser fixture needs the accepted immutable shipping image')
+    user = settings.get('user', '65534:65534')
+    if not isinstance(user, str) or not re.fullmatch('[0-9]+:[0-9]+', user):
+        raise ValueError('browser fixture runtime identity must be an explicit numeric UID/GID')
+    uid, gid = user.split(':')
+    output = relative(root, '.artifacts/e2e')
+    output.mkdir(parents=True, exist_ok=True)
+    container = None
+    with tempfile.TemporaryDirectory(prefix='gate-fixture-') as directory:
+        cid = Path(directory) / 'container'
+        command = ['docker', 'run', '-d', '--cidfile', str(cid), '--read-only', '--cap-drop', 'ALL',
+                   '--security-opt', 'no-new-privileges', '--user', user,
+                   '--sysctl', 'net.ipv4.ip_unprivileged_port_start=0']
+        for target in ['/tmp', '/data', '/config']:
+            command += ['--tmpfs', target + ':rw,noexec,nosuid,size=16m,uid=' + uid + ',gid=' + gid]
+        command += ['--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '-p', '127.0.0.1::80', image]
+        try:
+            subprocess.run(command, cwd=root, env=environment, check=True, capture_output=True, text=True, timeout=60)
+            container = cid.read_text().strip()
+            if not re.fullmatch('[a-f0-9]{64}', container):
+                raise ValueError('browser fixture requires its exact owned container identity')
+            port = subprocess.check_output(['docker', 'port', container, '80/tcp'], text=True, timeout=30).strip().rsplit(':', 1)[-1]
+            if not re.fullmatch('[0-9]+', port) or not 1 <= int(port) <= 65535:
+                raise ValueError('browser fixture did not publish an owned loopback port')
+            request = urllib.request.Request('http://127.0.0.1:' + port + '/', headers={'Host': hostname + ':' + port})
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            deadline = time.monotonic() + 60
+            while True:
+                try:
+                    with opener.open(request, timeout=5) as response:
+                        if response.status == 200:
+                            break
+                except (OSError, urllib.error.URLError):
+                    pass
+                if time.monotonic() >= deadline:
+                    raise ValueError('packaged gate browser fixture did not become ready')
+                time.sleep(1)
+            yield environment | {'E2E_URL': 'http://' + hostname + ':' + port + '/'}
+        finally:
+            if container is None and cid.is_file():
+                selected = cid.read_text().strip()
+                if re.fullmatch('[a-f0-9]{64}', selected):
+                    container = selected
+            if container:
+                try:
+                    logs = subprocess.run(['docker', 'logs', '--tail', '100', container], capture_output=True, text=True, timeout=30)
+                    (output / 'gate.log').write_text((logs.stdout + logs.stderr)[-200000:])
+                finally:
+                    subprocess.run(['docker', 'rm', '-f', container], check=True, stdout=subprocess.DEVNULL, timeout=30)

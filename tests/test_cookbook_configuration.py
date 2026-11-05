@@ -78,6 +78,17 @@ class RecipeConfiguration(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 configuration.relative(self.root, path)
 
+    def test_preserved_native_suite_deadlines_remain_explicit_and_bounded(self):
+        for timeout, accepted in [(5400, True), (10800, True), (10801, False), (0, False), (True, False)]:
+            value = str(timeout).lower() if type(timeout) is bool else str(timeout)
+            self.write('[[tests.e2e]]\nrunner="python"\npath="tests/test_behavior.py"\ntimeout=' + value + '\n')
+            with self.subTest(timeout=timeout):
+                if accepted:
+                    self.assertEqual(configuration.load(self.root)['tests']['e2e'][0]['timeout'], timeout)
+                else:
+                    with self.assertRaises(ValueError):
+                        configuration.load(self.root)
+
 
 if __name__ == '__main__':
     unittest.main()

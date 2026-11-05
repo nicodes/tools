@@ -1,10 +1,12 @@
 import importlib.util
+import contextlib
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 COOKBOOK = Path(__file__).resolve().parents[1] / 'cookbook'
@@ -15,6 +17,19 @@ spec.loader.exec_module(images)
 
 
 class ApplicationImages(unittest.TestCase):
+    def test_empty_runtime_staging_never_copies_retained_private_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = {'components': {'empty_directories': [{'path': '.artifacts/media', 'mode': 0o700}]}}
+            images.stage_empty_directories(root, config)
+            path = root / '.artifacts/media'
+            self.assertEqual(path.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(list(path.iterdir()), [path / '.keep'])
+            (path / 'private-photo').write_bytes(b'retained private bytes')
+            with self.assertRaisesRegex(ValueError, 'retained or private data'):
+                images.stage_empty_directories(root, config)
+            self.assertEqual((path / 'private-photo').read_bytes(), b'retained private bytes')
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='image source ')
         self.addCleanup(temporary.cleanup)
@@ -74,6 +89,24 @@ class ApplicationImages(unittest.TestCase):
         with self.assertRaises(ValueError):
             images.validate_compose(self.root, {'components': {'compose': {'environment_files': ['../outside']}}}, {}, validate)
 
+    def test_runtime_model_uses_owned_nested_placeholders_and_never_checkout_secrets(self):
+        (self.root / 'deploy/compose.yml').write_text('services: {}\n')
+        secret = self.root / 'deploy/secrets/postgres-owner.env'
+        secret.parent.mkdir()
+        secret.write_text("PRIVATE='deliberately-invalid\n")
+        config = {'components': {'compose': {'environment_files': ['secrets.env', 'secrets/postgres-owner.env']}}}
+        observed = []
+        def model(command, **kwargs):
+            target = Path(command[command.index('--project-directory') + 1])
+            observed.append(target)
+            self.assertEqual((target / 'secrets/postgres-owner.env').read_bytes(), b'')
+            self.assertEqual((target / 'interpolation.env').read_bytes(), b'')
+            return '{"services":{"api":{"read_only":true}}}'
+        with patch.object(images.subprocess, 'check_output', side_effect=model):
+            self.assertTrue(images.compose_model(self.root, config, {})['services']['api']['read_only'])
+        self.assertFalse(observed[0].exists())
+        self.assertEqual(secret.read_text(), "PRIVATE='deliberately-invalid\n")
+
     def test_rust_scan_requires_every_lock_inventory_and_blocks_high_findings(self):
         manifests = ['api/Cargo.toml', 'internal/runtime/Cargo.toml']
         for name in manifests:
@@ -117,6 +150,30 @@ class ApplicationImages(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'accepted native executable'):
                 images.rust_image(self.root, 'image:source', contract)
         self.assertEqual(removed, ['c' * 64, 'c' * 64])
+
+    def test_browser_fixture_uses_the_accepted_image_and_cleans_up_after_journey_failure(self):
+        directory = self.root / '.artifacts/verification'
+        directory.mkdir(parents=True)
+        reference = 'ghcr.io/owner/example-gate:' + 'a' * 40
+        (directory / 'build.json').write_text(json.dumps({'artifacts': {'image:' + reference: 'sha256:' + 'b' * 64}}))
+        commands = []
+        def docker(command, **_kwargs):
+            commands.append(command)
+            if command[1] == 'run':
+                Path(command[command.index('--cidfile') + 1]).write_text('c' * 64)
+                self.assertEqual(command[-1], 'sha256:' + 'b' * 64)
+            return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+        opener = SimpleNamespace(open=lambda request, timeout: contextlib.nullcontext(SimpleNamespace(status=200)))
+        config = {'components': {'browser_gate': {'hostname': 'app.example.invalid'}}}
+        with patch.object(images, 'definition', return_value=self.value), \
+                patch.object(images.subprocess, 'run', side_effect=docker), \
+                patch.object(images.subprocess, 'check_output', return_value='127.0.0.1:8181\n'), \
+                patch.object(images.urllib.request, 'build_opener', return_value=opener):
+            with self.assertRaisesRegex(ValueError, 'journey assertion'):
+                with images.gate_fixture(self.root, config, self.environment) as selected:
+                    self.assertEqual(selected['E2E_URL'], 'http://app.example.invalid:8181/')
+                    raise ValueError('journey assertion')
+        self.assertEqual(commands[-1], ['docker', 'rm', '-f', 'c' * 64])
 
 
 if __name__ == '__main__':

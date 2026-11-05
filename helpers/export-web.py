@@ -50,10 +50,16 @@ def compiler_cache(app, output_name, root):
                    if key.startswith(('EXPO_', 'ENGINEERING_E2E_')) or
                    key in ('NODE_ENV', 'BABEL_ENV')}
     environment.update({name: os.environ.get(name) for name in declared})
+    toolchains = [path for path in [app.parent/'mise.toml', app.parent/'.mise.toml']
+                  if path.exists() or path.is_symlink()]
+    if len(toolchains) > 1:
+        raise ValueError('compiler cache requires one Mise SDK authority')
+    for path in toolchains:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 1 << 20:
+            raise ValueError('compiler SDK configuration must be bounded and regular')
     identity = {'format': 2, 'output': output_name, 'inputs': inputs,
                 'environment': environment,
-                'toolchain': hashlib.sha256((app.parent/'.mise.toml').read_bytes()).hexdigest()
-                if (app.parent/'.mise.toml').is_file() else None}
+                'toolchain': hashlib.sha256(toolchains[0].read_bytes()).hexdigest() if toolchains else None}
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     cache = root/key
     if cache.is_symlink():

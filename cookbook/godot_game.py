@@ -10,11 +10,15 @@ import sys
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
 
+import sdk_environment
+
 from configuration import godot_pins, load, relative
 from native_tests import run_entries
 import rust_component
 import godot_package
 import godot_sdk
+import node_component
+import images
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -52,7 +56,7 @@ def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
                'import_ignored_patterns', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
-               'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web'}
+               'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web', 'extensions'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
     if values.get('origin', 'godot') not in {'godot', 'godot-builds'}:
@@ -67,10 +71,17 @@ def validate_config(root, config):
         raise ValueError('native imports belong to explicit setup or build stages')
     seen = set()
     for export in values.get('exports', []):
-        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility'}:
+        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility', 'project', 'timeout', 'import_timeout', 'import_arguments'}:
             raise ValueError('unsupported native Godot export setting')
         if export.get('kind', 'release') not in {'release', 'debug'} or export.get('platform', 'web') not in {'web', 'linux', 'windows', 'macos'}:
             raise ValueError('unsupported Godot export kind or platform')
+        native_project = relative(root, export.get('project', values.get('project', 'app')), exists=True)
+        if not (native_project / 'project.godot').is_file():
+            raise ValueError('native exports require an owned Godot project')
+        if native_project != directory and not native_project.is_relative_to(root / 'tests'):
+            raise ValueError('additional native Godot export projects belong to owned test fixtures')
+        helper('godot-export').native_options(export.get('import_arguments', values.get('import_arguments', [])),
+            export.get('timeout', 600), export.get('import_timeout', values.get('import_timeout', 180)))
         output = relative(root, export['output'])
         if output in seen:
             raise ValueError('Godot export destinations must be distinct')
@@ -78,22 +89,55 @@ def validate_config(root, config):
     components = config.get('components', {})
     for component in components.get('rust', []):
         rust_component.validate(component, root)
-    for package in components.get('node', {}).get('packages', []):
-        if not isinstance(package, dict) or set(package) - {'path', 'manager', 'ignore_scripts'}:
-            raise ValueError('unsupported native Node package data')
-        relative(root, package['path'], exists=True)
-        if package.get('manager', 'npm') != 'npm' or type(package.get('ignore_scripts', False)) is not bool:
-            raise ValueError('native Node package setup requires reviewed npm data')
+    for package in packages(config):
+        node_component.validate(package, root)
     godot_sdk.inputs(root, config)
     godot_package.validate(root, config, verification_scope(root, config)['artifacts'])
+    for record in config.get('components', {}).get('static_images', []):
+        if (not isinstance(record, dict) or set(record) - {'component', 'source', 'installed'}
+                or not {'component', 'source'} <= set(record)):
+            raise ValueError('static image contracts require component and source data')
+        relative(root, record['source'])
+        installed = record.get('installed', '/srv/public')
+        if not isinstance(installed, str) or not installed.startswith('/') or '..' in Path(installed).parts or '\\' in installed:
+            raise ValueError('static image contracts require literal installed paths')
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
+
+
+def packages(config):
+    return [({'directory': value, 'manager': 'npm'} if isinstance(value, str) else value)
+            for value in config.get('node', {}).get('packages', [])]
+
+
+def package_linters(config):
+    return [value for value in packages(config)
+            if any(value.get(key) for key in ['typecheck', 'lint', 'format_check', 'expo'])]
 
 
 def required_tools(root, config, stage='full'):
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
     components = config.get('components', {})
     if stage == 'full':
+        mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
+        if components.get('rust'):
+            mandatory.update({'rust', 'cargo:cargo-audit'})
+        if components.get('godot', {}).get('art_sources'):
+            mandatory.add('bun')
+        for value in packages(config):
+            mandatory.add('bun' if value.get('manager', 'npm') == 'bun' else 'node')
+        for entries in config.get('tests', {}).values():
+            for entry in entries:
+                if entry['runner'] in {'node', 'node-test'}:
+                    mandatory.add('node')
+                if entry['runner'] in {'bun', 'bun-test'}:
+                    mandatory.add('bun')
+        for phase in ['prepare', 'postprocess']:
+            for record in components.get('godot', {}).get(phase, []):
+                if record['runner'] in {'node', 'bun'}:
+                    mandatory.add(record['runner'])
+        if not mandatory <= pins.keys():
+            raise ValueError('required native SDKs must be declared in caller Mise pins: ' + ', '.join(sorted(mandatory - pins.keys())))
         selected = list(pins)
     else:
         selected = ['python']
@@ -103,8 +147,11 @@ def required_tools(root, config, stage='full'):
             selected.append('rust')
             if stage == 'security':
                 selected.append('cargo:cargo-audit')
-        if stage == 'security' and components.get('node', {}).get('packages'):
-            selected.append('node')
+        active_packages = package_linters(config) if stage == 'fast' else [value for value in packages(config) if value.get('audit', True)]
+        for value in active_packages:
+            selected.append('bun' if value.get('manager', 'npm') == 'bun' else 'node')
+            if (relative(root, value['directory']) / 'security-remediations.json').exists():
+                selected.append('node')
     if any(name not in pins for name in selected):
         raise ValueError('required native SDK is not pinned in mise.toml')
     return sorted(set(selected))
@@ -114,7 +161,7 @@ def environment(root, config):
     source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     if os.environ.get('SOURCE_COMMIT', source) != source:
         raise ValueError('SOURCE_COMMIT must identify this exact checkout')
-    values = {**os.environ, 'TOOLS_ROOT': str(TOOLS), 'SOURCE_COMMIT': source,
+    values = {**sdk_environment.preserve_mise(), 'TOOLS_ROOT': str(TOOLS), 'SOURCE_COMMIT': source,
               'GODOT_BIN': str(root / '.artifacts/godot/bin/godot'),
               'GDRUST_GODOT_BIN': str(root / '.artifacts/godot/bin/godot'),
               'XDG_DATA_HOME': str(root / '.artifacts/godot-data'),
@@ -122,6 +169,13 @@ def environment(root, config):
               'RUNNER_TEMP': os.environ.get('RUNNER_TEMP', str(root / '.artifacts/tmp')),
               'PYTHONDONTWRITEBYTECODE': '1'}
     values['PATH'] = str(root / '.artifacts/godot/bin') + os.pathsep + os.environ.get('PATH', '')
+    values['APP_VERSION'] = source
+    if config.get('components', {}).get('images'):
+        definition = images.definition(root, config)
+        for key, expected in [('IMAGE_BASE', definition['image_base']), ('GATE_IMAGE', definition['image_base'] + '-gate:' + source)]:
+            if os.environ.get(key, expected) != expected:
+                raise ValueError('image selection differs from the caller release authority: ' + key)
+            values[key] = expected
     return values
 
 
@@ -130,7 +184,8 @@ def configure_environment(root, config):
 
 
 def test_suites(root, config):
-    if not config.get('tests', {}).get('unit') and not config.get('components', {}).get('rust'):
+    if (not config.get('tests', {}).get('unit') and not config.get('components', {}).get('rust')
+            and not any(value.get('test') or value.get('test_paths') for value in packages(config))):
         raise ValueError('Godot applications require real native unit checks')
     return ['lint', 'unit', 'security', *[name for name in ['integration', 'e2e'] if config.get('tests', {}).get(name)]]
 
@@ -140,30 +195,31 @@ def run(argv, root, env, timeout=None):
 
 
 def setup(root, config, env):
+    if env.get('COOKBOOK_GODOT_HOST'):
+        import godot_ci
+        matrix = godot_ci.host_matrix(root, config, env)
+        entry = next(value for value in matrix['requirements'] if value['kind'] == 'host')
+        godot_ci.setup_worker(root, config, env, entry)
+        return
     stage = os.environ.get('COOKBOOK_STAGE', 'full')
     selected = required_tools(root, config, stage)
     run(['mise', 'install', *selected], root, env)
     components = config.get('components', {})
-    if stage == 'full':
-        env = godot_sdk.setup(root, config, env)
-        os.environ.update(env)
     sdk = lambda argv, directory, environment: run(['mise', 'exec', '--', *argv], directory, environment)
+    if components.get('python') and stage in {'fast', 'full', 'security'}:
+        sdk(['python3', str(TOOLS / 'cookbook/python_component.py'), 'setup'], root, env)
+    if stage == 'full' and godot_sdk.inputs(root, config) is not None:
+        sdk(['python3', str(TOOLS / 'cookbook/godot_sdk.py'), 'setup'], root, env)
+        env = godot_sdk.activate(root, config, env)
+        os.environ.update(env)
     if components.get('rust'):
         if stage == 'full':
             rust_component.setup(root, components['rust'], env, sdk)
         elif stage == 'fast':
             pins = tomllib.loads((root / 'mise.toml').read_text())['tools']
             sdk(['rustup', 'component', 'add', '--toolchain', pins['rust'], 'rustfmt'], root, env)
-    packages = components.get('node', {}).get('packages', [])
-    if stage in {'full', 'security'}:
-        for package in packages:
-            directory = relative(root, package['path'], exists=True)
-            if package.get('manager', 'npm') != 'npm':
-                raise ValueError('this Godot Node component currently requires native npm lockfiles')
-            argv = ['npm', 'ci', '--prefix', str(directory), '--no-audit', '--no-fund']
-            if package.get('ignore_scripts', False):
-                argv.append('--ignore-scripts')
-            sdk(argv, root, env)
+    if stage in {'full', 'security', 'fast'}:
+        node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
     if stage != 'full':
         return
     directory, settings = project(root, config)
@@ -216,7 +272,8 @@ def native_godot(root, config, entry, env):
 
 
 def native_tests(root, config, env, suite):
-    entries = config.get('tests', {}).get(suite, [])
+    import godot_ci
+    entries = godot_ci.selected_entries(root, config, env, suite)
     _, settings = project(root, config)
     godot_entries = [entry for entry in entries if entry['runner'] == 'godot-check']
     others = [entry for entry in entries if entry['runner'] != 'godot-check']
@@ -236,6 +293,7 @@ def lint(root, config, env):
         run(['actionlint'], root, env)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, env)
     run(['gdlint', *settings.get('lint_arguments', ['-warn'])], directory, env)
+    node_component.lint(root, packages(config), env, run)
     components = config.get('components', {})
     if components.get('rust'):
         rust_component.lint(root, components['rust'], env, run)
@@ -251,8 +309,7 @@ def security(root, config, env):
     for component in config.get('components', {}).get('rust', []):
         lock = str(Path(component['manifest']).with_name('Cargo.lock'))
         run(['cargo', 'audit', '--file', lock, '--deny', 'warnings'], root, env)
-    for package in config.get('components', {}).get('node', {}).get('packages', []):
-        run(['npm', 'audit', '--prefix', str(relative(root, package['path'], exists=True)), '--audit-level=high'], root, env)
+    node_component.audit(root, packages(config), env, run)
     if config.get('tests', {}).get('security'):
         native_tests(root, config, env, 'security')
 
@@ -276,17 +333,32 @@ def validate_outputs(root, config, env, compiler=False):
     if compiler:
         for source in settings.get('art_sources', []):
             run(['bun', '--no-macros', str(TOOLS / 'helpers/godot-art-sources.mjs'), str(relative(root, source, exists=True))], root, env)
+    if components.get('images'):
+        images.validate_release(root, config, env)
+        if compiler:
+            definition = images.definition(root, config)
+            for record in components.get('static_images', []):
+                if record['component'] not in images.components(definition):
+                    raise ValueError('static image contract must name a declared shipping component')
+                images.static_image(definition['image_base'] + '-' + record['component'] + ':' + env['APP_VERSION'],
+                    relative(root, record['source'], exists=True), record.get('installed', '/srv/public'))
     helper('verification').artifacts(verification_scope(root, config))
 
 
 def compile_outputs(root, config, env):
-    env = godot_sdk.activate(root, config, env)
-    os.environ.update(env)
+    compiler_environment = godot_sdk.activate(root, config, env)
+    node_component.build(root, packages(config), env, run)
     directory, settings = project(root, config)
     if (directory / 'gdam.json').exists():
         helper('godot-addons').verify(directory)
     if config.get('components', {}).get('rust'):
-        rust_component.build(root, config['components']['rust'], env, run)
+        rust_component.build(root, config['components']['rust'], compiler_environment, run)
+    # Emscripten owns a bundled Node for its compiler. Native app packaging must
+    # keep the caller's Mise Node/Bun selection and its reviewed compression bytes.
+    if compiler_environment.get('LIBCLANG_PATH'):
+        env = {**env, 'LIBCLANG_PATH': compiler_environment['LIBCLANG_PATH']}
+    os.environ.update(env)
+    godot_package.extensions(root, config, env)
     godot_package.author(root, config, env, run, 'prepare')
     if settings.get('import_stage', 'setup') == 'build':
         import_native(root, config, env)
@@ -295,14 +367,24 @@ def compile_outputs(root, config, env):
         raise ValueError('build requires at least one real native export')
     # The shared exporter performs strict isolated imports and preserves authored
     # input files. No product tests or dependency installation occur here.
-    presets = []
+    groups = {}
     for export in exports:
-        presets.append((export['preset'], relative(root, export['output']), export.get('kind', 'release')))
-    helper('godot-export').export(directory, presets, binary=env['GODOT_BIN'])
+        native = relative(root, export.get('project', settings.get('project', 'app')), exists=True)
+        arguments = tuple(export.get('import_arguments', settings.get('import_arguments', [])))
+        key = (native, arguments, export.get('timeout', 600), export.get('import_timeout', settings.get('import_timeout', 180)))
+        groups.setdefault(key, []).append((export['preset'], relative(root, export['output']), export.get('kind', 'release')))
+    for (native, arguments, timeout, import_timeout), presets in groups.items():
+        helper('godot-export').export(native, presets, binary=env['GODOT_BIN'],
+            import_arguments=arguments, timeout=timeout, import_timeout=import_timeout)
     godot_package.runtime(root, config)
     godot_package.packs(root, config, env)
     godot_package.author(root, config, env, run, 'postprocess')
     godot_package.package(root, config, env)
+    if config.get('components', {}).get('images'):
+        if config.get('components', {}).get('compose'):
+            images.validate_compose(root, config, env, run)
+        images.build(root, config, env, run)
+        images.package(root, config, env, run)
     validate_outputs(root, config, env, compiler=True)
 
 
@@ -327,7 +409,11 @@ def main():
             stage = 'fast' if args.operation == 'test:lint' or (args.operation == '_test' and args.suite == 'lint') else 'full'
             if args.operation == 'test:security' or (args.operation == '_test' and args.suite == 'security'):
                 stage = 'security'
-            selected = required_tools(root, config, stage)
+            if env.get('COOKBOOK_GODOT_ENTRY') or env.get('COOKBOOK_GODOT_HOST'):
+                import godot_ci
+                selected = godot_ci.worker_tools(root, config, env)
+            else:
+                selected = required_tools(root, config, stage)
             for name in selected:
                 subprocess.run(['mise', 'where', name], cwd=root, env=env, check=True, stdout=subprocess.DEVNULL)
         verify = helper('verification')
@@ -339,6 +425,7 @@ def main():
             sources = [str(root / name) for name in tracked if name.endswith('.gd') and '/addons/' not in name]
             if sources:
                 run(['gdformat', *sources], root, env)
+            node_component.format(root, packages(config), env, run)
             if config.get('components', {}).get('rust'):
                 rust_component.format(root, config['components']['rust'], env, run)
         elif args.operation == 'clean':
@@ -358,17 +445,24 @@ def main():
             suites = test_suites(root, config)
             verify.run_session(suites, ['make', '--no-print-directory', '_cookbook-tests'], Path('.artifacts/verification'))
         elif args.operation == '_test':
-            if args.suite == 'lint':
+            if env.get('COOKBOOK_GODOT_ENTRY'):
+                native_tests(root, config, env, args.suite)
+            elif args.suite == 'lint':
                 lint(root, config, env)
             elif args.suite == 'security':
                 security(root, config, env)
             else:
+                if args.suite == 'unit':
+                    node_component.test(root, packages(config), env, run)
                 if args.suite == 'unit' and config.get('components', {}).get('rust'):
                     rust_component.test(root, config['components']['rust'], env, run)
                 directory, _ = project(root, config)
                 if (directory / 'gdam.json').exists():
                     helper('godot-addons').verify(directory)
                 native_tests(root, config, env, args.suite)
+                if args.suite == 'unit' and env.get('COOKBOOK_GODOT_HOST'):
+                    import godot_ci
+                    godot_ci.require_units(root, config, env)
         elif args.operation.startswith('test:'):
             suite = args.operation.split(':', 1)[1]
             if suite in {'integration', 'e2e'}:

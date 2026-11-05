@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """React Native application operations behind the shared Make contract."""
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tomllib
@@ -14,10 +16,16 @@ import tomllib
 from configuration import load, relative
 import images
 import node_component
+import postgres_fixture
+import expo_exports
+import source_policy
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
 ENVIRONMENT = re.compile('[A-Z][A-Z0-9_]*\\Z')
+PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
+                         'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE',
+                         'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
 PHASES = {'setup', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
 
 
@@ -43,11 +51,19 @@ def rust_components(config):
     return config.get('components', {}).get('rust', [])
 
 
+def preview_context(environment):
+    return (environment.get('GITHUB_EVENT_NAME') == 'pull_request' or
+            bool(re.fullmatch('[a-f0-9]{40}', environment.get('REQUEST_HEAD', '')) and
+                 re.fullmatch('[a-f0-9]{40}', environment.get('REQUEST_BASE', ''))))
+
+
 def configure_environment(root, config):
     revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     values = {'APP_VERSION': revision, 'CI': '1', 'GOTOOLCHAIN': 'local',
               'TOOLS_ROOT': str(TOOLS), 'PYTHONDONTWRITEBYTECODE': '1',
-              'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright')}
+              'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright'),
+              'MISE_AUTO_INSTALL': 'false', 'MISE_EXEC_AUTO_INSTALL': 'false',
+              'MISE_TRUSTED_CONFIG_PATHS': str(root)}
     if os.environ.get('APP_VERSION') not in {None, '', revision}:
         raise ValueError('APP_VERSION must match this exact source checkout')
     app = config.get('components', {}).get('app', {})
@@ -57,19 +73,22 @@ def configure_environment(root, config):
     for name, value in defaults.items():
         if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str) or '\0' in value:
             raise ValueError('application build environment contains an invalid literal')
+        if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_')):
+            raise ValueError('application literals may not replace source, workflow or pinned SDK authority')
         values[name] = os.environ.get(name, value)
-    if os.environ.get('GITHUB_EVENT_NAME') == 'pull_request':
+    if preview_context(os.environ):
         for name, value in app.get('preview_environment', {}).items():
             if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str):
                 raise ValueError('preview public environment must use literal named values')
+            if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_')):
+                raise ValueError('preview literals may not replace source, workflow or pinned SDK authority')
             values[name] = os.environ.get(name, value)
         for name, source in app.get('preview_variables', {}).items():
-            if not ENVIRONMENT.fullmatch(name) or source != 'COOKBOOK_PREVIEW_CLERK_KEY':
+            if name != 'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY' or source != 'COOKBOOK_PREVIEW_CLERK_KEY':
                 raise ValueError('preview variables must select the bounded public Clerk key input')
             value = os.environ.get(source, '')
-            if not value:
-                raise ValueError('the declared Preview public Clerk variable is unavailable')
-            values[name] = value
+            if value:
+                values[name] = value
     os.environ.update(values)
     return dict(os.environ)
 
@@ -92,7 +111,8 @@ def required_tools(root, config, stage):
     if stage in {'unit', 'integration', 'e2e'} and rust_components(config):
         result.add('rust')
     if stage in {'full', 'security'}:
-        result.add('trivy')
+        if rust_components(config) or config.get('security', {}).get('images'):
+            result.add('trivy')
         if config.get('security', {}).get('go_images'):
             result |= {'go', 'go:golang.org/x/vuln/cmd/govulncheck'}
         if config.get('security', {}).get('spdx_images'):
@@ -111,7 +131,7 @@ def required_tools(root, config, stage):
 def verification_scope(root, config):
     definition = images.definition(root, config)
     inputs = {key: list(value) for key, value in definition['inputs'].items()}
-    inputs['artifacts'] += config.get('artifacts', {}).get('fixture_paths', [])
+    inputs['artifacts'] += config.get('artifacts', {}).get('fixture_paths', []) + expo_exports.artifact_paths(root, config)
     return helper('verification').scope(**inputs)
 
 
@@ -131,7 +151,7 @@ def run(arguments, root, environment, timeout=None):
     subprocess.run(arguments, cwd=root, env=environment, check=True, timeout=timeout)
 
 
-def native(root, entries, environment):
+def native(root, entries, environment, *, sdk=False, long_running=False):
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'cwd', 'args', 'timeout', 'environment', 'phase', 'stages'}:
             raise ValueError('invalid native product component entry')
@@ -144,14 +164,17 @@ def native(root, entries, environment):
         arguments = entry.get('args', [])
         if not isinstance(arguments, list) or any(not isinstance(value, str) or '\0' in value for value in arguments):
             raise ValueError('native product arguments must be literal strings')
-        timeout = entry.get('timeout', 300)
-        if type(timeout) is not int or not 1 <= timeout <= 3600:
+        timeout = None if long_running else entry.get('timeout', 300)
+        if not long_running and (type(timeout) is not int or not 1 <= timeout <= 3600):
             raise ValueError('native product operations require bounded deadlines')
         values = entry.get('environment', {})
         if not isinstance(values, dict) or any(not ENVIRONMENT.fullmatch(key) or not isinstance(value, str) for key, value in values.items()):
             raise ValueError('native product environment must use literal named values')
         values = {key: value.replace('{revision}', environment['APP_VERSION']) for key, value in values.items()}
-        run([runner, str(path), *arguments], relative(root, entry.get('cwd', '.'), exists=True), environment | values, timeout)
+        command = [runner, str(path), *arguments]
+        if sdk:
+            command = ['mise', 'exec', '--', *command]
+        run(command, relative(root, entry.get('cwd', '.'), exists=True), environment | values, timeout)
 
 
 def phase(root, config, environment, name, stage='full'):
@@ -168,7 +191,7 @@ def phase(root, config, environment, name, stage='full'):
             raise ValueError('native SDK setup requires explicit supported stages')
         if entry['phase'] == name and stage in stages:
             entries.append(entry)
-    native(root, entries, environment)
+    native(root, entries, environment, sdk=name == 'setup')
 
 
 def cargo_records(config, environment):
@@ -183,20 +206,27 @@ def cargo_records(config, environment):
 
 def setup(root, config, environment):
     stage = os.environ.get('COOKBOOK_STAGE', 'local')
+    pin = tomllib.loads((root / 'mise.toml').read_text())['tools']['python']
+    if pin != '.'.join(map(str, sys.version_info[:3])):
+        raise ValueError('setup requires the exact caller-pinned Python SDK; run make setup')
     run(['mise', 'install', *required_tools(root, config, stage)], root, environment)
+    if stage in {'fast', 'full', 'local'}:
+        source_policy.setup(root, config, environment)
+    def sdk(arguments, directory, values, timeout=None):
+        run(['mise', 'exec', '--', *arguments], directory, values, timeout)
     selected = []
     for value in packages(config):
         package, _ = node_component.validate(value, root)
         if stage != 'fast' or any(package.get(key) for key in ['expo', 'typecheck', 'lint', 'format_check']):
             selected.append(package)
-    node_component.install(root, selected, environment, run)
+    node_component.install(root, selected, environment, sdk)
     records = cargo_records(config, environment)
     if records:
         if stage == 'fast':
             version = tomllib.loads((root / 'mise.toml').read_text())['tools']['rust']
-            run(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt', 'clippy'], root, environment)
+            sdk(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt'], root, environment)
         elif stage != 'security':
-            cargo().setup(root, records, environment, run)
+            cargo().setup(root, records, environment, sdk)
     phase(root, config, environment, 'setup', stage)
     if stage in {'local', 'full'}:
         for name in config.get('components', {}).get('playwright', {}).get('packages', []):
@@ -204,12 +234,16 @@ def setup(root, config, environment):
             command = ['bun', 'x', '--no-install', 'playwright', 'install']
             if os.environ.get('GITHUB_ACTIONS') == 'true':
                 command.append('--with-deps')
-            run([*command, '--only-shell', 'chromium'], directory, environment)
+            sdk([*command, '--only-shell', 'chromium'], directory, environment)
 
 
 def lint(root, config, environment):
     run(['actionlint'], root, environment)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, environment)
+    source_policy.check(root, config, environment, run)
+    if config.get('lint', {}).get('auth_policy'):
+        run(['bun', str(TOOLS / 'helpers/auth-boundary.mjs'), '--policy',
+             str(relative(root, config['lint']['auth_policy'], exists=True))], root, environment)
     node_component.lint(root, packages(config), environment, run)
     for value in packages(config):
         _, directory = node_component.validate(value, root)
@@ -228,6 +262,10 @@ def lint(root, config, environment):
 
 def build(root, config, environment):
     app = config.get('components', {}).get('app', {})
+    if preview_context(environment):
+        for name, source in app.get('preview_variables', {}).items():
+            if not environment.get(source) or environment.get(name) != environment[source]:
+                raise ValueError('the declared Preview public Clerk variable is unavailable for this build')
     for name in app.get('forbidden_environment', []):
         if not ENVIRONMENT.fullmatch(name) or environment.get(name):
             raise ValueError('development-only environment cannot enter a shipping build: ' + name)
@@ -287,11 +325,13 @@ def build(root, config, environment):
             images.host_caddy(root, environment, run)
         else:
             images.stage_caddy(root)
+    images.stage_empty_directories(root, config)
     phase(root, config, environment, 'pre_images')
     if 'config' in images.components(images.definition(root, config)):
         run(['bun', str(TOOLS / 'helpers/hostnames.mjs')], root, environment)
     images.build(root, config, environment, run, native=native)
     phase(root, config, environment, 'post_images')
+    expo_exports.build(root, config, environment, run)
     phase(root, config, environment, 'fixtures')
     images.package(root, config, environment, run)
     validate_outputs(root, config, environment)
@@ -354,10 +394,21 @@ def security(root, config, environment):
 
 
 def behavioral_tests(root, config, environment, suite):
+    # Native disposable databases are test fixtures, independent of retained dev
+    # data. Their role policy and cleanup are identical in Make and Actions.
+    with postgres_fixture.context(root, config, environment, suite) as selected:
+        native_behavioral_tests(root, config, selected, suite)
+
+
+def native_behavioral_tests(root, config, environment, suite):
     count = 0
     if suite == 'unit':
         count += node_component.test(root, packages(config), environment, run)
-    records = {record['manifest']: record for record in cargo_records(config, environment)}
+    records = {}
+    for record in cargo_records(config, environment):
+        # A later build-only fixture can compile the same native crate with
+        # different features. It must not replace the declared product test base.
+        records.setdefault(record['manifest'], record)
     for entry in config.get('components', {}).get('rust_tests', []):
         if entry.get('suite') == suite:
             if entry.get('manifest') not in records:
@@ -366,10 +417,36 @@ def behavioral_tests(root, config, environment, suite):
             cargo().test(root, [record], environment, run)
             count += 1
     if config.get('tests', {}).get(suite):
-        run_entries(root, config, environment, suite)
+        if suite == 'e2e':
+            with images.gate_fixture(root, config, environment) as selected:
+                run_entries(root, config, selected, suite, custom_runners={'playwright': playwright})
+        else:
+            run_entries(root, config, environment, suite, custom_runners={'playwright': playwright})
         count += 1
     if not count:
         raise ValueError('native behavioral test group has no real implemented checks: ' + suite)
+
+
+def playwright(root, entry, environment):
+    config = relative(root, entry['path'], exists=True)
+    if entry.get('args') or config.suffix not in {'.ts', '.js', '.mjs'}:
+        raise ValueError('native Playwright groups must run their actual declared config without skip/list flags')
+    cwd = relative(root, entry.get('cwd', 'app'), exists=True)
+    command = ['bun', 'x', '--no-install', 'playwright', 'test', '--config', str(config)]
+    timeout = entry.get('timeout', 900)
+    if sys.platform != 'linux':
+        expo_exports.compile_native(command, cwd, environment, timeout)
+        return
+    # Reuse the proven pidfd/subreaper mechanism without acquiring a dev lease.
+    # Playwright servers can open separate process groups; they remain our children.
+    processes = helper('dev')
+    processes.adopt_descendants()
+    child = subprocess.Popen(command, cwd=cwd, env=environment, start_new_session=True)
+    try:
+        if child.wait(timeout=timeout):
+            raise ValueError('native Playwright assertions failed')
+    finally:
+        processes.stop_descendants(child)
 
 
 def check_sdks(root, config, operation, environment, suite=None):
@@ -377,17 +454,136 @@ def check_sdks(root, config, operation, environment, suite=None):
     if pins.get('python') != '.'.join(map(str, sys.version_info[:3])):
         raise ValueError('use the exact caller-pinned Python SDK; run make setup first')
     stage = {'fmt': 'format', 'test:lint': 'fast', 'test:unit': 'unit',
-             'test:integration': 'integration', 'test:e2e': 'e2e', 'test:security': 'security'}.get(operation, 'full')
+             'test:integration': 'integration', 'test:e2e': 'e2e', 'test:security': 'security',
+             'dev': 'dev', '_dev': 'dev', '_database': 'dev',
+             **{name: 'dev' for name in ['db:status', 'db:migrate', 'db:seed', 'db:reset']}}.get(operation, 'full')
     if operation == '_test':
         stage = 'fast' if suite == 'lint' else suite
     for name in required_tools(root, config, stage):
         subprocess.run(['mise', 'where', name], cwd=root, env=environment, check=True, stdout=subprocess.DEVNULL)
 
 
+def development_project(root, config=None):
+    # Preserve the existing checkout identity; retained database volumes continue
+    # to belong to exactly the same development project after this migration.
+    config = load(root) if config is None else config
+    prefix = config.get('dev', {}).get('project_prefix', 'komizo')
+    if not isinstance(prefix, str) or not re.fullmatch('[a-z][a-z0-9-]{0,31}', prefix):
+        raise ValueError('development project identity requires a bounded native prefix')
+    return prefix + '-' + hashlib.sha256(os.path.normpath(str(root)).encode()).hexdigest()[:16]
+
+
+def select_port(preferred, attempts=100):
+    if type(preferred) is not int or type(attempts) is not int or not 1 <= preferred <= 65535 or not 1 <= attempts <= 1000:
+        raise ValueError('development port and bounded attempt count must be positive native integers')
+    for port in range(preferred, min(preferred + attempts, 65536)):
+        with socket.socket() as listener:
+            try:
+                listener.bind(('127.0.0.1', port))
+            except OSError:
+                continue
+            return port
+    raise ValueError('no available checkout development port')
+
+
+def launch_development(root, config, environment):
+    values = config.get('dev', {})
+    if values.get('kind') == 'expo':
+        directory = relative(root, values.get('directory', 'app'), exists=True)
+        port = select_port(values.get('port', 8081), values.get('port_attempts', 100))
+        print('Development app: http://127.0.0.1:' + str(port), flush=True)
+        run(['bun', '--no-env-file', 'run', '--cwd', str(directory), 'start', '--port', str(port)],
+            root, environment | {'EXPO_NO_DOTENV': '1'})
+    elif values.get('kind') == 'native' and values.get('program'):
+        native(root, [values['program']], environment, long_running=True)
+    else:
+        raise ValueError('development requires an implemented Expo or native product driver')
+
+
+def clean_outputs(root, config, environment):
+    stop_services(root, config, environment)
+    paths = config.get('clean', {}).get('paths', [])
+    if not paths:
+        raise ValueError('clean requires explicit generated output paths')
+    helper('clean').clean(root, paths)
+
+
+def stop_services(root, config, environment):
+    for name in config.get('dev', {}).get('cleanup_compose', []):
+        source = relative(root, name, exists=True)
+        run(['docker', 'compose', '-p', development_project(root, config), '-f', str(source), 'down'], root, environment)
+    if config.get('dev', {}).get('cleanup'):
+        native(root, [config['dev']['cleanup']], environment)
+
+
+def isolated_operation(root, config, environment, operation):
+    selected = relative(root, config.get('dev', {}).get('identity', 'ghenv.json'), exists=True)
+    base = [pinned_ghenv(root, environment), 'local', '--', 'env', 'DEV_PROJECT=' + development_project(root, config),
+            'TOOLS_ROOT=' + str(TOOLS), sys.executable, str(Path(__file__).resolve()), operation]
+    if selected.name != 'ghenv.json' or selected.parent != root:
+        raise ValueError('application development identity uses the owned root ghenv.json')
+    return base
+
+
+def pinned_ghenv(root, environment):
+    pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
+    if 'github:nicodes/ghenv' not in pins:
+        raise ValueError('development identity requires an exact caller-owned ghenv SDK pin')
+    directory = Path(subprocess.check_output(['mise', 'where', 'github:nicodes/ghenv'],
+                     cwd=root, env=environment, text=True).strip()).resolve()
+    executable = Path(subprocess.check_output(['mise', 'which', 'ghenv'],
+                      cwd=root, env=environment, text=True).strip()).resolve()
+    if not executable.is_relative_to(directory) or not executable.is_file():
+        raise ValueError('ghenv must resolve inside its installed pinned SDK')
+    return str(executable)
+
+
+def development(root, config, environment, operation):
+    supervisor = [sys.executable, str(TOOLS / 'helpers/dev.py')]
+    if operation == 'dev:logs':
+        run([*supervisor, 'logs', '--state', '.local/dev'], root, environment)
+        return
+    if not config.get('dev'):
+        raise ValueError('application does not implement a development service')
+    if operation == 'dev:stop':
+        run([*supervisor, 'stop', '--state', '.local/dev'], root, environment)
+        cleanup = isolated_operation(root, config, environment, '_stop-services')
+        run([*supervisor, 'clean', '--state', '.local/dev', '--', *cleanup], root, environment)
+        return
+    cleanup = isolated_operation(root, config, environment, '_stop-services')
+    ghenv = pinned_ghenv(root, environment)
+    mode = environment.get('DEV_MODE', 'auto')
+    if mode not in {'auto', 'local', 'preview'}:
+        raise ValueError('development identity must be local, preview or the configured automatic mode')
+    command = [ghenv, 'dev', '--config', 'ghenv.json', '--mode', mode, '--', 'env',
+               'DEV_PROJECT=' + development_project(root, config), 'TOOLS_ROOT=' + str(TOOLS),
+               sys.executable, str(Path(__file__).resolve()), '_dev']
+    preparation = [ghenv, 'local', '--', 'env', 'COOKBOOK_STAGE=local', 'make', 'setup']
+    arguments = [*supervisor, 'run', '--state', '.local/dev', '--prepare', json.dumps(preparation),
+                 '--cleanup', json.dumps(cleanup), '--policy-input', 'mise.toml',
+                 '--policy-input', 'cookbook.toml', '--policy-input', 'ghenv.json']
+    if config['dev'].get('capture_output', False):
+        arguments += ['--log', '.local/dev/output.log']
+    run([*arguments, '--', *command], root, environment)
+
+
+def database(root, config, environment, operation):
+    name = operation.split(':', 1)[1]
+    entry = config.get('database', {}).get(name)
+    if not isinstance(entry, dict):
+        raise ValueError('database operation has no implemented native product entrypoint')
+    arguments = [*isolated_operation(root, config, environment, '_database'), '--suite', name]
+    if name == 'reset':
+        arguments = [sys.executable, str(TOOLS / 'helpers/dev.py'), 'clean', '--state', '.local/dev', '--', *arguments]
+    run(arguments, root, environment)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['setup', 'fmt', 'build', 'validate', '_build', 'test', '_test',
-        'test:lint', 'test:unit', 'test:integration', 'test:e2e', 'test:security', 'clean'])
+        'test:lint', 'test:unit', 'test:integration', 'test:e2e', 'test:security', 'clean',
+        'dev', 'dev:stop', 'dev:logs', '_dev', '_stop-services', '_clean', '_database',
+        'db:status', 'db:migrate', 'db:seed', 'db:reset'])
     parser.add_argument('--suite')
     args = parser.parse_args()
     root = Path.cwd().resolve()
@@ -396,7 +592,7 @@ def main():
         if config['recipe'] != 'react-native':
             raise ValueError('React Native operations require the application recipe')
         environment = configure_environment(root, config)
-        if args.operation not in {'setup', 'clean'}:
+        if args.operation not in {'setup', 'clean', '_clean', 'dev:stop', 'dev:logs', '_stop-services'}:
             check_sdks(root, config, args.operation, environment, args.suite)
         if args.operation == 'setup':
             setup(root, config, environment)
@@ -412,10 +608,23 @@ def main():
         elif args.operation == 'validate':
             current_build(root, config)
         elif args.operation == 'clean':
-            paths = config.get('clean', {}).get('paths', [])
-            if not paths:
-                raise ValueError('clean requires explicit generated output paths')
-            helper('clean').clean(root, paths)
+            if config.get('dev'):
+                run([sys.executable, str(TOOLS / 'helpers/dev.py'), 'clean', '--state', '.local/dev', '--',
+                     *isolated_operation(root, config, environment, '_clean')], root, environment)
+            else:
+                clean_outputs(root, config, environment)
+        elif args.operation == '_clean':
+            clean_outputs(root, config, environment)
+        elif args.operation in {'dev', 'dev:stop', 'dev:logs'}:
+            development(root, config, environment, args.operation)
+        elif args.operation == '_dev':
+            launch_development(root, config, environment)
+        elif args.operation == '_stop-services':
+            stop_services(root, config, environment)
+        elif args.operation.startswith('db:'):
+            database(root, config, environment, args.operation)
+        elif args.operation == '_database':
+            native(root, [config['database'][args.suite]], environment)
         else:
             verification = helper('verification')
             directory = Path('.artifacts/verification')
