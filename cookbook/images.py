@@ -56,26 +56,42 @@ def references(value, revision):
     return [value['image_base'] + '-' + name + ':' + revision for name in components(value)]
 
 
-def validate_compose(root, config, environment, run):
+@contextlib.contextmanager
+def compose_command(root, config):
     settings = config.get('components', {}).get('compose', {})
     source = relative(root, settings.get('path', 'deploy/compose.yml'), exists=True)
     placeholders = settings.get('environment_files', [])
-    if not isinstance(placeholders, list) or any(not isinstance(name, str) or Path(name).name != name for name in placeholders):
-        raise ValueError('Compose validation placeholders must be flat native environment filenames')
-    if placeholders:
-        with tempfile.TemporaryDirectory(prefix='compose-validation-') as directory:
-            target = Path(directory)
-            shutil.copy2(source, target / 'compose.yml')
-            for name in placeholders:
-                if not re.fullmatch('[a-zA-Z0-9_.-]+', name) or name in {'.', '..', 'compose.yml'}:
-                    raise ValueError('invalid Compose placeholder filename')
-                (target / name).touch(mode=0o600)
-            (target / 'interpolation.env').touch(mode=0o600)
-            run(['docker', 'compose', '--env-file', str(target / 'interpolation.env'),
-                 '--project-directory', str(target), '-p', 'engineering-validation',
-                 '-f', str(target / 'compose.yml'), 'config', '--quiet'], root, environment)
-    else:
-        run(['docker', 'compose', '-f', str(source), 'config', '--no-env-resolution', '--quiet'], root, environment)
+    if not isinstance(placeholders, list):
+        raise ValueError('Compose validation placeholders must be native environment filenames')
+    with tempfile.TemporaryDirectory(prefix='compose-validation-') as directory:
+        target = Path(directory)
+        shutil.copy2(source, target / 'compose.yml')
+        for name in placeholders:
+            if (not isinstance(name, str) or not re.fullmatch('[a-zA-Z0-9_./-]+', name)
+                    or Path(name).name in {'.', '..', 'compose.yml', 'interpolation.env'}):
+                raise ValueError('invalid Compose placeholder filename')
+            placeholder = relative(target, name)
+            placeholder.parent.mkdir(parents=True, exist_ok=True)
+            placeholder.touch(mode=0o600)
+        (target / 'interpolation.env').touch(mode=0o600)
+        command = ['docker', 'compose', '--env-file', str(target / 'interpolation.env'),
+                   '--project-directory', str(target), '-p', 'engineering-validation',
+                   '-f', str(target / 'compose.yml'), 'config']
+        if not placeholders:
+            command.append('--no-env-resolution')
+        yield command
+
+
+def validate_compose(root, config, environment, run):
+    with compose_command(root, config) as command:
+        run([*command, '--quiet'], root, environment)
+
+
+def compose_model(root, config, environment):
+    """Read the deployment model without reading or writing checkout credentials."""
+    with compose_command(root, config) as command:
+        return json.loads(subprocess.check_output([*command, '--format', 'json'], cwd=root,
+                                                 env=environment, text=True, timeout=30))
 
 
 def stage_caddy(root, *, host=False):

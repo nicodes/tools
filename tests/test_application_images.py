@@ -89,6 +89,24 @@ class ApplicationImages(unittest.TestCase):
         with self.assertRaises(ValueError):
             images.validate_compose(self.root, {'components': {'compose': {'environment_files': ['../outside']}}}, {}, validate)
 
+    def test_runtime_model_uses_owned_nested_placeholders_and_never_checkout_secrets(self):
+        (self.root / 'deploy/compose.yml').write_text('services: {}\n')
+        secret = self.root / 'deploy/secrets/postgres-owner.env'
+        secret.parent.mkdir()
+        secret.write_text("PRIVATE='deliberately-invalid\n")
+        config = {'components': {'compose': {'environment_files': ['secrets.env', 'secrets/postgres-owner.env']}}}
+        observed = []
+        def model(command, **kwargs):
+            target = Path(command[command.index('--project-directory') + 1])
+            observed.append(target)
+            self.assertEqual((target / 'secrets/postgres-owner.env').read_bytes(), b'')
+            self.assertEqual((target / 'interpolation.env').read_bytes(), b'')
+            return '{"services":{"api":{"read_only":true}}}'
+        with patch.object(images.subprocess, 'check_output', side_effect=model):
+            self.assertTrue(images.compose_model(self.root, config, {})['services']['api']['read_only'])
+        self.assertFalse(observed[0].exists())
+        self.assertEqual(secret.read_text(), "PRIVATE='deliberately-invalid\n")
+
     def test_rust_scan_requires_every_lock_inventory_and_blocks_high_findings(self):
         manifests = ['api/Cargo.toml', 'internal/runtime/Cargo.toml']
         for name in manifests:
