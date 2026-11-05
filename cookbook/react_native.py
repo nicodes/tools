@@ -303,24 +303,9 @@ def build(root, config, environment):
             (target / 'release.json').write_text(json.dumps({'revision': environment['APP_VERSION']}) + '\n')
     phase(root, config, environment, 'post_public')
     images.validate_compose(root, config, environment, run)
+    build_rust(root, config, environment)
     records = cargo_records(config, environment)
     if records:
-        cargo().build(root, records, environment, run)
-        for original, record in zip(rust_components(config), records, strict=True):
-            if record.get('build', {}).get('enabled', True) is False:
-                continue
-            options = record | record.get('build', {})
-            profile = options.get('profile', 'release')
-            target = Path(environment.get('CARGO_TARGET_DIR', str(root / Path(record['manifest']).parent / 'target')))
-            if record.get('target_directory'):
-                target = relative(root, record['target_directory'])
-            if record.get('target'):
-                target /= record['target']
-            target /= 'release' if profile == 'release' else 'debug'
-            destination = relative(root, original.get('output_directory', '.artifacts'))
-            destination.mkdir(parents=True, exist_ok=True)
-            for name in options.get('binaries', []):
-                shutil.copy2(target / name, destination / name)
         cargo().validate_build(root, records, environment, run)
     caddy = config.get('components', {}).get('caddy', {})
     if caddy:
@@ -339,6 +324,27 @@ def build(root, config, environment):
     images.package(root, config, environment, run)
     validate_outputs(root, config, environment)
 
+
+def build_rust(root, config, environment):
+    """Compile and stage declared native binaries; usable by an owned local service."""
+    records = cargo_records(config, environment)
+    if records:
+        cargo().build(root, records, environment, run)
+        for original, record in zip(rust_components(config), records, strict=True):
+            if record.get('build', {}).get('enabled', True) is False:
+                continue
+            options = record | record.get('build', {})
+            profile = options.get('profile', 'release')
+            target = Path(environment.get('CARGO_TARGET_DIR', str(root / Path(record['manifest']).parent / 'target')))
+            if record.get('target_directory'):
+                target = relative(root, record['target_directory'])
+            if record.get('target'):
+                target /= record['target']
+            target /= 'release' if profile == 'release' else 'debug'
+            destination = relative(root, original.get('output_directory', '.artifacts'))
+            destination.mkdir(parents=True, exist_ok=True)
+            for name in options.get('binaries', []):
+                shutil.copy2(target / name, destination / name)
 
 def validate_outputs(root, config, environment):
     images.validate_release(root, config, environment)
