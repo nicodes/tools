@@ -99,6 +99,9 @@ print('native fixture reached')
         config['components']['rust'] = [{'manifest': 'core/Cargo.toml'}]
         (self.root / 'core').mkdir()
         (self.root / 'core/Cargo.toml').write_text('[package]\nname="native-control"\nversion="0.1.0"\n')
+        previous = Path.cwd()
+        os.chdir(self.root)
+        self.addCleanup(os.chdir, previous)
         env = godot_game.environment(self.root, config)
         env['PATH'] = '/caller-pinned-node:' + os.environ['PATH']
         compiler = {**env, 'PATH': '/emscripten-bundled-node', 'LIBCLANG_PATH': '/pinned-libclang'}
