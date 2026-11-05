@@ -47,6 +47,20 @@ class KomizoSdk(unittest.TestCase):
         self.assertFalse(any('fetch' in command or 'checkout' in command for command in commands))
         self.assertIsNone(sdk.check(self.root,{},dict(os.environ)))
 
+    def test_game_test_programs_bind_exact_sdk_and_refuse_modified_source_before_execution(self):
+        import godot_game as game
+        (self.root/'app').mkdir();(self.root/'app/project.godot').write_text('config_version=5\n')
+        config=dict(self.config,components={'godot':{'project':'app'}},tests={'unit':[]})
+        with patch.object(game.subprocess,'check_output',return_value=self.revision),patch.dict(os.environ,{},clear=True):
+            self.assertEqual(game.environment(self.root,config)['KOMIZO_ACTIONS_ROOT'],str(self.source))
+        with patch.object(game.subprocess,'check_output',return_value=self.revision),patch.dict(os.environ,{'KOMIZO_ACTIONS_ROOT':'/other'},clear=True):
+            with self.assertRaisesRegex(ValueError,'exact accepted SDK'):game.environment(self.root,config)
+        (self.source/'module.py').write_text('changed native helper\n')
+        with patch.object(game,'run_entries') as execute,self.assertRaisesRegex(ValueError,'unexpected files'):
+            game.native_tests(self.root,config,dict(os.environ),'unit')
+        execute.assert_not_called()
+
+
     def test_disagreeing_invalid_or_arbitrary_source_pins_are_refused(self):
         path=self.root/'deploy/preview.json'
         for value in ['b'*40,'main','https://elsewhere.invalid/project.git','$(touch bad)']:

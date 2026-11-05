@@ -25,6 +25,7 @@ import node_component
 import images
 import application_development
 import playwright_sdk
+import komizo_sdk
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -65,7 +66,7 @@ def cargo_records(config, environment):
     records = []
     for component in rust_components(config):
         record = {key: value for key, value in component.items() if key not in {'output_directory', 'output_names'}}
-        if any(key in {'APP_VERSION', 'SOURCE_COMMIT', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
+        if any(key in {'APP_VERSION', 'SOURCE_COMMIT', 'CI', 'TOOLS_ROOT', 'KOMIZO_ACTIONS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
                 'TOOLS_VERIFICATION_SESSION', 'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
                 or key.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')) for key in record.get('environment', {})):
             raise ValueError('Rust component environment may not replace execution authority')
@@ -287,6 +288,11 @@ def environment(root, config):
               'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright'),
               'RUNNER_TEMP': os.environ.get('RUNNER_TEMP', str(root / '.artifacts/tmp')),
               'PYTHONDONTWRITEBYTECODE': '1'}
+    komizo=komizo_sdk.source_root(root,config)
+    if komizo is not None:
+        if os.environ.get('KOMIZO_ACTIONS_ROOT') not in {None,'',str(komizo)}:
+            raise ValueError('KOMIZO_ACTIONS_ROOT must select this checkout exact accepted SDK')
+        values['KOMIZO_ACTIONS_ROOT']=str(komizo)
     values['PATH'] = str(root / '.artifacts/godot/bin') + os.pathsep + os.environ.get('PATH', '')
     values['APP_VERSION'] = source
     if config.get('components', {}).get('images'):
@@ -313,7 +319,7 @@ def development_api():
 def native(root, entries, environment, *, sdk=False, long_running=False):
     return application_development.native(root,entries,environment,api=development_api(),
         sdk=sdk,long_running=long_running,allowed_roots={'app','api','core','tests'},
-        protected_environment={'SOURCE_COMMIT','APP_VERSION','CI','TOOLS_ROOT','GH_TOKEN','GITHUB_TOKEN','TOOLS_VERIFICATION_SESSION','GOTOOLCHAIN','RUSTUP_AUTO_INSTALL'})
+        protected_environment={'SOURCE_COMMIT','APP_VERSION','CI','TOOLS_ROOT','KOMIZO_ACTIONS_ROOT','GH_TOKEN','GITHUB_TOKEN','TOOLS_VERIFICATION_SESSION','GOTOOLCHAIN','RUSTUP_AUTO_INSTALL'})
 def development_project(root, config=None):
     return application_development.development_project(root, config)
 
@@ -394,6 +400,7 @@ def setup(root, config, env):
         godot_security.setup(root,config,env,run)
     if stage != 'full':
         return
+    if env.get('COOKBOOK_GODOT_ENTRY')!='build':komizo_sdk.setup(root,config,env)
     go_component.setup(root,config,env,run)
     if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY') and requested_stage!='local':
         import godot_browser
@@ -459,6 +466,7 @@ def native_godot(root, config, entry, env):
 
 
 def native_tests(root, config, env, suite):
+    if suite!='lint':komizo_sdk.check(root,config,env)
     import godot_ci
     entries = godot_ci.selected_entries(root, config, env, suite)
     _, settings = project(root, config)
