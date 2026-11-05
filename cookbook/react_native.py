@@ -25,7 +25,7 @@ from native_tests import run_entries
 TOOLS = Path(__file__).resolve().parents[1]
 ENVIRONMENT = re.compile('[A-Z][A-Z0-9_]*\\Z')
 PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
-                         'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE',
+                         'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE', 'COOKBOOK_PREVIEW_NUMBER',
                          'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
 PHASES = {'setup', 'lint', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
 
@@ -74,14 +74,14 @@ def configure_environment(root, config):
     for name, value in defaults.items():
         if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str) or '\0' in value:
             raise ValueError('application build environment contains an invalid literal')
-        if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_')):
+        if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')):
             raise ValueError('application literals may not replace source, workflow or pinned SDK authority')
         values[name] = os.environ.get(name, value)
     if preview_context(os.environ):
         for name, value in app.get('preview_environment', {}).items():
             if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str):
                 raise ValueError('preview public environment must use literal named values')
-            if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_')):
+            if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')):
                 raise ValueError('preview literals may not replace source, workflow or pinned SDK authority')
             values[name] = os.environ.get(name, value)
         for name, source in app.get('preview_variables', {}).items():
@@ -199,6 +199,8 @@ def cargo_records(config, environment):
     records = []
     for value in rust_components(config):
         record = {key: item for key, item in value.items() if key != 'output_directory'}
+        if any(key in PROTECTED_ENVIRONMENT or key.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')) for key in record.get('environment', {})):
+            raise ValueError('Rust component environment may not replace execution authority')
         record['environment'] = {key: item.replace('{revision}', environment['APP_VERSION'])
                                  for key, item in record.get('environment', {}).items()}
         records.append(record)
