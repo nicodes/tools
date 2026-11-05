@@ -10,6 +10,7 @@ import subprocess
 import tomllib
 
 from configuration import load, relative
+import recipe
 import rust_component
 
 MAX_BYTES = 12 << 30
@@ -28,7 +29,10 @@ def plan(root, config, pins, environment, source, runner_os, runner_arch, target
               'components': components, 'native': config.get('components', {}).get('native', []),
               'flags': {key: value for key, value in environment.items() if key == 'RUSTFLAGS' or re.fullmatch('CARGO_[A-Z0-9_]+_RUSTFLAGS', key)},
               'files': {}}
-    for component in components:
+    records = components
+    if config.get('recipe') in {'react-native', 'godot-game'}:
+        records = recipe.adapter(config).cargo_records(config, {**environment, 'APP_VERSION': source})
+    for component in records:
         rust_component.validate(component, root)
         manifest = component.get('manifest', 'Cargo.toml')
         for name in [manifest, Path(manifest).with_name('Cargo.lock').as_posix()]:
