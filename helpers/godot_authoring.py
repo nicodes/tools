@@ -2,6 +2,7 @@
 """Keep authored import bytes while Godot writes equivalent new default keys."""
 import difflib
 from pathlib import Path
+import stat
 import subprocess
 import sys
 
@@ -11,6 +12,32 @@ DEFAULT_INSERTIONS = {
     'process/channel_remap/blue=2', 'process/channel_remap/alpha=3',
     'modulate_color_glyphs=false',
 }
+MAX_FILESYSTEM_CACHE_BYTES = 16 << 20
+
+
+def editor_filesystem_cache(project):
+    """Admit only the generated cache whose import hashes would become stale."""
+    project = project.absolute()
+    parents = []
+    for directory in [*reversed(project.parents), project, project / '.godot', project / '.godot/editor']:
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            return None
+        reparse = getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+        if not stat.S_ISDIR(info.st_mode) or reparse:
+            raise ValueError('generated editor cache requires unlinked project directories')
+        parents.append((info.st_dev, info.st_ino))
+    path = project / '.godot/editor/filesystem_cache10'
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    reparse = getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0)
+    if not stat.S_ISREG(info.st_mode) or reparse or info.st_nlink != 1 or info.st_size > MAX_FILESYSTEM_CACHE_BYTES:
+        raise ValueError('generated editor cache must be a bounded unlinked regular file')
+    identity = (*parents, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    return path, identity
 
 
 def default_insertions_only(before, after):
@@ -38,7 +65,12 @@ def preserve_imports(project, execute):
         if after!=before:
             if not default_insertions_only(before,after):raise ValueError('editor changed authored import settings: '+str(path))
             changed.append(path)
+    cache = editor_filesystem_cache(project) if changed else None
     for path in changed:path.write_bytes(originals[path])
+    if cache is not None:
+        if editor_filesystem_cache(project) != cache:
+            raise ValueError('generated editor cache changed during import restoration')
+        cache[0].unlink()
     return result
 
 
