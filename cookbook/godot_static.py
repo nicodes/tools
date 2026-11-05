@@ -35,7 +35,8 @@ def declaration(root,config):
     if data.get('mode')!='godot-static':return None
     if config.get('recipe')!='godot-game':raise ValueError('static configuration publication requires a Godot game')
     static=data.get('static')
-    if not isinstance(static,dict) or set(static)!={'config','compose','release_manifest','record','recovery','production'}:
+    required={'config','compose','release_manifest','record','recovery','production'}
+    if not isinstance(static,dict) or not required<=set(static) or set(static)-required-{'recovery_test','production_inputs','production_current_source'}:
         raise ValueError('static delivery requires exact native config, compose, manifest and lifecycle data')
     if not re.fullmatch('[a-f0-9]{40}',data.get('komizo_ref','')):raise ValueError('static parser SDK requires its accepted immutable Komizo pin')
     for key in ['config','compose']:
@@ -47,6 +48,16 @@ def declaration(root,config):
     if static['config']==static['compose']:raise ValueError('static native manifest and compose source must be distinct')
     if any(type(static[key]) is not bool for key in ['record','recovery','production']) or (static['recovery'] and not static['record']):
         raise ValueError('static lifecycle capabilities must preserve explicit real release records')
+    if static['recovery']:
+        selected=[entry for entry in config.get('tests',{}).get('integration',[]) if entry.get('name',entry['path'])==static.get('recovery_test')]
+        if len(selected)!=1 or selected[0].get('runner') not in {'bash','python'}:
+            raise ValueError('static recovery must select one existing owned native shipping fixture')
+    if static['production']:
+        names=static.get('production_inputs',{'source':'expected-source-commit','release':'expected-release-id'})
+        if (not isinstance(names,dict) or set(names)!={'source','release'} or len(set(names.values()))!=2
+                or any(not isinstance(name,str) or not re.fullmatch('[a-z][a-z0-9_-]{0,63}',name) for name in names.values())
+                or type(static.get('production_current_source',True)) is not bool):
+            raise ValueError('static public verification must preserve its native dispatch and source policy')
     definition=json.loads(read(relative(root,config['artifacts']['definition'],exists=True)))
     repository=definition.get('image_base','').removeprefix('ghcr.io/')
     if not re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repository):raise ValueError('static images require their exact native repository family')
