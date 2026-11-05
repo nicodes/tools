@@ -637,6 +637,13 @@ def setup_worker(root, config, environment, entry):
             directory = relative(root, package['directory'], exists=True)
             executable = relative(directory, 'node_modules/.bin/playwright', exists=True)
             game.run([str(executable), 'install', '--with-deps', 'chromium'], directory, environment, timeout=600)
+            browser = subprocess.check_output(['mise', 'exec', '--', 'node', '--input-type=module', '-e',
+                'import {chromium} from "playwright"; console.log(chromium.executablePath())'],
+                cwd=directory, env=environment, text=True, timeout=30).strip()
+            if not Path(browser).is_absolute() or not Path(browser).is_file():
+                raise ValueError('locked Playwright did not resolve an installed Chromium executable')
+            environment['BROWSER_EXECUTABLE'] = browser
+            os.environ['BROWSER_EXECUTABLE'] = browser
     if role not in {'unit', 'host'} and entry.get('setup') != 'godot':
         return
     directory, settings = game.project(root, config)
