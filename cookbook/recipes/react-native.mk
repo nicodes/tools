@@ -3,7 +3,8 @@ COOKBOOK_EXEC ?= env MISE_AUTO_INSTALL=false MISE_EXEC_AUTO_INSTALL=false MISE_T
 COOKBOOK_REACT_NATIVE = $(COOKBOOK_EXEC) $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/react_native.py"
 
 define cookbook_setup
-env MISE_TRUSTED_CONFIG_PATHS="$(CURDIR)" $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/react_native.py" setup
+env MISE_TRUSTED_CONFIG_PATHS="$(CURDIR)" mise install python
+env MISE_AUTO_INSTALL=false MISE_EXEC_AUTO_INSTALL=false MISE_TRUSTED_CONFIG_PATHS="$(CURDIR)" mise exec python -- $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/react_native.py" setup
 endef
 define cookbook_fmt
 $(COOKBOOK_REACT_NATIVE) fmt

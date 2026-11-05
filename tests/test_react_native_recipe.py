@@ -93,6 +93,16 @@ mprocs="0.9.6"
         self.assertNotIn('trivy', recipe.required_tools(self.root, {}, 'security'))
         self.assertNotIn('mprocs', recipe.required_tools(self.root, {}, 'full'))
 
+    def test_setup_resolves_newly_installed_sdks_through_mise_instead_of_ambient_path(self):
+        (self.root / 'mise.toml').write_text('[tools]\npython="' + '.'.join(map(str, sys.version_info[:3])) + '"\nnode="24.18.1"\nactionlint="1.7.12"\n')
+        calls = []
+        def install(root, packages, environment, run):
+            run(['node', '--version'], root, environment)
+        with patch.object(recipe, 'run', side_effect=lambda *args: calls.append(args)), patch.object(recipe.node_component, 'install', side_effect=install):
+            recipe.setup(self.root, {}, {})
+        self.assertEqual(calls[0][0][:2], ['mise', 'install'])
+        self.assertEqual(calls[1][0], ['mise', 'exec', '--', 'node', '--version'])
+
     def test_expo_development_passes_selected_port_and_never_signals_listeners(self):
         (self.root / 'app').mkdir()
         calls = []

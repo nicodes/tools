@@ -143,7 +143,7 @@ def run(arguments, root, environment, timeout=None):
     subprocess.run(arguments, cwd=root, env=environment, check=True, timeout=timeout)
 
 
-def native(root, entries, environment):
+def native(root, entries, environment, *, sdk=False):
     for entry in entries:
         if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'cwd', 'args', 'timeout', 'environment', 'phase', 'stages'}:
             raise ValueError('invalid native product component entry')
@@ -163,7 +163,10 @@ def native(root, entries, environment):
         if not isinstance(values, dict) or any(not ENVIRONMENT.fullmatch(key) or not isinstance(value, str) for key, value in values.items()):
             raise ValueError('native product environment must use literal named values')
         values = {key: value.replace('{revision}', environment['APP_VERSION']) for key, value in values.items()}
-        run([runner, str(path), *arguments], relative(root, entry.get('cwd', '.'), exists=True), environment | values, timeout)
+        command = [runner, str(path), *arguments]
+        if sdk:
+            command = ['mise', 'exec', '--', *command]
+        run(command, relative(root, entry.get('cwd', '.'), exists=True), environment | values, timeout)
 
 
 def phase(root, config, environment, name, stage='full'):
@@ -180,7 +183,7 @@ def phase(root, config, environment, name, stage='full'):
             raise ValueError('native SDK setup requires explicit supported stages')
         if entry['phase'] == name and stage in stages:
             entries.append(entry)
-    native(root, entries, environment)
+    native(root, entries, environment, sdk=name == 'setup')
 
 
 def cargo_records(config, environment):
@@ -195,20 +198,25 @@ def cargo_records(config, environment):
 
 def setup(root, config, environment):
     stage = os.environ.get('COOKBOOK_STAGE', 'local')
+    pin = tomllib.loads((root / 'mise.toml').read_text())['tools']['python']
+    if pin != '.'.join(map(str, sys.version_info[:3])):
+        raise ValueError('setup requires the exact caller-pinned Python SDK; run make setup')
     run(['mise', 'install', *required_tools(root, config, stage)], root, environment)
+    def sdk(arguments, directory, values, timeout=None):
+        run(['mise', 'exec', '--', *arguments], directory, values, timeout)
     selected = []
     for value in packages(config):
         package, _ = node_component.validate(value, root)
         if stage != 'fast' or any(package.get(key) for key in ['expo', 'typecheck', 'lint', 'format_check']):
             selected.append(package)
-    node_component.install(root, selected, environment, run)
+    node_component.install(root, selected, environment, sdk)
     records = cargo_records(config, environment)
     if records:
         if stage == 'fast':
             version = tomllib.loads((root / 'mise.toml').read_text())['tools']['rust']
-            run(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt', 'clippy'], root, environment)
+            sdk(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt'], root, environment)
         elif stage != 'security':
-            cargo().setup(root, records, environment, run)
+            cargo().setup(root, records, environment, sdk)
     phase(root, config, environment, 'setup', stage)
     if stage in {'local', 'full'}:
         for name in config.get('components', {}).get('playwright', {}).get('packages', []):
@@ -216,7 +224,7 @@ def setup(root, config, environment):
             command = ['bun', 'x', '--no-install', 'playwright', 'install']
             if os.environ.get('GITHUB_ACTIONS') == 'true':
                 command.append('--with-deps')
-            run([*command, '--only-shell', 'chromium'], directory, environment)
+            sdk([*command, '--only-shell', 'chromium'], directory, environment)
 
 
 def lint(root, config, environment):
