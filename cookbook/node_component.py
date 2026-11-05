@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 from configuration import relative
 
@@ -74,6 +75,28 @@ def build(root, packages, environment, run):
             run_script(package, directory, package['build'], environment, run)
             count += 1
     return count
+
+
+def link(root, config, environment, run):
+    """Resolve tracked native fixture imports without executing their behavior."""
+    paths = config.get('components', {}).get('module_link', [])
+    if not isinstance(paths, list) or any(not isinstance(name, str) for name in paths):
+        raise ValueError('native module link inputs require bounded source paths')
+    if not paths:
+        return
+    selected = [relative(root, name, exists=True) for name in paths]
+    tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).decode().split('\0')
+    programs = []
+    for name in tracked:
+        if not name or Path(name).suffix != '.mjs':
+            continue
+        path = relative(root, name, exists=True)
+        if any(path == source or path.is_relative_to(source) for source in selected):
+            programs.append(str(path))
+    if not programs:
+        raise ValueError('native module link inputs contain no tracked JavaScript modules')
+    with tempfile.TemporaryDirectory(prefix='native-module-link-') as directory:
+        run(['bun', 'build', '--target=node', '--packages=external', '--outdir', directory, *programs], root, environment)
 
 
 def lint(root, packages, environment, run):

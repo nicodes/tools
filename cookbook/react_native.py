@@ -272,6 +272,7 @@ def build(root, config, environment):
             raise ValueError('development-only environment cannot enter a shipping build: ' + name)
     phase(root, config, environment, 'pre_packages')
     node_component.build(root, packages(config), environment, run)
+    node_component.link(root, config, environment, run)
     phase(root, config, environment, 'pre_export')
     directory = relative(root, app.get('directory', 'app'), exists=True)
     run([sys.executable, str(TOOLS / 'helpers/export-web.py'), '--app', str(directory)], root, environment)
