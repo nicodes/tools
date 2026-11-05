@@ -99,6 +99,9 @@ jobs:
           tools: ${{ inputs.mode == 'fast' && 'python actionlint' || '' }}
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Prepare declared image capabilities
+        if: inputs.mode == 'full' && runner.os == 'Linux'
+        uses: ./_cookbook/docker-ci
       - name: Run Make gate
         id: gate
         env:
