@@ -182,7 +182,7 @@ def plan(root, config, environment=None):
     names = set()
     production = []
     for record in gate_records:
-        allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe'}
+        allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe', 'virtual_display'}
         if not isinstance(record, dict) or set(record) - allowed or not {'name', 'runner', 'timeout_minutes'} <= set(record):
             raise ValueError('invalid native auxiliary gate')
         name, kind = record['name'], record.get('kind', 'test')
@@ -203,6 +203,9 @@ def plan(root, config, environment=None):
         setup = record.get('setup', 'native')
         if setup not in {'native', 'godot', 'browser'}:
             raise ValueError('native gate setup must select a shared SDK capability')
+        if ('virtual_display' in record and (type(record['virtual_display']) is not bool
+                or kind != 'capability' or setup != 'browser')):
+            raise ValueError('virtual display must explicitly select a browser capability assertion')
         selected = record.get('tests', [])
         cases = []
         suite = record.get('suite', 'security' if kind == 'capability' else 'e2e')
@@ -251,6 +254,8 @@ def plan(root, config, environment=None):
             'suite': suite, 'cases': sorted(cases), 'setup': setup, 'packages': packages, 'artifacts': inputs}
         if kind != 'test':
             value['entry'] = entry
+        if 'virtual_display' in record:
+            value['virtual_display'] = record['virtual_display']
         if kind=='production':
             value.update({key:record[key] for key in ['browsers','xvfb','probe'] if key in record})
         (production if kind == 'production' else requirements).append(value)
@@ -656,6 +661,9 @@ def worker_tools(root, config, environment):
     if entry['kind'] == 'build':
         return game.required_tools(root, config, 'full')
     tools = {'python'}
+    bindings = game.godot_addon_bindings.declaration(root, config)
+    if bindings and (entry['kind'] in {'unit', 'host'} or entry.get('setup') == 'godot'):
+        tools.add(bindings['tool'])
     if entry.get('setup')=='browser' or (entry['kind']=='host' and config.get('components',{}).get('playwright')):
         tools.add('node')
     if entry['kind'] == 'host':
@@ -689,6 +697,9 @@ def setup_worker(root, config, environment, entry):
         return
     packages = game.packages(config) if role == 'host' else [value for value in game.packages(config) if value['directory'] in entry.get('packages', [])]
     tools = {'python'}
+    bindings = game.godot_addon_bindings.declaration(root, config)
+    if bindings and (role in {'unit', 'host'} or entry.get('setup') == 'godot'):
+        tools.add(bindings['tool'])
     if entry.get('setup')=='browser' or (role=='host' and config.get('components',{}).get('playwright')):
         tools.add('node')
     if role == 'host':
@@ -743,6 +754,9 @@ def setup_worker(root, config, environment, entry):
                 raise ValueError('locked Playwright did not resolve an installed Chromium executable')
             environment['BROWSER_EXECUTABLE'] = browser
             os.environ['BROWSER_EXECUTABLE'] = browser
+    if entry.get('virtual_display'):
+        import virtual_display
+        virtual_display.setup(root, environment, game.run)
     if role not in {'unit', 'host'} and entry.get('setup') != 'godot':
         return
     directory, settings = game.project(root, config)
@@ -753,7 +767,8 @@ def setup_worker(root, config, environment, entry):
               '--expected-version', godot['GODOT_EXPECTED_VERSION'], '--binary-checksum', godot['GODOT_BINARY_CHECKSUM'],
               '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, environment)
     if (directory / 'gdam.json').exists():
-        game.helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []))
+        game.helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
+            bindings=game.godot_addon_bindings.installed(root, config, environment))
     game.import_native(root, config, environment)
 
 

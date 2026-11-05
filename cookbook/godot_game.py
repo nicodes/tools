@@ -27,6 +27,7 @@ import images
 import application_development
 import playwright_sdk
 import komizo_sdk
+import godot_addon_bindings
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -156,9 +157,10 @@ def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
                'import_ignored_patterns', 'addon_taint_markers', 'preserve_import_defaults', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
-               'prepare', 'postprocess', 'packs', 'web_releases', 'templates', 'import_stage', 'rust_web', 'extensions'}
+               'prepare', 'postprocess', 'packs', 'web_releases', 'templates', 'import_stage', 'rust_web', 'extensions', 'addon_bindings'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
+    godot_addon_bindings.declaration(root, config)
     if values.get('origin', 'godot') not in {'godot', 'godot-builds'}:
         raise ValueError('unsupported Godot release archive origin')
     if values.get('lint_arguments', ['-warn']) not in [[], ['-warn']]:
@@ -461,7 +463,8 @@ def setup(root, config, env):
     if requested_stage != 'local':
         godot_static.setup(root,config,env,run)
     if (directory / 'gdam.json').exists():
-        helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []))
+        helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
+            bindings=godot_addon_bindings.installed(root, config, env))
     if settings.get('import_stage', 'setup') == 'setup':
         import_native(root, config, env)
 
@@ -470,6 +473,7 @@ def import_native(root, config, env):
     imported = bool(env.get('COOKBOOK_GODOT_HOST') or env.get('COOKBOOK_GODOT_ENTRY') not in {None, '', 'build'})
     prepare_export_import_boundaries(root, config, imported=imported)
     directory, settings = project(root, config)
+    verify_addons(root, config, env)
     strict = helper('godot-game-runner')
     helper('godot-project').import_project(directory, env['GODOT_BIN'],
         lambda argv, timeout: strict.main(argv, timeout=timeout, environment=env),
@@ -508,17 +512,30 @@ def native_godot(root, config, entry, env):
         raise ValueError('native Godot assertion failed: ' + entry['path'])
 
 
+def verify_addons(root, config, env):
+    directory, _ = project(root, config)
+    if (directory / 'gdam.json').exists():
+        helper('godot-addons').verify(directory, bindings=godot_addon_bindings.installed(root, config, env))
+
+
 def native_tests(root, config, env, suite):
     if suite!='lint':komizo_sdk.check(root,config,env)
     import godot_ci
     entries = godot_ci.selected_entries(root, config, env, suite)
+    selected = godot_ci.declaration_entry(root, config, env['COOKBOOK_GODOT_ENTRY']) if env.get('COOKBOOK_GODOT_ENTRY') else None
+    if suite != 'lint' and (selected is None or selected['kind'] in {'unit', 'host'} or selected.get('setup') == 'godot'):
+        verify_addons(root, config, env)
     _, settings = project(root, config)
     godot_entries = [entry for entry in entries if entry['runner'] == 'godot-check']
     others = [entry for entry in entries if entry['runner'] != 'godot-check']
     if others:
         import godot_browser
         custom = {'godot-browser': lambda checkout, entry, environment: godot_browser.journeys(checkout, config, environment, entry)}
-        run_entries(root, {**config, 'tests': {suite: others}}, env, suite, custom_runners=custom)
+        wrapper = None
+        if selected and selected.get('virtual_display'):
+            import virtual_display
+            wrapper = virtual_display.command
+        run_entries(root, {**config, 'tests': {suite: others}}, env, suite, custom_runners=custom, command_wrapper=wrapper)
     if godot_entries:
         jobs = settings.get('test_jobs', 4)
         if type(jobs) is not int or not 1 <= jobs <= 16:
@@ -527,12 +544,27 @@ def native_tests(root, config, env, suite):
             list(executor.map(lambda entry: native_godot(root, config, entry, env), godot_entries))
 
 
+def pinned_gdlint(root, env):
+    pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
+    if 'github:aviorstudio/gdlint' not in pins:
+        raise ValueError('native Godot lint requires the caller-owned Gdlint SDK pin')
+    value = subprocess.check_output(['mise', 'where', 'github:aviorstudio/gdlint'],
+                                    cwd=root, env=env, text=True).strip()
+    directory = Path(value)
+    if not directory.is_absolute() or not directory.is_dir():
+        raise ValueError('native Gdlint requires its installed pinned SDK directory')
+    executable = directory / ('gdlint.exe' if os.name == 'nt' else 'gdlint')
+    if executable.is_symlink() or not executable.is_file() or not os.access(executable, os.X_OK):
+        raise ValueError('native Gdlint requires its installed regular executable')
+    return str(executable)
+
+
 def lint(root, config, env):
     directory, settings = project(root, config)
     if (root / '.github/workflows').is_dir():
         run(['actionlint'], root, env)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, env)
-    run(['gdlint', *settings.get('lint_arguments', ['-warn'])], directory, env)
+    run([pinned_gdlint(root, env), *settings.get('lint_arguments', ['-warn'])], directory, env)
     node_component.lint(root, packages(config), env, run)
     components = config.get('components', {})
     if components.get('rust'):
@@ -604,7 +636,7 @@ def compile_outputs(root, config, env):
     node_component.build(root, packages(config), env, run)
     directory, settings = project(root, config)
     if (directory / 'gdam.json').exists():
-        helper('godot-addons').verify(directory)
+        verify_addons(root, config, env)
     build_rust(root, config, compiler_environment)
     go_component.build(root,config,env,run)
     # Emscripten owns a bundled Node for its compiler. Native app packaging must
@@ -739,7 +771,7 @@ def main():
                     rust_component.test(root, cargo_records(config, env), env, run)
                 directory, _ = project(root, config)
                 if (directory / 'gdam.json').exists():
-                    helper('godot-addons').verify(directory)
+                    verify_addons(root, config, env)
                 native_tests(root, config, env, args.suite)
             if env.get('COOKBOOK_GODOT_HOST'):
                 import godot_ci
