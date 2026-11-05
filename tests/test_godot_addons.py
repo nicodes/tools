@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import hashlib
 import importlib.util
 import io
@@ -104,6 +105,37 @@ class LockedAddons(unittest.TestCase):
         addons.restore(self.project, self.fetch, taint_markers=['.fixture-unverified'])
         self.assertFalse(marker.exists()); self.assertFalse(uid.exists())
         addons.verify(self.project)
+
+    def test_direct_and_transitive_required_by_is_the_exact_closed_locked_graph(self):
+        first=dict(self.entry,commit='a'*40)
+        parent=dict(self.entry,commit='b'*40,asset_id=18)
+        entries={'@owner/addon':first,'@owner/parent':parent}
+        requirements={name:value['tag'] for name,value in entries.items()}
+        (self.project/'gdam.json').write_text(json.dumps({'addons':{name:{'tag':tag} for name,tag in requirements.items()}}))
+        (self.project/'addon-provenance.json').write_text(json.dumps(entries))
+        releases={name+'@'+entry['tag']:{'name':name,'tag':entry['tag'],'commit_sha':entry['commit'],
+            'asset_id':entry['asset_id'],'asset_digest':'sha256:'+entry['asset_sha256'],
+            'installs':[{'path':'addons/'+name.replace('/','_'),'required_by':['gdam.json']}]}
+            for name,entry in entries.items()}
+        releases['@owner/parent@v0.0.1']['dependencies']={'@owner/addon':'v0.0.1'}
+        releases['@owner/addon@v0.0.1']['installs'][0]['required_by']=['@owner/parent@v0.0.1','gdam.json']
+        frozen={'version':1,'requirements':requirements,'addons':releases}
+        (self.project/'gdam.lock').write_text(json.dumps(frozen))
+        addons.restore(self.project,self.fetch)
+        self.assertEqual(addons.verify(self.project),entries)
+        self.assertEqual(len(self.fetches),2)
+        for mutation in ['missing-root','missing-parent','unknown-parent','duplicate-parent','wrong-version','unselected-dependency']:
+            changed=copy.deepcopy(frozen)
+            required=changed['addons']['@owner/addon@v0.0.1']['installs'][0]['required_by']
+            if mutation=='missing-root':required.remove('gdam.json')
+            if mutation=='missing-parent':required.remove('@owner/parent@v0.0.1')
+            if mutation=='unknown-parent':required.append('@owner/other@v0.0.1')
+            if mutation=='duplicate-parent':required.append('@owner/parent@v0.0.1')
+            if mutation=='wrong-version':changed['addons']['@owner/parent@v0.0.1']['dependencies']['@owner/addon']='v9.0.0'
+            if mutation=='unselected-dependency':changed['addons']['@owner/parent@v0.0.1']['dependencies']['@owner/other']='v0.0.1'
+            (self.project/'gdam.lock').write_text(json.dumps(changed))
+            with self.subTest(mutation=mutation),self.assertRaises(ValueError):addons.restore(self.project,self.fetch)
+            self.assertEqual(len(self.fetches),2)
 
 
 if __name__ == '__main__':

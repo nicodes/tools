@@ -198,21 +198,35 @@ def build(root, config, environment, run, *, native=None):
             if not re.fullmatch('[A-Z][A-Z0-9_]*', key) or not isinstance(argument, str):
                 raise ValueError('image build arguments must be literal named values')
             command += ['--build-arg', key + '=' + argument.replace('{revision}', revision)]
+        local_base = None
+        selected_base = arguments.get('BASE_IMAGE', '').replace('{revision}', revision)
+        if record.get('pull') is False and selected_base.startswith(value['image_base'] + '-') and selected_base.endswith(':' + revision):
+            if selected_base not in {value['image_base'] + '-' + component + ':' + revision for component in built}:
+                raise ValueError('local native base must select an earlier same-revision image component')
+            local_base = selected_base
         command += ['-f', str(dockerfile), '-t', value['image_base'] + '-' + name + ':' + revision, str(context)]
         cache = record.get('cache_key')
         if cache:
             if not isinstance(cache, str) or not NAME.fullmatch(cache):
                 raise ValueError('image cache key must be a native component identifier')
-            command = [sys.executable, str(TOOLS / 'helpers/docker-build.py'), '--cache-key', cache, '--', *command[4:]]
-        plans.append((record, command))
+            command = [sys.executable, str(TOOLS / 'helpers/docker-build.py'), '--cache-key', cache,
+                *(['--local-base', local_base] if local_base else []), '--', *command[4:]]
+        elif local_base:
+            command[3:3] = ['--builder', 'default']
+        plans.append((record, command, local_base))
         built.append(name)
     if not set(components(value)) <= set(built):
         raise ValueError('not every declared shipping image has a build component')
-    for record, command in plans:
+    for record, command, local_base in plans:
         if record.get('release_cache_before'):
             buildkit.release_cache(root, environment, run)
         if record.get('native'):
             native(root, record['native'], environment)
+        if local_base:
+            identity = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', local_base],
+                cwd=root, env=environment, text=True, timeout=60).strip()
+            if not re.fullmatch('sha256:[a-f0-9]{64}', identity):
+                raise ValueError('local native base requires its actual immutable Docker image identity')
         run(command, root, environment)
         if record.get('release_cache_after'):
             buildkit.release_cache(root, environment, run)
@@ -284,7 +298,14 @@ def static_image(image, source, installed='/srv/public'):
             subprocess.run(['docker', 'cp', container + ':' + installed + '/.', directory], check=True, timeout=60)
             actual = manifest(Path(directory))
             if expected != actual:
-                raise ValueError('static image does not preserve its complete source bytes')
+                missing = sorted(set(expected)-set(actual))
+                extra = sorted(set(actual)-set(expected))
+                changed = sorted(name for name in set(expected)&set(actual) if expected[name]!=actual[name])
+                details = {'missing_count':len(missing),'extra_count':len(extra),'changed_count':len(changed),
+                    'missing':[name[:240] for name in missing[:10]],'extra':[name[:240] for name in extra[:10]],
+                    'changed':[{'path':name[:240],'source_sha256':expected[name],'installed_sha256':actual[name]}
+                               for name in changed[:10]]}
+                raise ValueError('static image does not preserve its complete source bytes: '+json.dumps(details,sort_keys=True))
     finally:
         subprocess.run(['docker', 'rm', '-v', container], check=True, stdout=subprocess.DEVNULL, timeout=30)
     return expected

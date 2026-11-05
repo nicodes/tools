@@ -30,6 +30,18 @@ class ExportFailures(unittest.TestCase):
     def test_successful_complete_export(self):
         self.run_export("from pathlib import Path; p=Path('dist'); p.mkdir(); (p/'index.html').write_text('ok'); (p/'app.js').write_text('ok')")
 
+    def test_named_disposable_export_runs_real_compiler_and_binds_its_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app=Path(directory)
+            module.export(app,'dist-local-fixture',5,[sys.executable,'-c',
+                "from pathlib import Path; p=Path('dist-local-fixture'); p.mkdir(); (p/'index.html').write_text('ok'); (p/'app.js').write_text('bundle')"])
+            import json,hashlib
+            values=json.loads((app/'dist-local-fixture/export-manifest.json').read_text())
+            self.assertEqual(values['app.js'],hashlib.sha256(b'bundle').hexdigest())
+            for name in ['../dist','dist-/escape','dist-*','dist-.git']:
+                with self.subTest(name=name),self.assertRaises(ValueError):
+                    module.export(app,name,5,[sys.executable,'-c',"raise RuntimeError('must not execute')"])
+
 
 if __name__ == '__main__':
     unittest.main()

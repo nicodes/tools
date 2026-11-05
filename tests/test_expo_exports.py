@@ -21,7 +21,7 @@ class NativeExportControls(unittest.TestCase):
 
     def execute(self, command, cwd, environment, timeout=None):
         self.calls.append((command, cwd, environment))
-        output = self.root / 'app/dist-e2e' if '--app' in command else Path(command[-1])
+        output = self.root / 'app' / command[command.index('--output')+1] if '--app' in command else Path(command[-1])
         output.mkdir(parents=True)
         (output / 'bundle.js').write_text('verified native compiler result')
 
@@ -48,6 +48,33 @@ class NativeExportControls(unittest.TestCase):
             (output / 'index.html').write_text('missing the executable bundle')
         with self.assertRaisesRegex(ValueError, 'no JavaScript'):
             expo_exports.build(self.root, self.config, {}, empty, native_runner=empty)
+
+    def test_owned_variant_names_and_literal_compiler_selectors_keep_identity_and_cache_scope(self):
+        entry=self.config['components']['app']['fixture_exports'][0]
+        entry.update(output='dist-local-fixture',environment={'PRODUCT_FLAVOR':'development','LOCAL_AUTH_MODE':'1','EXPO_NO_DOTENV':'1'})
+        original={'GITHUB_RUN_ID':'immutable-run','APP_VERSION':'a'*40,'FLEET_WEB_CACHE_ENV':'EXISTING_SELECTOR'}
+        expo_exports.build(self.root,self.config,original,self.execute,native_runner=self.execute)
+        env=self.calls[1][2]
+        self.assertEqual(env['APP_VERSION'],original['APP_VERSION'])
+        self.assertEqual(env['GITHUB_RUN_ID'],original['GITHUB_RUN_ID'])
+        self.assertEqual(env['PRODUCT_FLAVOR'],'development')
+        self.assertEqual(set(env['FLEET_WEB_CACHE_ENV'].split()),{'EXISTING_SELECTOR',*entry['environment']})
+        self.assertTrue((self.root/'app/dist-local-fixture/variant-manifest.json').is_file())
+        self.assertNotIn('PRODUCT_FLAVOR',original)
+
+    def test_variant_plan_rejects_authority_replacement_and_unsafe_output_before_compilation(self):
+        entry=self.config['components']['app']['fixture_exports'][0]
+        for name in ['GITHUB_SHA','MISE_AUTO_INSTALL','COOKBOOK_SHA','REQUEST_HEAD','TOOLS_ROOT','FLEET_WEB_CACHE_ENV','PATH','HOME','APP_VERSION','NODE_OPTIONS']:
+            with self.subTest(name=name):
+                entry['environment']={name:'replacement'}
+                with self.assertRaises(ValueError):expo_exports.build(self.root,self.config,{},self.execute)
+        entry['environment']={'PRODUCT_FLAVOR':'value\nextra'}
+        with self.assertRaises(ValueError):expo_exports.records(self.root,self.config)
+        entry['environment']={}
+        for output in ['dist','../dist-check','dist-/outside','dist-.git','dist-*','dist-']:
+            entry['output']=output
+            with self.subTest(output=output),self.assertRaises(ValueError):expo_exports.records(self.root,self.config)
+        self.assertEqual(self.calls,[])
 
 
 if __name__ == '__main__':

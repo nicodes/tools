@@ -508,10 +508,13 @@ def main():
                     if selected_cargo:
                         rust_tests.run_selected(root, config, env, selected_target(package_data(root, config), env), selected_cargo, run)
                     else:
-                        rust_component.test(root, components(config), env, run, target=env.get('RUST_TARGET'))
+                        names = []
                         if config.get('components', {}).get('rust_tests'):
                             record = selected_target(package_data(root, config), env)
                             names = [item['name'] for item in rust_tests.eligible(root, config, env, native_components.platform(record))]
+                        if any(value.get('test', {}).get('enabled') is not False for value in components(config)) or not names:
+                            rust_component.test(root, components(config), env, run, target=env.get('RUST_TARGET'))
+                        if config.get('components', {}).get('rust_tests'):
                             if names:
                                 rust_tests.run_selected(root, config, env, record, names, run)
                         node_component.test(root, config.get('node', {}).get('packages', []), env, run)

@@ -2,6 +2,7 @@
 """Native Godot application recipe; domain source and assertions remain caller-owned."""
 import argparse
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -52,7 +53,7 @@ def verification_scope(root, config):
         inputs = {'artifacts': values.get('paths', []), 'images': values.get('images', []),
             'environment': values.get('environment', []), 'revision_environment': values.get('revision_environment', [])}
     inputs = {key: list(value) for key, value in inputs.items()}
-    inputs['artifacts'] += (values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
+    inputs['artifacts'] += (export_import_boundaries(root, config) + values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
         + go_component.artifact_paths(root,config) + image_fixtures.artifact_paths(root,config))
     inputs['images'] += image_fixtures.references(root,config)
     return verification.scope(**inputs)
@@ -60,6 +61,42 @@ def verification_scope(root, config):
 
 def rust_components(config):
     return config.get('components', {}).get('rust', [])
+
+
+def export_import_boundaries(root, config):
+    settings = config.get('components', {}).get('godot', {})
+    result = set()
+    for export in settings.get('exports', []):
+        project_root = relative(root, export.get('project', settings.get('project', 'app')))
+        output = relative(root, export['output'])
+        build = project_root / 'build'
+        if output.is_relative_to(build):
+            result.add((build / '.gdignore').relative_to(root).as_posix())
+    return sorted(result)
+
+
+def prepare_export_import_boundaries(root, config, *, imported=False):
+    names = export_import_boundaries(root, config)
+    expected = {}
+    if imported and names:
+        receipt = relative(root, '.artifacts/verification/build.json', exists=True)
+        if not receipt.is_file() or receipt.stat().st_size > 32 << 20:
+            raise ValueError('imported Godot boundaries require their bounded accepted build receipt')
+        expected = json.loads(receipt.read_text()).get('artifacts', {})
+        if not isinstance(expected, dict):
+            raise ValueError('imported Godot boundaries require their accepted artifact inventory')
+    for name in names:
+        path = relative(root, name)
+        if path.exists():
+            if not path.is_file() or path.stat().st_size > 4096:
+                raise ValueError('Godot generated build import boundary must be a bounded regular file')
+        else:
+            if imported:
+                raise ValueError('imported Godot build boundary is missing; setup may not repair accepted artifacts')
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'')
+        if imported and hashlib.sha256(path.read_bytes()).hexdigest() != expected.get(name):
+            raise ValueError('imported Godot build boundary differs from its accepted artifact bytes')
 
 
 def cargo_records(config, environment):
@@ -430,6 +467,8 @@ def setup(root, config, env):
 
 
 def import_native(root, config, env):
+    imported = bool(env.get('COOKBOOK_GODOT_HOST') or env.get('COOKBOOK_GODOT_ENTRY') not in {None, '', 'build'})
+    prepare_export_import_boundaries(root, config, imported=imported)
     directory, settings = project(root, config)
     strict = helper('godot-game-runner')
     helper('godot-project').import_project(directory, env['GODOT_BIN'],
@@ -560,6 +599,7 @@ def validate_outputs(root, config, env, compiler=False):
 
 
 def compile_outputs(root, config, env):
+    prepare_export_import_boundaries(root, config)
     compiler_environment = godot_sdk.activate(root, config, env)
     node_component.build(root, packages(config), env, run)
     directory, settings = project(root, config)

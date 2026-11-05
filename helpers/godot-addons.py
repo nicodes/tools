@@ -67,14 +67,30 @@ def declaration(project):
         releases = resolved.get('addons', {})
         if set(releases) != {name + '@' + entry['tag'] for name, entry in lock.items()}:
             raise ValueError('Frozen lock and byte provenance name different releases')
+        parents = {name: {'gdam.json'} for name in lock}
+        for identity, release in releases.items():
+            dependencies = release.get('dependencies', {})
+            if not isinstance(dependencies, dict):
+                raise ValueError('Frozen lock dependencies must describe the closed selected release graph')
+            for name, tag in dependencies.items():
+                if name not in lock or tag != lock[name]['tag']:
+                    raise ValueError('Frozen lock dependency differs from its exact selected release')
+                parents[name].add(identity)
         for name, entry in lock.items():
             release = releases[name + '@' + entry['tag']]
+            installs = release.get('installs')
+            installation = installs[0] if isinstance(installs, list) and len(installs) == 1 and isinstance(installs[0], dict) else {}
+            required_by = installation.get('required_by')
+            valid_install = (set(installation) == {'path', 'required_by'}
+                and installation.get('path') == 'addons/' + name.replace('/', '_')
+                and isinstance(required_by, list) and all(isinstance(parent, str) for parent in required_by)
+                and len(required_by) == len(set(required_by)) and set(required_by) == parents[name])
             if (release.get('name') != name or release.get('tag') != entry['tag']
                     or release.get('commit_sha') != entry.get('commit')
                     or not isinstance(entry.get('commit'), str) or not re.fullmatch('[a-f0-9]{40}', entry['commit'])
                     or release.get('asset_id') != entry['asset_id']
                     or release.get('asset_digest') != 'sha256:' + entry['asset_sha256']
-                    or release.get('installs') != [{'path': 'addons/' + name.replace('/', '_'), 'required_by': ['gdam.json']}]):
+                    or not valid_install):
                 raise ValueError('Frozen lock identity or install path differs from byte provenance')
     return lock
 

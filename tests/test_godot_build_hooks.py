@@ -14,6 +14,7 @@ import godot_game as game
 class GodotBuildHooks(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);self.root=Path(temporary.name)
+        environment=patch.dict(os.environ);environment.start();self.addCleanup(environment.stop)
         (self.root/'app').mkdir();(self.root/'app/project.godot').write_text('config_version=5\n')
         self.config={'components':{'godot':{'exports':[{'preset':'Web','output':'app/build/web/index.html'}]}},
             'artifacts':{'paths':['app/build/web']}}
@@ -28,7 +29,7 @@ class GodotBuildHooks(unittest.TestCase):
             {'manifest':'Cargo.toml','binaries':['server'],'output_directory':'.artifacts/native/fixture'}]
         self.config['artifacts']['release_metadata']=['.artifacts/release/static-config.json','.artifacts/release/godot-release-manifest.json']
         scope=game.verification_scope(self.root,self.config)
-        self.assertEqual(set(scope['artifacts']),{'app/build/web','.artifacts/native/release/server',
+        self.assertEqual(set(scope['artifacts']),{'app/build/web','app/build/.gdignore','.artifacts/native/release/server',
             '.artifacts/native/fixture/server','.artifacts/release/static-config.json','.artifacts/release/godot-release-manifest.json'})
         for name in scope['artifacts'][1:]:
             path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_bytes(b'accepted native fixture')

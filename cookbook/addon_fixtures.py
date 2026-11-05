@@ -34,6 +34,9 @@ def records(root, config):
             raise ValueError('addon export fixture must contain its native Godot project')
         if not output.is_relative_to(root / 'dist') or output.suffix != '.html' or output.parent in destinations:
             raise ValueError('addon fixture outputs require distinct dist directories')
+        marker = relative(root, (output.parent / '.gdignore').relative_to(root).as_posix())
+        if marker.exists() and not marker.is_file():
+            raise ValueError('addon export import boundary must be a regular file')
         destinations.add(output.parent)
         if (not isinstance(entry['preset'], str) or not entry['preset'] or '\n' in entry['preset']
                 or type(entry['timeout']) is not int or not 1 <= entry['timeout'] <= 3600):
@@ -111,6 +114,15 @@ def build_exports(root, config, environment, *, execute=subprocess.run):
                     if not target.is_file():
                         raise ValueError('addon export output must be a regular file')
                     target.unlink()
+            # A later editor assertion can scan the repository project root.
+            # Exported PNGs are outputs, not new editor inputs: importing them
+            # would add .import files and invalidate the closed build receipt.
+            marker = relative(root, (output.parent / '.gdignore').relative_to(root).as_posix())
+            if marker.exists():
+                if not marker.is_file():
+                    raise ValueError('addon export import boundary must be a regular file')
+            else:
+                marker.touch(exist_ok=False)
             native(['--export-release', entry['preset'], str(output)], entry['timeout'])
             for name in entry['required_outputs']:
                 target = relative(output.parent, name, exists=True)

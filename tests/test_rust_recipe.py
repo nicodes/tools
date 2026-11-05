@@ -125,6 +125,27 @@ paths=["dist", ".artifacts/build", ".artifacts/native-package"]
         self.assertNotEqual(self.make('test:unit').returncode, 0)
         self.assertEqual(len((self.root / '.artifacts/commands.jsonl').read_text().splitlines()), 1)
 
+    def test_full_unit_executes_explicit_native_selectors_when_base_variant_is_disabled(self):
+        data=self.root/'cookbook.toml'
+        data.write_text(data.read_text().replace('[package]','[components.rust.test]\nenabled=false\n[package]',1)
+            +'\n[[components.rust_tests]]\nname="native-owner"\ncomponent="cli"\nselectors={enabled=true,lib=true}\n')
+        (self.root/'Makefile').write_text(generate.makefile(self.root,'a'*40))
+        self.passed('test:unit')
+        commands=[json.loads(line) for line in (self.root/'.artifacts/commands.jsonl').read_text().splitlines()]
+        self.assertEqual(len(commands),1)
+        self.assertEqual(commands[0][0],'test')
+        self.assertIn('--lib',commands[0])
+        self.assertTrue((self.root/'.artifacts/verification/unit.json').is_file())
+
+    def test_disabled_base_without_real_native_unit_selection_still_refuses(self):
+        data=self.root/'cookbook.toml'
+        data.write_text(data.read_text().replace('[package]','[components.rust.test]\nenabled=false\n[package]',1))
+        (self.root/'Makefile').write_text(generate.makefile(self.root,'a'*40))
+        result=self.make('test:unit')
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('no applicable native components',result.stderr)
+        self.assertFalse((self.root/'.artifacts/verification/unit.json').exists())
+
     def test_api_wave_binds_only_its_outputs_and_cannot_claim_the_full_boundary_group(self):
         data = self.root / 'cookbook.toml'
         data.write_text(data.read_text() + '\n[[components.native]]\nname="api"\nrole="api"\ncomponent="cli"\nbinary="example"\noutput=".artifacts/native-api/example_{platform}_{arch}"\nchecks=["tests/boundary.py"]\n')
