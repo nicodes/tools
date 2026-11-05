@@ -26,10 +26,10 @@ class StaticBlueprint(unittest.TestCase):
             'public/release-manifest.json':json.dumps({'source_commit':SOURCE,'release_id':'c'*64}),
             'mise.toml':'[tools]\npython="3.13.11"\n'}.items():
             path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(body)
-        selected={'config':'deploy/komizo.yml','compose':'deploy/compose.yml','release_manifest':'public/release-manifest.json','record':True,'recovery':True,'production':True}
+        selected={'config':'deploy/komizo.yml','compose':'deploy/compose.yml','release_manifest':'public/release-manifest.json','record':True,'recovery':True,'production':True,'recovery_test':'shipping'}
         (self.root/'deploy/delivery.json').write_text(json.dumps({'mode':'godot-static','komizo_ref':'d'*40,'project':'game','static':selected}))
         (self.root/'deploy/release.json').write_text(json.dumps({'project':'game','image_base':'ghcr.io/example/game'}))
-        self.config={'recipe':'godot-game','delivery':{'definition':'deploy/delivery.json'},'artifacts':{'definition':'deploy/release.json',
+        self.config={'recipe':'godot-game','tests':{'integration':[{'name':'shipping','runner':'bash','path':'tests/gate.sh'}]},'delivery':{'definition':'deploy/delivery.json'},'artifacts':{'definition':'deploy/release.json',
             'release_metadata':[static.CONFIG_ARTIFACT,static.MANIFEST_ARTIFACT]}}
         self.environment={'SOURCE_COMMIT':SOURCE}
         subprocess.run(['git','init','-q',str(self.root)],check=True)
