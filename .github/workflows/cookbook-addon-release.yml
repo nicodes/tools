@@ -5,16 +5,85 @@ name: Release Godot addon
       tools-ref:
         type: string
         required: true
+      mode:
+        type: string
+        default: release
       bump:
         type: string
-        required: true
+        default: patch
+      tag:
+        type: string
+        default: ''
+      retry-tag:
+        type: string
+        default: ''
+      retry-sha256:
+        type: string
+        default: ''
     secrets:
       gdam-key:
-        required: true
+        required: false
+      GDAM_API_KEY:
+        required: false
 permissions: {}
 jobs:
+  plan:
+    name: Admit immutable publication request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      operation: ${{ steps.plan.outputs.operation }}
+      tag: ${{ steps.plan.outputs.tag }}
+      asset: ${{ steps.plan.outputs.asset }}
+      source: ${{ steps.plan.outputs.source }}
+      target: ${{ steps.plan.outputs.target }}
+      registry_auth: ${{ steps.plan.outputs.registry_auth }}
+      environment: ${{ steps.plan.outputs.environment }}
+      validation_timeout: ${{ steps.plan.outputs.validation_timeout }}
+      publish_timeout: ${{ steps.plan.outputs.publish_timeout }}
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - name: Require an accepted immutable cookbook source
+        env:
+          COOKBOOK_SHA: ${{ inputs.tools-ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
+          relation="$(gh api "repos/nicodes/tools/compare/$COOKBOOK_SHA...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out the exact workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: _publisher
+          persist-credentials: false
+      - name: Resolve the source-owned publication policy
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          test "$MODE" = release
+          python3 _publisher/cookbook/publication.py plan --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
   validate:
-    name: Validate release source
+    name: Validate exact release source
+    needs: plan
+    if: needs.plan.outputs.operation == 'release' || needs.plan.outputs.operation == 'resume'
     permissions:
       contents: read
     uses: ./.github/workflows/cookbook-validation.yml
@@ -22,43 +91,190 @@ jobs:
       tools-ref: ${{ inputs.tools-ref }}
       source: ${{ github.sha }}
       mode: full
-      release-bump: ${{ inputs.bump }}
-  publish:
+      timeout-minutes: ${{ fromJSON(needs.plan.outputs.validation_timeout) }}
+  publish-apikey:
     name: Publish accepted addon
-    needs: validate
+    needs: [plan, validate]
+    if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == 'api-key' && needs.plan.outputs.environment == ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
     permissions:
       contents: write
-    env:
-      BUMP: ${{ inputs.bump }}
     steps:
-      - name: Check out exact release source
+      - name: Check out exact publication source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Check out pinned publisher
+      - name: Check out the accepted trusted publisher
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/tools
           ref: ${{ inputs.tools-ref }}
-          path: .artifacts/cookbook-source
+          path: _publisher
           persist-credentials: false
-      - name: Download this run's accepted bytes and evidence
+      - name: Download this run's exact accepted bytes and proof
+        if: needs.plan.outputs.operation != 'retry'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: .
-      - name: Publish immutable release from accepted bytes
+      - name: Verify and publish immutable bytes using trusted code
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .artifacts/cookbook-source/cookbook/publication.py publish --bump "$BUMP"
-      - name: Publish addon registry entry
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 _publisher/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+      - name: Publish the verified GitHub release to the registry
         uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
         with:
           tag: ${{ steps.release.outputs.tag }}
           asset: ${{ steps.release.outputs.asset }}
-          api-key: ${{ secrets.gdam-key }}
+          api-key: ${{ secrets.gdam-key || secrets.GDAM_API_KEY }}
+  publish-apikey-environment:
+    name: Publish accepted addon
+    needs: [plan, validate]
+    if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == 'api-key' && needs.plan.outputs.environment != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
+    permissions:
+      contents: write
+    environment: ${{ needs.plan.outputs.environment }}
+    steps:
+      - name: Check out exact publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: _publisher
+          persist-credentials: false
+      - name: Download this run's exact accepted bytes and proof
+        if: needs.plan.outputs.operation != 'retry'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Verify and publish immutable bytes using trusted code
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 _publisher/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+      - name: Publish the verified GitHub release to the registry
+        uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          asset: ${{ steps.release.outputs.asset }}
+          api-key: ${{ secrets.gdam-key || secrets.GDAM_API_KEY }}
+  publish-oidc:
+    name: Publish accepted addon
+    needs: [plan, validate]
+    if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == 'oidc' && needs.plan.outputs.environment == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out exact publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: _publisher
+          persist-credentials: false
+      - name: Download this run's exact accepted bytes and proof
+        if: needs.plan.outputs.operation != 'retry'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Verify and publish immutable bytes using trusted code
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 _publisher/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+      - name: Publish the verified GitHub release to the registry
+        uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          asset: ${{ steps.release.outputs.asset }}
+  publish-oidc-environment:
+    name: Publish accepted addon
+    needs: [plan, validate]
+    if: always() && needs.plan.result == 'success' && ((needs.plan.outputs.operation == 'retry' && needs.validate.result == 'skipped') || needs.validate.result == 'success') && needs.plan.outputs.registry_auth == 'oidc' && needs.plan.outputs.environment != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ fromJSON(needs.plan.outputs.publish_timeout) }}
+    permissions:
+      contents: write
+      id-token: write
+    environment: ${{ needs.plan.outputs.environment }}
+    steps:
+      - name: Check out exact publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out the accepted trusted publisher
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ inputs.tools-ref }}
+          path: _publisher
+          persist-credentials: false
+      - name: Download this run's exact accepted bytes and proof
+        if: needs.plan.outputs.operation != 'retry'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Verify and publish immutable bytes using trusted code
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_PLAN: ${{ needs.plan.outputs.plan }}
+          BUMP: ${{ inputs.bump }}
+          TAG: ${{ inputs.tag }}
+          RETRY_TAG: ${{ inputs.retry-tag }}
+          RETRY_SHA256: ${{ inputs.retry-sha256 }}
+        run: |
+          set -euo pipefail
+          python3 _publisher/cookbook/publication.py publish --bump "$BUMP" --tag "$TAG" --retry-tag "$RETRY_TAG" --retry-sha256 "$RETRY_SHA256"
+      - name: Publish the verified GitHub release to the registry
+        uses: aviorstudio/gdam-actions/publish@3a46007e296e60e15a4ad47727ad33046e52e6ea
+        with:
+          tag: ${{ steps.release.outputs.tag }}
+          asset: ${{ steps.release.outputs.asset }}

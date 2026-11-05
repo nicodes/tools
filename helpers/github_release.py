@@ -124,11 +124,13 @@ def publish(directory, expected, release_tag, source, repo, notes=None, *, tag_e
         raise ValueError('GitHub did not identify the uploaded draft')
     uploaded = json.loads(run('gh', 'api', f'repos/{repo}/releases/{release_id}'))
     ref = json.loads(run('gh', 'api', f'repos/{repo}/{endpoint}'))
+    same_source = (remote_tag_commit(repo, release_tag) == source if tag_exists else
+                   ref.get('object', {}).get('type') == 'commit' and ref['object']['sha'] == source)
     actual = {asset['name']: asset.get('digest') for asset in uploaded['assets']}
     if (not uploaded['draft'] or uploaded['tag_name'] != release_tag or uploaded['target_commitish'] != source
             or len(actual) != len(uploaded['assets'])
             or actual != {name: 'sha256:' + digest for name, digest in expected.items()}
-            or ref.get('object', {}).get('type') != 'commit' or ref['object']['sha'] != source):
+            or not same_source):
         raise ValueError('uploaded draft differs from the verified payload; it remains unpublished')
     if admit:
         admit()
