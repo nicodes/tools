@@ -20,6 +20,9 @@ name: Cookbook validation
       preview-environment:
         type: string
         default: ''
+      preview-number:
+        type: string
+        default: ''
       release-bump:
         type: string
         default: ''
@@ -44,6 +47,7 @@ jobs:
       actions: read
     env:
       COOKBOOK_PREVIEW_CLERK_KEY: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && vars.CLERK_PUBLISHABLE_KEY || '' }}
+      COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
       SOURCE_SHA: ${{ inputs.source }}
       COOKBOOK_SHA: ${{ inputs.tools-ref }}
       COOKBOOK_MODE: ${{ inputs.mode }}
@@ -62,6 +66,12 @@ jobs:
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ && "$COOKBOOK_SHA" =~ ^[a-f0-9]{40}$ ]]
           [[ -z "$PREVIEW_ENVIRONMENT" || ( "$PREVIEW_ENVIRONMENT" == Preview && "$COOKBOOK_MODE" == full && ( "$GITHUB_EVENT_NAME" == pull_request || ( -n "$REQUEST_HEAD" && -n "$REQUEST_BASE" ) ) ) ]]
+          if [[ -n "$COOKBOOK_PREVIEW_NUMBER" ]]; then
+            [[ "$COOKBOOK_PREVIEW_NUMBER" =~ ^[1-9][0-9]{0,9}$ && "$PREVIEW_ENVIRONMENT" == Preview && "$COOKBOOK_MODE" == full ]]
+            [[ "$SOURCE_SHA" == "$REQUEST_HEAD" && "$REQUEST_HEAD" =~ ^[a-f0-9]{40}$ && "$REQUEST_BASE" =~ ^[a-f0-9]{40}$ ]]
+            [[ "$GITHUB_WORKFLOW_REF" == "$GITHUB_REPOSITORY/.github/workflows/pr-preview.yml@refs/heads/main" ]]
+            [[ "$GITHUB_EVENT_NAME" == pull_request_target || "$GITHUB_EVENT_NAME" == issue_comment ]]
+          fi
           case "$COOKBOOK_MODE" in fast|full) ;; *) exit 1 ;; esac
           relation="$(gh api "repos/nicodes/tools/compare/$COOKBOOK_SHA...main" --jq .status)"
           [[ "$relation" == ahead || "$relation" == identical ]]

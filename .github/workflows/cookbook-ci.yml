@@ -14,6 +14,9 @@ name: Recipe CI
       preview-environment:
         type: string
         default: ''
+      preview-number:
+        type: string
+        default: ''
       head:
         type: string
         default: ''
@@ -60,6 +63,7 @@ jobs:
       head: ${{ inputs.head }}
       base: ${{ inputs.base }}
       preview-environment: ${{ inputs.recipe == 'react-native' && (github.event_name == 'pull_request' || inputs.head != '') && inputs.preview-environment || '' }}
+      preview-number: ${{ inputs.preview-number }}
   native:
     name: Native source checks
     if: (github.event_name != 'pull_request' || !inputs.merge-gate) && inputs.recipe == 'rust-cli'
