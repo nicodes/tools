@@ -45,10 +45,22 @@ def required_tools(root, config, stage):
     pins = tomllib.loads((Path(root) / 'mise.toml').read_text()).get('tools', {})
     if stage == 'full':
         return list(pins)
-    if stage not in {'fast', 'security'}:
+    if stage not in {'fast', 'security', 'native'}:
         raise ValueError('unknown SDK preparation stage')
     names = ['python']
-    if stage == 'fast':
+    if stage == 'native':
+        names.append('rust')
+        extra = config.get('components', {}).get('native_tools', [])
+        if (not isinstance(extra, list) or len(extra) != len(set(extra))
+                or any(not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9:._/@-]*', name) for name in extra)):
+            raise ValueError('native setup dependencies must select distinct caller-pinned SDK identifiers')
+        names += extra
+        for fixture in config.get('tests', {}).get('unit', []):
+            if fixture['runner'] in {'bun', 'bun-test'}:
+                names.append('bun')
+            elif fixture['runner'] in {'node', 'node-test'}:
+                names.append('node')
+    elif stage == 'fast':
         names += ['rust', 'actionlint']
         if config.get('lint', {}).get('shell_paths'):
             names.append('shellcheck')
@@ -300,7 +312,7 @@ def setup(root, config, environment):
     if stage == 'fast':
         version = tomllib.loads((root / 'mise.toml').read_text())['tools']['rust']
         pinned(['rustup', 'component', 'add', '--toolchain', version, 'rustfmt'], root, environment)
-    elif stage == 'full':
+    elif stage in {'full', 'native'}:
         rust_component.setup(root, components(config), environment, pinned)
         runtime = config.get('components', {}).get('runtime')
         if runtime:
