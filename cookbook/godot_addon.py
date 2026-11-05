@@ -78,7 +78,28 @@ def verification_scope(root, config):
 
 
 def artifact_paths(root, config):
-    return [*verification_scope(root, config)['artifacts'], *config.get('artifacts', {}).get('evidence_paths', [])]
+    return [*verification_scope(root, config)['artifacts'], *evidence_paths(root, config)]
+
+
+def evidence_paths(root, config):
+    paths = list(config.get('artifacts', {}).get('evidence_paths', []))
+    if config.get('publication', {}).get('provenance'):
+        paths.append('dist/CANDIDATE.json')
+    if len(paths) != len(set(paths)):
+        raise ValueError('artifact evidence paths must be distinct')
+    for path in paths:
+        relative(root, path)
+    return paths
+
+
+def post_test_evidence(root, config, env, commit):
+    provenance = config.get('publication', {}).get('provenance')
+    if provenance:
+        if provenance != 'package-provenance.json':
+            raise ValueError('candidate provenance requires the native package provenance policy')
+        run(['node', str(TOOLS / 'helpers/addon-provenance.mjs'), 'candidate', '--commit', commit,
+             '--zip', str(relative(root, config['package']['archive'], exists=True)),
+             '--out', str(relative(root, 'dist/CANDIDATE.json'))], root, env)
 
 
 def packages(config):
