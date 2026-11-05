@@ -667,7 +667,7 @@ def setup_worker(root, config, environment, entry):
         godot_security.setup(root,config,environment,game.run)
     if role == 'host':
         import rust_component
-        components = [value for value in config.get('components', {}).get('rust', []) if value.get('test', {}).get('enabled', True)]
+        components = [value for value in game.cargo_records(config, environment) if value.get('test', {}).get('enabled', True)]
         if components:
             rust_component.setup(root, components, environment, sdk)
     if entry.get('setup') == 'browser' and config.get('components', {}).get('browser'):

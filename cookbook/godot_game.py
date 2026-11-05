@@ -15,6 +15,8 @@ import sdk_environment
 from configuration import godot_pins, load, relative
 from native_tests import run_entries
 import rust_component
+import rust_staging
+import godot_static
 import godot_package
 import godot_sdk
 import node_component
@@ -36,12 +38,41 @@ def helper(name):
 
 def verification_scope(root, config):
     values = config.get('artifacts', {})
-    if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'definition'}:
+    if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'definition', 'release_metadata'}:
         raise ValueError('unknown Godot build artifact selector')
+    verification = helper('verification')
     if values.get('definition'):
-        return helper('verification').scope(**helper('verification').release_definition(relative(root, values['definition'], exists=True))['inputs'])
-    return helper('verification').scope(artifacts=values.get('paths', []), images=values.get('images', []),
-        environment=values.get('environment', []), revision_environment=values.get('revision_environment', []))
+        inputs = verification.release_definition(relative(root, values['definition'], exists=True))['inputs']
+    else:
+        inputs = {'artifacts': values.get('paths', []), 'images': values.get('images', []),
+            'environment': values.get('environment', []), 'revision_environment': values.get('revision_environment', [])}
+    inputs = {key: list(value) for key, value in inputs.items()}
+    inputs['artifacts'] += values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
+    return verification.scope(**inputs)
+
+
+def rust_components(config):
+    return config.get('components', {}).get('rust', [])
+
+
+def cargo_records(config, environment):
+    records = []
+    for component in rust_components(config):
+        record = {key: value for key, value in component.items() if key != 'output_directory'}
+        if any(key in {'APP_VERSION', 'SOURCE_COMMIT', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
+                'TOOLS_VERIFICATION_SESSION', 'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
+                or key.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')) for key in record.get('environment', {})):
+            raise ValueError('Rust component environment may not replace execution authority')
+        record['environment'] = {key: value.replace('{revision}', environment.get('APP_VERSION', ''))
+            for key, value in record.get('environment', {}).items()}
+        records.append(record)
+    return records
+
+
+def build_rust(root, config, environment):
+    records = cargo_records(config, environment)
+    if records:
+        rust_staging.compile_and_stage(root, rust_components(config), records, environment, run)
 
 
 def artifact_paths(root, config):
@@ -112,8 +143,11 @@ def validate_config(root, config):
         import godot_template
         godot_template.declaration(root,config)
     components = config.get('components', {})
-    for component in components.get('rust', []):
+    for component in cargo_records(config, {'APP_VERSION': '0' * 40}):
         rust_component.validate(component, root)
+    for path in rust_staging.artifact_paths(rust_components(config)):
+        relative(root, path)
+    godot_static.declaration(root,config)
     for package in packages(config):
         node_component.validate(package, root)
     godot_sdk.inputs(root, config)
@@ -318,7 +352,7 @@ def setup(root, config, env):
         os.environ.update(env)
     if components.get('rust'):
         if stage == 'full':
-            rust_component.setup(root, components['rust'], env, sdk)
+            rust_component.setup(root, cargo_records(config, env), env, sdk)
         elif stage == 'fast':
             pins = tomllib.loads((root / 'mise.toml').read_text())['tools']
             sdk(['rustup', 'component', 'add', '--toolchain', pins['rust'], 'rustfmt'], root, env)
@@ -344,6 +378,8 @@ def setup(root, config, env):
     if settings.get('templates') is not None:
         import godot_template
         godot_template.setup(root,config,env)
+    if requested_stage != 'local':
+        godot_static.setup(root,config,env,run)
     if (directory / 'gdam.json').exists():
         helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []))
     if settings.get('import_stage', 'setup') == 'setup':
@@ -411,7 +447,7 @@ def lint(root, config, env):
     node_component.lint(root, packages(config), env, run)
     components = config.get('components', {})
     if components.get('rust'):
-        rust_component.lint(root, components['rust'], env, run)
+        rust_component.lint(root, cargo_records(config, env), env, run)
     if config.get('tests', {}).get('lint'):
         native_tests(root, config, env, 'lint')
 
@@ -449,7 +485,7 @@ def validate_outputs(root, config, env, compiler=False):
         validate = getattr(rust_component, 'validate_build', None)
         if validate is None:
             raise ValueError('shared Cargo build validation is not integrated')
-        validate(root, components['rust'], env, run)
+        validate(root, cargo_records(config, env), env, run)
     if compiler:
         for source in settings.get('art_sources', []):
             run(['bun', '--no-macros', str(TOOLS / 'helpers/godot-art-sources.mjs'), str(relative(root, source, exists=True))], root, env)
@@ -462,6 +498,7 @@ def validate_outputs(root, config, env, compiler=False):
                     raise ValueError('static image contract must name a declared shipping component')
                 images.static_image(definition['image_base'] + '-' + record['component'] + ':' + env['APP_VERSION'],
                     relative(root, record['source'], exists=True), record.get('installed', '/srv/public'))
+    godot_static.verify(root, config, env, run)
     helper('verification').artifacts(verification_scope(root, config))
 
 
@@ -471,8 +508,7 @@ def compile_outputs(root, config, env):
     directory, settings = project(root, config)
     if (directory / 'gdam.json').exists():
         helper('godot-addons').verify(directory)
-    if config.get('components', {}).get('rust'):
-        rust_component.build(root, config['components']['rust'], compiler_environment, run)
+    build_rust(root, config, compiler_environment)
     # Emscripten owns a bundled Node for its compiler. Native app packaging must
     # keep the caller's Mise Node/Bun selection and its reviewed compression bytes.
     if compiler_environment.get('LIBCLANG_PATH'):
@@ -507,6 +543,7 @@ def compile_outputs(root, config, env):
         if config.get('components', {}).get('compose'):
             images.validate_compose(root, config, env, run)
         images.build(root, config, env, run)
+        godot_static.stage(root, config, env, run)
         images.package(root, config, env, run)
     validate_outputs(root, config, env, compiler=True)
 
@@ -551,7 +588,7 @@ def main():
                 run(['gdformat', *sources], root, env)
             node_component.format(root, packages(config), env, run)
             if config.get('components', {}).get('rust'):
-                rust_component.format(root, config['components']['rust'], env, run)
+                rust_component.format(root, cargo_records(config, env), env, run)
         elif args.operation == 'clean':
             if config.get('dev',{}).get('kind')=='native':
                 run([sys.executable,str(TOOLS/'helpers/dev.py'),'clean','--state','.local/dev','--',
@@ -594,7 +631,7 @@ def main():
                 if args.suite == 'unit':
                     node_component.test(root, packages(config), env, run)
                 if args.suite == 'unit' and config.get('components', {}).get('rust'):
-                    rust_component.test(root, config['components']['rust'], env, run)
+                    rust_component.test(root, cargo_records(config, env), env, run)
                 directory, _ = project(root, config)
                 if (directory / 'gdam.json').exists():
                     helper('godot-addons').verify(directory)
