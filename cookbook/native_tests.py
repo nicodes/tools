@@ -41,11 +41,8 @@ def run_entries(root, config, environment, suite, custom_runners=None):
             continue
         python = sys.executable
         if entry.get('python_environment'):
-            declared = config.get('components', {}).get('python', [])
-            if entry['python_environment'] not in [item.get('venv') for item in declared]:
-                raise ValueError('native Python tests require a declared prepared environment')
-            directory = relative(root, entry['python_environment'], exists=True)
-            python = str(relative(root, (directory.relative_to(root) / ('Scripts/python.exe' if sys.platform == 'win32' else 'bin/python')).as_posix(), exists=True))
+            import python_component
+            python = python_component.interpreter(root, config, entry['python_environment'])
         if kind in {'python', 'node', 'bun', 'bash'}:
             executable = {'python': python, 'node': 'node', 'bun': 'bun', 'bash': 'bash'}[kind]
             command = [executable, str(program), *arguments]

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Native Godot addon operations behind the shared Make command contract."""
 import argparse
+import ast
 import importlib.util
 import json
 import os
@@ -11,6 +12,7 @@ import tomllib
 
 from configuration import godot_pins, load, relative
 from native_tests import run_entries
+import node_component
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -23,9 +25,16 @@ def helper(name):
 
 
 def environment(root):
-    return {**os.environ, 'TOOLS_ROOT': str(TOOLS),
+    pins = tomllib.loads((root / 'mise.toml').read_text()).get('env', {}) if (root / 'mise.toml').is_file() else {}
+    return {**os.environ, **({'GODOT_VERSION': pins['GODOT_VERSION']} if 'GODOT_VERSION' in pins else {}),
+            'TOOLS_ROOT': str(TOOLS),
             'GODOT_BIN': str(root / '.artifacts/godot/bin/godot'),
             'XDG_DATA_HOME': str(root / '.artifacts/godot-data'),
+            'XDG_CONFIG_HOME': str(root / '.artifacts/godot-config'),
+            'TMPDIR': str(root / '.artifacts/tmp'),
+            'GODOT_SILENCE_ROOT_WARNING': '1',
+            'PLAYWRIGHT_CLI_BIN': str(root / '.artifacts/playwright-cli'),
+            'GD_WEB_OUTPUT_DIR': str(root / '.artifacts/e2e/web-export-evidence'),
             'PLAYWRIGHT_BROWSERS_PATH': str(root / '.artifacts/playwright'),
             'RUNNER_TEMP': os.environ.get('RUNNER_TEMP', str(root / '.artifacts/tmp')),
             'PYTHONDONTWRITEBYTECODE': '1',
@@ -38,17 +47,74 @@ def run(argv, root, env, timeout=None):
 
 def package_inputs(root, config):
     values = config['package']
-    if set(values) != {'source', 'manifest', 'archive'}:
+    if set(values) - {'source', 'manifest', 'archive', 'script_uids', 'format'} or not {'source', 'manifest', 'archive'} <= set(values):
         raise ValueError('addon packaging requires source, closed manifest and archive paths')
+    if type(values.get('script_uids', False)) is not bool:
+        raise ValueError('script UID policy must be explicit boolean data')
     return (relative(root, values['source'], exists=True),
             relative(root, values['manifest'], exists=True),
             relative(root, values['archive']))
 
 
+def package_module(config):
+    if config.get('package', {}).get('format', 'closed') == 'manifest':
+        import manifest_addon
+        return manifest_addon
+    if config.get('package', {}).get('format', 'closed') != 'closed':
+        raise ValueError('unsupported addon package format')
+    return None
+
+
+def verification_scope(root, config):
+    module = package_module(config)
+    if module:
+        paths = module.artifact_paths(root, config)
+    else:
+        _source, _manifest, archive = package_inputs(root, config)
+        paths = [archive.relative_to(root).as_posix(), archive.relative_to(root).as_posix()+'.sha256']
+    import addon_fixtures
+    paths += addon_fixtures.artifact_paths(root, config)
+    return helper('verification').scope(artifacts=paths)
+
+
+def artifact_paths(root, config):
+    return [*verification_scope(root, config)['artifacts'], *config.get('artifacts', {}).get('evidence_paths', [])]
+
+
+def packages(config):
+    return [({'directory': item, 'manager': 'npm', 'audit': True} if isinstance(item, str) else item)
+            for item in config.get('node', {}).get('packages', [])]
+
+
+def required_tools(root, config, stage='full'):
+    pins = tomllib.loads((root/'mise.toml').read_text()).get('tools', {})
+    if stage == 'full':
+        return list(pins)
+    names = ['python', *(['actionlint'] if stage == 'fast' else [])]
+    if packages(config):
+        names.append('node')
+    if not set(names) <= set(pins):
+        raise ValueError('required source-check SDKs must be pinned in mise.toml')
+    return names
+
+
+def test_suites(root, config):
+    return ['lint', 'unit', 'security', *[name for name in ['integration', 'e2e'] if name in config.get('tests', {})]]
+
+
+def configure_environment(root, config):
+    return environment(root)
+
+
 def setup(root, config, env):
+    (root / '.artifacts').mkdir(exist_ok=True)
+    (root / '.artifacts/.gdignore').touch()
+    (root / '.artifacts/tmp').mkdir(exist_ok=True)
+    import python_component
     if os.environ.get('COOKBOOK_STAGE') == 'fast':
         # Source/configuration checks do not need an editor or export templates.
-        run(['mise', 'install', 'python', 'actionlint'], root, env)
+        run(['mise', 'install', *required_tools(root, config, 'fast')], root, env)
+        python_component.setup(root, config, env)
         return
     run(['mise', 'install'], root, env)
     pins = godot_pins(root)
@@ -58,23 +124,42 @@ def setup(root, config, env):
                '--templates-checksum', pins['GODOT_TEMPLATES_CHECKSUM'],
                '--origin', 'godot-builds', '--root', str(root / '.artifacts/godot')]
     command.append('--templates')
-    (root / '.artifacts').mkdir(exist_ok=True)
-    (root / '.artifacts/.gdignore').touch()
     run(command, root, env)
-    for name in config.get('node', {}).get('packages', []):
-        directory = relative(root, name, exists=True)
-        run(['mise', 'exec', '--', 'npm', 'ci', '--prefix', str(directory), '--no-audit', '--no-fund'], root, env)
-    (root / '.artifacts/tmp').mkdir(exist_ok=True)
+    python_component.setup(root, config, env)
+    sdk = lambda argv, directory, values: run(['mise', 'exec', '--', *argv], directory, values)
+    node_component.install(root, packages(config), env, sdk)
+    for value in packages(config):
+        _data, directory = node_component.validate(value, root)
+        if (directory/'node_modules').is_dir():
+            (directory/'node_modules/.gdignore').touch()
+    import addon_dependencies
+    addon_dependencies.setup(root, config, env)
+    browser = config.get('components', {}).get('browser')
+    if browser:
+        if set(browser)-{'package', 'cli_version'}:
+            raise ValueError('unsupported native browser setup setting')
+        helper('playwright-local').prepare(root, browser['package'], cli_version=browser.get('cli_version'),
+            run=lambda argv, **kwargs: subprocess.run(['mise', 'exec', '--', *argv], **kwargs))
 
 
 def lint(root, config, env):
     for name in config.get('lint', {}).get('required_paths', []):
         relative(root, name, exists=True)
-    source, manifest, _ = package_inputs(root, config)
-    expected = helper('addon-package').manifest_files(manifest)
-    actual = sorted(p.relative_to(source).as_posix() for p in source.rglob('*') if p.is_file())
-    if actual != expected:
-        raise ValueError('addon source differs from the closed package manifest')
+    module = package_module(config)
+    if module:
+        module.inputs(root, config)
+    else:
+        source, manifest, _ = package_inputs(root, config)
+        helper('addon-package').source_files(source, manifest, config['package'].get('script_uids', False))
+    tracked = subprocess.check_output(['git', 'ls-files', '-z', '--', '*.py', '*.sh'], cwd=root).split(b'\0')
+    for encoded in tracked:
+        if not encoded:
+            continue
+        path = relative(root, encoded.decode(), exists=True)
+        if path.suffix == '.py':
+            ast.parse(path.read_bytes(), filename=str(path))
+        else:
+            run(['bash', '-n', str(path)], root, env)
     if (root / '.github/workflows').is_dir():
         run(['actionlint'], root, env)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, env)
@@ -87,7 +172,7 @@ def test_entries(root, config, env, suite):
 
 
 def current_build(root, config, verification):
-    declaration = verification.scope(artifacts=[str(Path(config['package']['archive']).parent)])
+    declaration = verification_scope(root, config)
     receipt = json.loads((root / '.artifacts/verification/build.json').read_text())
     if receipt.get('identity') != verification.identity(declaration):
         raise ValueError('build is stale; run make build before packaged integration/E2E tests')
@@ -131,15 +216,24 @@ def main():
                 relative(root, name, exists=True)
             run(['gdformat', *paths], root, env)
         elif args.operation in ['_build', 'validate']:
-            source, manifest, archive = package_inputs(root, config)
-            package = helper('addon-package')
             if args.operation == '_build':
-                digest = package.build(source, manifest, archive)
-                archive.with_suffix(archive.suffix + '.sha256').write_text(digest + '  ' + archive.name + '\n')
+                node_component.build(root, packages(config), env, run)
+            module = package_module(config)
+            if module:
+                (module.build if args.operation == '_build' else module.verify)(root, config)
             else:
-                digest = package.verify(archive, manifest)
-                package.verify_checksum(archive)
-            print(digest + '  ' + config['package']['archive'])
+                source, manifest, archive = package_inputs(root, config)
+                package = helper('addon-package')
+                if args.operation == '_build':
+                    digest = package.build(source, manifest, archive, config['package'].get('script_uids', False))
+                    archive.with_suffix(archive.suffix + '.sha256').write_text(digest + '  ' + archive.name + '\n')
+                else:
+                    digest = package.verify(archive, manifest, source=source, script_uids=config['package'].get('script_uids', False))
+                    package.verify_checksum(archive)
+                print(digest + '  ' + config['package']['archive'])
+            if args.operation == '_build':
+                import addon_fixtures
+                addon_fixtures.build_exports(root, config, env)
         elif args.operation == 'clean':
             paths = config.get('clean', {}).get('paths', [])
             if not paths:
@@ -148,7 +242,7 @@ def main():
         else:
             verification = helper('verification')
             directory = Path('.artifacts/verification')
-            declaration = verification.scope(artifacts=[str(Path(config['package']['archive']).parent)])
+            declaration = verification_scope(root, config)
             if args.operation == 'build':
                 verification.run_command('build', 'build', declaration,
                     [sys.executable, str(Path(__file__).resolve()), '_build'], directory)
@@ -164,8 +258,7 @@ def main():
                     if fixtures:
                         scan += ['--fixtures', str(relative(root, fixtures, exists=True))]
                     run(scan, root, env)
-                    for name in config.get('node', {}).get('packages', []):
-                        run(['npm', 'audit', '--prefix', str(relative(root, name)), '--audit-level=high'], root, env)
+                    node_component.audit(root, packages(config), env, run)
                     if 'security' in config.get('tests', {}):
                         test_entries(root, config, env, 'security')
                 else:

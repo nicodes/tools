@@ -11,6 +11,9 @@ name: Cookbook validation
       mode:
         type: string
         required: true
+      timeout-minutes:
+        type: number
+        default: 30
       release-bump:
         type: string
         default: ''
@@ -25,7 +28,7 @@ jobs:
   validate:
     name: Make ${{ inputs.mode }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
     env:
