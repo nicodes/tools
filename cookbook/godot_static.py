@@ -81,17 +81,8 @@ def setup(root,config,environment,execute=run):
     selected=declaration(root,config)
     if selected is None:return
     destination=relative(root,SDK);destination.mkdir(parents=True,exist_ok=True)
-    source=destination/'source'
-    if not source.exists():
-        execute(['git','init',str(source)],root,environment)
-        execute(['git','-C',str(source),'remote','add','origin','https://github.com/nicodes/komizo-actions.git'],root,environment)
-    if source.is_symlink():raise ValueError('static parser SDK source must not traverse links')
-    remote=capture(['git','-C',str(source),'remote','get-url','origin'],root,environment).strip()
-    if remote!='https://github.com/nicodes/komizo-actions.git':raise ValueError('static parser SDK has another source authority')
-    relation=capture(['gh','api','repos/nicodes/komizo-actions/compare/'+selected['komizo_ref']+'...main','--jq','.status'],root,environment).strip()
-    if relation not in {'ahead','identical'}:raise ValueError('static parser SDK must be accepted on protected main')
-    execute(['git','-C',str(source),'fetch','--depth','1','origin',selected['komizo_ref']],root,environment,180)
-    execute(['git','-C',str(source),'checkout','--detach',selected['komizo_ref']],root,environment)
+    import komizo_sdk
+    source=komizo_sdk.setup(root,config,environment,execute)
     requirements=source/'requirements-yaml.txt';read(requirements,65536)
     interpreter=destination/'parser/bin/python'
     receipt=destination/'parser.json'
@@ -105,12 +96,10 @@ def setup(root,config,environment,execute=run):
     receipt.write_text(json.dumps(expected,sort_keys=True)+'\n')
 
 
-def checked_sdk(root,selected,environment):
-    destination=relative(root,SDK,exists=True);source=destination/'source'
-    actual=capture(['git','-C',str(source),'rev-parse','HEAD'],root,environment).strip()
-    if actual!=selected['komizo_ref']:raise ValueError('run make setup for the exact accepted static parser SDK')
-    if capture(['git','-C',str(source),'status','--porcelain','--untracked-files=no'],root,environment).strip():
-        raise ValueError('static parser SDK tracked source was modified')
+def checked_sdk(root,selected,environment,config=None):
+    destination=relative(root,SDK,exists=True)
+    import komizo_sdk
+    source=komizo_sdk.check(root,config,environment)
     interpreter=relative(root,SDK+'/parser/bin/python',exists=True)
     receipt=json.loads(read(destination/'parser.json'))
     pins=tomllib.loads((root/'mise.toml').read_text())['tools'];python=pins['python'] if isinstance(pins['python'],str) else pins['python']['version']
@@ -153,7 +142,7 @@ def stage(root,config,environment,execute=run):
     if selected is None:return
     source=environment['SOURCE_COMMIT']
     if not re.fullmatch('[a-f0-9]{40}',source):raise ValueError('static blueprints require the full source revision')
-    interpreter,sdk=checked_sdk(root,selected,environment)
+    interpreter,sdk=checked_sdk(root,selected,environment,config)
     configs={}
     for key in ['config','compose']:
         name=selected[key];path=relative(root,name,exists=True)
