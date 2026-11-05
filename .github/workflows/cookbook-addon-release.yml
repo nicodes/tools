@@ -87,6 +87,7 @@ jobs:
     if: needs.plan.outputs.operation == 'release' || needs.plan.outputs.operation == 'resume'
     permissions:
       contents: read
+      actions: read
     uses: ./.github/workflows/cookbook-validation.yml
     with:
       tools-ref: ${{ inputs.tools-ref }}

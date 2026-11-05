@@ -159,6 +159,10 @@ class PublicationAuthority(unittest.TestCase):
         release = files['.github/workflows/release.yml']
         recovery = files['.github/workflows/gdam-publish.yml']
         self.assertIn('contents: write', release)
+        self.assertIn('actions: read', release)
+        shared = (Path(publication.__file__).resolve().parents[1] / '.github/workflows/cookbook-addon-release.yml').read_text()
+        validation = shared.split('  validate:\n', 1)[1].split('    uses:', 1)[0]
+        self.assertIn('      actions: read', validation.split('    uses:', 1)[0])
         self.assertIn('contents: read', recovery)
         self.assertIn('id-token: write', recovery)
         self.assertNotIn('gdam-key', release + recovery)
