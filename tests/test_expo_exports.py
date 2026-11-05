@@ -47,7 +47,7 @@ class NativeExportControls(unittest.TestCase):
             output.mkdir(parents=True)
             (output / 'index.html').write_text('missing the executable bundle')
         with self.assertRaisesRegex(ValueError, 'no JavaScript'):
-            expo_exports.build(self.root, self.config, {}, empty)
+            expo_exports.build(self.root, self.config, {}, empty, native_runner=empty)
 
 
 if __name__ == '__main__':
