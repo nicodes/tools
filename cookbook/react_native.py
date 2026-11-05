@@ -412,10 +412,14 @@ def check_sdks(root, config, operation, environment, suite=None):
         subprocess.run(['mise', 'where', name], cwd=root, env=environment, check=True, stdout=subprocess.DEVNULL)
 
 
-def development_project(root):
+def development_project(root, config=None):
     # Preserve the existing checkout identity; retained database volumes continue
     # to belong to exactly the same development project after this migration.
-    return 'komizo-' + hashlib.sha256(os.path.normpath(str(root)).encode()).hexdigest()[:16]
+    config = load(root) if config is None else config
+    prefix = config.get('dev', {}).get('project_prefix', 'komizo')
+    if not isinstance(prefix, str) or not re.fullmatch('[a-z][a-z0-9-]{0,31}', prefix):
+        raise ValueError('development project identity requires a bounded native prefix')
+    return prefix + '-' + hashlib.sha256(os.path.normpath(str(root)).encode()).hexdigest()[:16]
 
 
 def select_port(preferred, attempts=100):
@@ -446,17 +450,24 @@ def launch_development(root, config, environment):
 
 
 def clean_outputs(root, config, environment):
-    if config.get('dev', {}).get('cleanup'):
-        native(root, [config['dev']['cleanup']], environment)
+    stop_services(root, config, environment)
     paths = config.get('clean', {}).get('paths', [])
     if not paths:
         raise ValueError('clean requires explicit generated output paths')
     helper('clean').clean(root, paths)
 
 
+def stop_services(root, config, environment):
+    for name in config.get('dev', {}).get('cleanup_compose', []):
+        source = relative(root, name, exists=True)
+        run(['docker', 'compose', '-p', development_project(root, config), '-f', str(source), 'down'], root, environment)
+    if config.get('dev', {}).get('cleanup'):
+        native(root, [config['dev']['cleanup']], environment)
+
+
 def isolated_operation(root, config, environment, operation):
     selected = relative(root, config.get('dev', {}).get('identity', 'ghenv.json'), exists=True)
-    base = [pinned_ghenv(root, environment), 'local', '--', 'env', 'DEV_PROJECT=' + development_project(root),
+    base = [pinned_ghenv(root, environment), 'local', '--', 'env', 'DEV_PROJECT=' + development_project(root, config),
             'TOOLS_ROOT=' + str(TOOLS), sys.executable, str(Path(__file__).resolve()), operation]
     if selected.name != 'ghenv.json' or selected.parent != root:
         raise ValueError('application development identity uses the owned root ghenv.json')
@@ -494,7 +505,7 @@ def development(root, config, environment, operation):
     if mode not in {'auto', 'local', 'preview'}:
         raise ValueError('development identity must be local, preview or the configured automatic mode')
     command = [ghenv, 'dev', '--config', 'ghenv.json', '--mode', mode, '--', 'env',
-               'DEV_PROJECT=' + development_project(root), 'TOOLS_ROOT=' + str(TOOLS),
+               'DEV_PROJECT=' + development_project(root, config), 'TOOLS_ROOT=' + str(TOOLS),
                sys.executable, str(Path(__file__).resolve()), '_dev']
     preparation = [ghenv, 'local', '--', 'env', 'COOKBOOK_STAGE=local', 'make', 'setup']
     arguments = [*supervisor, 'run', '--state', '.local/dev', '--prepare', json.dumps(preparation),
@@ -558,8 +569,7 @@ def main():
         elif args.operation == '_dev':
             launch_development(root, config, environment)
         elif args.operation == '_stop-services':
-            if config.get('dev', {}).get('cleanup'):
-                native(root, [config['dev']['cleanup']], environment)
+            stop_services(root, config, environment)
         elif args.operation.startswith('db:'):
             database(root, config, environment, args.operation)
         elif args.operation == '_database':

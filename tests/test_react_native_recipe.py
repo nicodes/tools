@@ -111,6 +111,19 @@ mprocs="0.9.6"
         self.assertIn('local', command)
         self.assertEqual(command[-3:], ['_database', '--suite', 'reset'])
 
+    def test_native_development_namespace_preserves_retained_compose_data(self):
+        import hashlib
+        (self.root / 'deploy').mkdir()
+        (self.root / 'deploy/local.compose.yml').write_text('services: {}\n')
+        config = {'dev': {'project_prefix': 'native-dev', 'cleanup_compose': ['deploy/local.compose.yml']}}
+        expected = 'native-dev-' + hashlib.sha256(str(self.root).encode()).hexdigest()[:16]
+        self.assertEqual(recipe.development_project(self.root, config), expected)
+        calls = []
+        with patch.object(recipe, 'run', side_effect=lambda *args: calls.append(args)):
+            recipe.stop_services(self.root, config, {})
+        self.assertEqual(calls[0][0], ['docker', 'compose', '-p', expected, '-f', str(self.root / 'deploy/local.compose.yml'), 'down'])
+        self.assertNotIn('--volumes', calls[0][0])
+
     def test_port_selection_refuses_an_occupied_port_without_killing_its_owner(self):
         with socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
