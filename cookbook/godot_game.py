@@ -15,6 +15,7 @@ from native_tests import run_entries
 import rust_component
 import godot_package
 import godot_sdk
+import node_component
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -85,22 +86,47 @@ def validate_config(root, config):
     components = config.get('components', {})
     for component in components.get('rust', []):
         rust_component.validate(component, root)
-    for package in components.get('node', {}).get('packages', []):
-        if not isinstance(package, dict) or set(package) - {'path', 'manager', 'ignore_scripts'}:
-            raise ValueError('unsupported native Node package data')
-        relative(root, package['path'], exists=True)
-        if package.get('manager', 'npm') != 'npm' or type(package.get('ignore_scripts', False)) is not bool:
-            raise ValueError('native Node package setup requires reviewed npm data')
+    for package in packages(config):
+        node_component.validate(package, root)
     godot_sdk.inputs(root, config)
     godot_package.validate(root, config, verification_scope(root, config)['artifacts'])
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
 
 
+def packages(config):
+    return [({'directory': value, 'manager': 'npm'} if isinstance(value, str) else value)
+            for value in config.get('node', {}).get('packages', [])]
+
+
+def package_linters(config):
+    return [value for value in packages(config)
+            if any(value.get(key) for key in ['typecheck', 'lint', 'format_check', 'expo'])]
+
+
 def required_tools(root, config, stage='full'):
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
     components = config.get('components', {})
     if stage == 'full':
+        mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
+        if components.get('rust'):
+            mandatory.update({'rust', 'cargo:cargo-audit'})
+        if components.get('godot', {}).get('art_sources'):
+            mandatory.add('bun')
+        for value in packages(config):
+            mandatory.add('bun' if value.get('manager', 'npm') == 'bun' else 'node')
+        for entries in config.get('tests', {}).values():
+            for entry in entries:
+                if entry['runner'] in {'node', 'node-test'}:
+                    mandatory.add('node')
+                if entry['runner'] in {'bun', 'bun-test'}:
+                    mandatory.add('bun')
+        for phase in ['prepare', 'postprocess']:
+            for record in components.get('godot', {}).get(phase, []):
+                if record['runner'] in {'node', 'bun'}:
+                    mandatory.add(record['runner'])
+        if not mandatory <= pins.keys():
+            raise ValueError('required native SDKs must be declared in caller Mise pins: ' + ', '.join(sorted(mandatory - pins.keys())))
         selected = list(pins)
     else:
         selected = ['python']
@@ -110,8 +136,11 @@ def required_tools(root, config, stage='full'):
             selected.append('rust')
             if stage == 'security':
                 selected.append('cargo:cargo-audit')
-        if stage == 'security' and components.get('node', {}).get('packages'):
-            selected.append('node')
+        active_packages = package_linters(config) if stage == 'fast' else [value for value in packages(config) if value.get('audit', True)]
+        for value in active_packages:
+            selected.append('bun' if value.get('manager', 'npm') == 'bun' else 'node')
+            if (relative(root, value['directory']) / 'security-remediations.json').exists():
+                selected.append('node')
     if any(name not in pins for name in selected):
         raise ValueError('required native SDK is not pinned in mise.toml')
     return sorted(set(selected))
@@ -137,7 +166,8 @@ def configure_environment(root, config):
 
 
 def test_suites(root, config):
-    if not config.get('tests', {}).get('unit') and not config.get('components', {}).get('rust'):
+    if (not config.get('tests', {}).get('unit') and not config.get('components', {}).get('rust')
+            and not any(value.get('test') or value.get('test_paths') for value in packages(config))):
         raise ValueError('Godot applications require real native unit checks')
     return ['lint', 'unit', 'security', *[name for name in ['integration', 'e2e'] if config.get('tests', {}).get(name)]]
 
@@ -151,26 +181,21 @@ def setup(root, config, env):
     selected = required_tools(root, config, stage)
     run(['mise', 'install', *selected], root, env)
     components = config.get('components', {})
-    if stage == 'full':
-        env = godot_sdk.setup(root, config, env)
-        os.environ.update(env)
     sdk = lambda argv, directory, environment: run(['mise', 'exec', '--', *argv], directory, environment)
+    if components.get('python') and stage in {'fast', 'full', 'security'}:
+        sdk(['python3', str(TOOLS / 'cookbook/python_component.py'), 'setup'], root, env)
+    if stage == 'full' and godot_sdk.inputs(root, config) is not None:
+        sdk(['python3', str(TOOLS / 'cookbook/godot_sdk.py'), 'setup'], root, env)
+        env = godot_sdk.activate(root, config, env)
+        os.environ.update(env)
     if components.get('rust'):
         if stage == 'full':
             rust_component.setup(root, components['rust'], env, sdk)
         elif stage == 'fast':
             pins = tomllib.loads((root / 'mise.toml').read_text())['tools']
             sdk(['rustup', 'component', 'add', '--toolchain', pins['rust'], 'rustfmt'], root, env)
-    packages = components.get('node', {}).get('packages', [])
-    if stage in {'full', 'security'}:
-        for package in packages:
-            directory = relative(root, package['path'], exists=True)
-            if package.get('manager', 'npm') != 'npm':
-                raise ValueError('this Godot Node component currently requires native npm lockfiles')
-            argv = ['npm', 'ci', '--prefix', str(directory), '--no-audit', '--no-fund']
-            if package.get('ignore_scripts', False):
-                argv.append('--ignore-scripts')
-            sdk(argv, root, env)
+    if stage in {'full', 'security', 'fast'}:
+        node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
     if stage != 'full':
         return
     directory, settings = project(root, config)
@@ -243,6 +268,7 @@ def lint(root, config, env):
         run(['actionlint'], root, env)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, env)
     run(['gdlint', *settings.get('lint_arguments', ['-warn'])], directory, env)
+    node_component.lint(root, packages(config), env, run)
     components = config.get('components', {})
     if components.get('rust'):
         rust_component.lint(root, components['rust'], env, run)
@@ -258,8 +284,7 @@ def security(root, config, env):
     for component in config.get('components', {}).get('rust', []):
         lock = str(Path(component['manifest']).with_name('Cargo.lock'))
         run(['cargo', 'audit', '--file', lock, '--deny', 'warnings'], root, env)
-    for package in config.get('components', {}).get('node', {}).get('packages', []):
-        run(['npm', 'audit', '--prefix', str(relative(root, package['path'], exists=True)), '--audit-level=high'], root, env)
+    node_component.audit(root, packages(config), env, run)
     if config.get('tests', {}).get('security'):
         native_tests(root, config, env, 'security')
 
@@ -288,6 +313,7 @@ def validate_outputs(root, config, env, compiler=False):
 
 def compile_outputs(root, config, env):
     compiler_environment = godot_sdk.activate(root, config, env)
+    node_component.build(root, packages(config), env, run)
     directory, settings = project(root, config)
     if (directory / 'gdam.json').exists():
         helper('godot-addons').verify(directory)
@@ -356,6 +382,7 @@ def main():
             sources = [str(root / name) for name in tracked if name.endswith('.gd') and '/addons/' not in name]
             if sources:
                 run(['gdformat', *sources], root, env)
+            node_component.format(root, packages(config), env, run)
             if config.get('components', {}).get('rust'):
                 rust_component.format(root, config['components']['rust'], env, run)
         elif args.operation == 'clean':
@@ -380,6 +407,8 @@ def main():
             elif args.suite == 'security':
                 security(root, config, env)
             else:
+                if args.suite == 'unit':
+                    node_component.test(root, packages(config), env, run)
                 if args.suite == 'unit' and config.get('components', {}).get('rust'):
                     rust_component.test(root, config['components']['rust'], env, run)
                 directory, _ = project(root, config)

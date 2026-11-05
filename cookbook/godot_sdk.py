@@ -154,3 +154,14 @@ def activate(root, config, environment):
     if matches != [pins['EMSCRIPTEN_VERSION']]:
         raise ValueError('activated Emscripten does not match the caller SDK pin')
     return activated
+
+
+if __name__ == '__main__':
+    if sys.argv[1:] != ['setup']:
+        raise SystemExit('usage: godot_sdk.py setup')
+    from configuration import load
+    try:
+        root = Path.cwd().resolve()
+        setup(root, load(root), dict(os.environ))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise SystemExit(str(error)) from None
