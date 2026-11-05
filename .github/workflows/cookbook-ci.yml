@@ -40,6 +40,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     uses: ./.github/workflows/cookbook-validation.yml
     with:
       tools-ref: ${{ inputs.tools-ref }}
@@ -53,6 +54,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     uses: ./.github/workflows/cookbook-validation.yml
     with:
       tools-ref: ${{ inputs.tools-ref }}
@@ -70,6 +72,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     uses: ./.github/workflows/cookbook-native.yml
     with:
       tools-ref: ${{ inputs.tools-ref }}
@@ -84,6 +87,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     uses: ./.github/workflows/cookbook-godot.yml
     with:
       tools-ref: ${{ inputs.tools-ref }}

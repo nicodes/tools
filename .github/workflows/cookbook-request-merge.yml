@@ -55,6 +55,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     uses: ./.github/workflows/cookbook-ci.yml
     with:
       tools-ref: ${{ needs.snapshot.outputs.cookbook }}

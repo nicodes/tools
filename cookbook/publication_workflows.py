@@ -32,7 +32,7 @@ def workflow_files(root, revision):
                        '        type: string', "        default: ''"]
             arguments.append('      ' + name + ": ${{ inputs['" + name + "'] }}")
     trigger = "'on':\n  workflow_dispatch:" + ('\n    inputs:\n' + '\n'.join(inputs) if inputs else '')
-    permissions = ['      contents: write', '      actions: read'] + (['      id-token: write'] if values['registry_auth'] == 'oidc' else [])
+    permissions = ['      contents: write', '      actions: read', '      pull-requests: read'] + (['      id-token: write'] if values['registry_auth'] == 'oidc' else [])
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
     release = header + '\n'.join(['name: Release', trigger, 'permissions: {}', 'concurrency:',
         '  group: release-${{ github.repository }}', '  cancel-in-progress: false', 'jobs:', '  release:',

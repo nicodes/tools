@@ -45,6 +45,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      pull-requests: read
     env:
       COOKBOOK_PREVIEW_CLERK_KEY: ${{ inputs.mode == 'full' && inputs.preview-environment == 'Preview' && vars.CLERK_PUBLISHABLE_KEY || '' }}
       COOKBOOK_PREVIEW_NUMBER: ${{ inputs.preview-number }}
