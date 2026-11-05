@@ -473,6 +473,8 @@ def download(root, source, environment, entries):
 
 def import_build(root, config, source_directory, proof):
     import ci
+    if Path.cwd().resolve() != root.resolve():
+        raise ValueError('Godot build import requires the current exact checkout')
     files = {name: value for name, value in proof['build']['artifacts'].items() if not name.startswith('image:')}
     for name in files:
         if not allowed_output(name, config, root):
@@ -496,7 +498,7 @@ def import_build(root, config, source_directory, proof):
             value = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', name[6:]], text=True, timeout=60).strip()
             if value != expected:
                 raise ValueError('loaded image differs from the immutable accepted build identity')
-    ci.verification().write(root / '.artifacts/verification/build.json', proof['build'])
+    ci.verification().write(Path('.artifacts/verification/build.json'), proof['build'])
 
 
 def matrix_path(root):
@@ -549,6 +551,8 @@ def host_matrix(root, config, environment):
 def revalidate_host_build(root, config, matrix, environment):
     import godot_game
     import ci
+    if Path.cwd().resolve() != root.resolve():
+        raise ValueError('Godot build validation requires the current exact checkout')
     if matrix != host_matrix(root, config, environment):
         raise ValueError('Godot host build join differs from the imported matrix')
     accepted = next(value['build'] for value in matrix['proofs'] if value['entry']['kind'] == 'build')
@@ -557,7 +561,7 @@ def revalidate_host_build(root, config, matrix, environment):
         raise ValueError('Godot imported products changed before host verification')
     ci.verification().run_command('build', 'build', scope,
         [sys.executable, str(TOOLS / 'cookbook/godot_ci.py'), 'validate-import', '--source', matrix['source_commit'], '--tools', matrix['cookbook_commit']],
-        root / '.artifacts/verification')
+        Path('.artifacts/verification'))
 
 
 def selected_entries(root, config, environment, suite):

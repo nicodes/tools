@@ -81,6 +81,35 @@ class CompilerCaches(unittest.TestCase):
         (self.root / '.cargo').symlink_to(self.root / 'api', target_is_directory=True)
         with self.assertRaises(ValueError): self.plan()
 
+    def test_staged_recipe_components_use_their_native_cargo_adapter_and_keep_raw_identity(self):
+        for recipe in ['react-native', 'godot-game']:
+            with self.subTest(recipe=recipe):
+                self.config['recipe'] = recipe
+                component = self.config['components']['rust'][0]
+                component.update(output_directory='.artifacts/bin', output_names={'fixture':'fixture'},
+                                 environment={'BUILD_REVISION':'{revision}'})
+                first = self.plan()
+                component['output_directory'] = '.artifacts/other-bin'
+                self.assertNotEqual(first['key'], self.plan()['key'])
+                component['environment'] = {'GITHUB_SHA':'untrusted'}
+                with self.assertRaisesRegex(ValueError, 'authority'):self.plan()
+                component['environment'] = {}
+                component['unknown_cargo_option'] = True
+                with self.assertRaisesRegex(ValueError, 'unsupported Cargo'):self.plan()
+                component.pop('unknown_cargo_option')
+
+    def test_workspace_member_without_a_duplicate_lock_keeps_enclosing_manifest_and_lock_identity(self):
+        (self.root/'api/Cargo.lock').unlink()
+        self.config['components']['rust'] = [self.config['components']['rust'][1]]
+        original = self.plan()
+        (self.root/'Cargo.toml').write_text('[workspace]\nmembers=["api"]\n')
+        changed = self.plan()
+        self.assertNotEqual(original['key'], changed['key'])
+        (self.root/'Cargo.lock').write_text('version=4\n# changed workspace dependencies\n')
+        self.assertNotEqual(changed['key'], self.plan()['key'])
+        (self.root/'Cargo.lock').unlink()
+        with self.assertRaisesRegex(ValueError, 'lockfile'):self.plan()
+
     def test_save_is_bounded_and_skips_empty_or_linked_payloads_without_breaking_validation(self):
         directory = self.root / 'target'; directory.mkdir()
         self.assertFalse(cache.within_budget([str(directory)]))

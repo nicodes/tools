@@ -5,6 +5,9 @@ name: Windows SDK bootstrap
       - setup/**
       - helpers/verification.py
       - helpers/make-setup.py
+      - cookbook/compiler_cache.py
+      - cookbook/rust_cli.py
+      - tests/test_recipe_cargo_paths.py
       - .github/workflows/windows-bootstrap.yml
   workflow_dispatch: {}
 permissions:
@@ -47,3 +50,5 @@ jobs:
           print('Native owner and DACL validation passed')
           PY
           make --version
+      - name: Verify nested native Cargo recipe paths
+        run: python3 -m unittest discover -s tests -p test_recipe_cargo_paths.py -v

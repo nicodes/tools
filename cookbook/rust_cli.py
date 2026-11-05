@@ -352,7 +352,7 @@ def security(root, config, environment):
     if config.get('security', {}).get('fixtures'):
         command += ['--fixtures', str(relative(root, config['security']['fixtures'], exists=True))]
     run(command, root, environment)
-    lockfiles = sorted({str(Path(value.get('manifest', 'Cargo.toml')).with_name('Cargo.lock')) for value in components(config)})
+    lockfiles = sorted({Path(value.get('manifest', 'Cargo.toml')).with_name('Cargo.lock').as_posix() for value in components(config)})
     for lock in lockfiles:
         run(['cargo', 'audit', '--file', str(relative(root, lock, exists=True)), '--db', '.artifacts/advisory-db',
              *(['--deny', 'warnings'] if config.get('security', {}).get('deny_warnings') else [])], root, environment)

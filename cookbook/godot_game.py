@@ -93,7 +93,7 @@ def artifact_paths(root, config):
 
 def evidence_paths(root, config):
     paths=[]
-    if config.get('components',{}).get('rust'):
+    if config.get('components',{}).get('rust') and 'rust_inventory_manifests' in config.get('security',{}):
         paths.append('.artifacts/security/rust-source.json')
         if config.get('security',{}).get('rust_inventory_sbom',False):paths.append('.artifacts/security/rust-source-sbom.json')
     if config.get('components',{}).get('image_security'):
@@ -235,7 +235,9 @@ def required_tools(root, config, stage='full'):
     if stage in {'full','local'}:
         mandatory = {'python', 'actionlint', 'github:aviorstudio/gdlint', 'pipx:gdtoolkit'}
         if components.get('rust'):
-            mandatory.update({'rust', 'cargo:cargo-audit','trivy'})
+            mandatory.update({'rust', 'cargo:cargo-audit'})
+            if 'rust_inventory_manifests' in config.get('security',{}):
+                mandatory.add('trivy')
         if components.get('go'):
             mandatory.add('go')
         if components.get('godot', {}).get('art_sources'):
@@ -264,7 +266,9 @@ def required_tools(root, config, stage='full'):
         if components.get('rust'):
             selected.append('rust')
             if stage=='security':
-                selected+=['cargo:cargo-audit','trivy']
+                selected.append('cargo:cargo-audit')
+                if 'rust_inventory_manifests' in config.get('security',{}):
+                    selected.append('trivy')
         active_packages = package_linters(config) if stage == 'fast' else [value for value in packages(config) if value.get('audit', True)]
         for value in active_packages:
             selected.append('bun' if value.get('manager', 'npm') == 'bun' else 'node')
@@ -505,7 +509,8 @@ def security(root, config, env):
     run(command, root, env)
     if config.get('components',{}).get('rust'):
         manifests=images.rust_inventory_manifests(root,config)
-        images.rust_inventory(root,manifests,env,run,sbom=config.get('security',{}).get('rust_inventory_sbom',False))
+        if 'rust_inventory_manifests' in config.get('security',{}):
+            images.rust_inventory(root,manifests,env,run,sbom=config.get('security',{}).get('rust_inventory_sbom',False))
         for manifest in manifests:
             lock=str(Path(manifest).with_name('Cargo.lock'))
             run(['cargo','audit','--file',lock,'--deny','warnings'],root,env)
