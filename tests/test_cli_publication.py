@@ -119,6 +119,55 @@ class CliPublication(unittest.TestCase):
         self.assertNotIn('scripts/', text)
         self.assertIn('cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}', text)
 
+    def configure_product_assertions(self):
+        (self.root / 'tests/release_check.py').write_text('import json,sys\nfrom pathlib import Path\n'
+            'Path(sys.argv[3]).mkdir(mode=0o700)\n'
+            'Path(sys.argv[3],"accepted.json").write_text(json.dumps({"accepted":True,"source":sys.argv[1],"tag":sys.argv[2]}))\n')
+        (self.root / 'tests/release_verify.py').write_text('import json,sys\nfrom pathlib import Path\n'
+            'value=json.loads(Path(sys.argv[3],"accepted.json").read_text())\n'
+            'assert value=={"accepted":True,"source":sys.argv[1],"tag":sys.argv[2]}, "owned release evidence refused"\n')
+        def entry(path):
+            return {'runner': 'python', 'path': path, 'args': ['{source}', '{tag}', '{evidence}'], 'timeout': 10}
+        self.config['publication']['acceptance'] = {'files': ['accepted.json'],
+            'checks': [entry('tests/release_check.py')], 'verification': [entry('tests/release_verify.py')]}
+
+    def test_product_acceptance_preserves_native_bytes_and_rechecks_owned_evidence(self):
+        self.configure_product_assertions()
+        before = {path.name: path.read_bytes() for path in (self.root / 'dist').iterdir()}
+        environment = self.environment | {'GITHUB_JOB': 'accept'}
+        with patch.dict(os.environ, environment), patch.object(release.ci, 'identity', return_value=self.fixture.tree), \
+                patch.object(release.native_ci, 'github', return_value=self.jobs):
+            with self.assertRaises((ValueError, FileNotFoundError)):
+                release.accepted_payload(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools,
+                    'cli-v0.0.11', environment, self.jobs)
+            accepted = release.accept_domain(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools, 'cli-v0.0.11')
+            self.assertEqual(set(accepted), {'accepted.json'})
+            for name, value in before.items(): self.assertEqual((self.root / 'dist' / name).read_bytes(), value)
+            result = release.accepted_payload(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools,
+                'cli-v0.0.11', environment, self.jobs)
+            self.assertEqual(len(result), 8)
+            path = self.root / '.artifacts/cli-publication-evidence/receipt.json'
+            receipt = json.loads(path.read_text()); receipt['execution_context']['GITHUB_RUN_ATTEMPT'] = '99'
+            path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, 'another Actions execution'):
+                release.accepted_payload(self.root, self.config, self.proof, self.fixture.source, self.fixture.tools,
+                    'cli-v0.0.11', environment, self.jobs)
+
+    def test_owned_post_attestation_steps_and_diagnostics_remain_in_source_signer_workflow(self):
+        self.configure_product_assertions()
+        self.config['publication']['acceptance']['diagnostics'] = ['status.json']
+        with patch.object(workflows, 'load', return_value=self.config):
+            text = workflows.workflow_files(self.root, 'e' * 40)['.github/workflows/release.yml']
+        self.assertLess(text.index('Attest build provenance'), text.index('Run owned lifecycle assertions'))
+        self.assertLess(text.index('Run owned lifecycle assertions'), text.index('Attest accepted product release evidence'))
+        self.assertIn('dist/accepted.json', text)
+        self.assertIn('.artifacts/cli-publication-evidence/receipt.json', text)
+        self.assertNotIn('path: .artifacts/cli-publication-evidence/', text)
+        self.assertIn("failure() && steps.domain.outcome == 'failure'", text)
+        for files in [['receipt.json'], ['../outside.json'], ['ordinary.txt']]:
+            self.config['publication']['acceptance']['files'] = files
+            with self.subTest(files=files), self.assertRaises(ValueError): release.policy(self.config)
+
 
 if __name__ == '__main__':
     unittest.main()
