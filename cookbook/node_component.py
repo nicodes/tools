@@ -4,13 +4,14 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 from configuration import relative
 
 TOOLS = Path(__file__).resolve().parents[1]
 SCRIPT = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:-]*\Z')
 FIELDS = {'directory', 'manager', 'build', 'typecheck', 'lint', 'test', 'format', 'format_check',
-          'audit', 'audit_level', 'ignore_scripts', 'expo', 'test_arguments', 'test_paths', 'format_paths'}
+          'audit', 'audit_level', 'ignore_scripts', 'expo', 'test_arguments', 'test_paths', 'format_paths', 'glob_compatibility'}
 
 
 def validate(package, root):
@@ -30,7 +31,7 @@ def validate(package, root):
             script = manifest.get('scripts', {}).get(value) if isinstance(value, str) else None
             if not isinstance(value, str) or not SCRIPT.fullmatch(value) or not isinstance(script, str) or not script.strip():
                 raise ValueError('Node operation must select an existing native package script: ' + name)
-    for name in ['audit', 'expo', 'ignore_scripts']:
+    for name in ['audit', 'expo', 'ignore_scripts', 'glob_compatibility']:
         if name in package and type(package[name]) is not bool:
             raise ValueError('Node capability switches must be booleans')
     if 'audit_level' in package and (package.get('manager', 'npm') != 'npm'
@@ -76,6 +77,28 @@ def build(root, packages, environment, run):
     return count
 
 
+def link(root, config, environment, run):
+    """Resolve tracked native fixture imports without executing their behavior."""
+    paths = config.get('components', {}).get('module_link', [])
+    if not isinstance(paths, list) or any(not isinstance(name, str) for name in paths):
+        raise ValueError('native module link inputs require bounded source paths')
+    if not paths:
+        return
+    selected = [relative(root, name, exists=True) for name in paths]
+    tracked = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).decode().split('\0')
+    programs = []
+    for name in tracked:
+        if not name or Path(name).suffix != '.mjs':
+            continue
+        path = relative(root, name, exists=True)
+        if any(path == source or path.is_relative_to(source) for source in selected):
+            programs.append(str(path))
+    if not programs:
+        raise ValueError('native module link inputs contain no tracked JavaScript modules')
+    with tempfile.TemporaryDirectory(prefix='native-module-link-') as directory:
+        run(['bun', 'build', '--target=node', '--packages=external', '--outdir', directory, *programs], root, environment)
+
+
 def lint(root, packages, environment, run):
     count = 0
     for value in packages:
@@ -95,6 +118,9 @@ def test(root, packages, environment, run):
     count = 0
     for value in packages:
         package, directory = validate(value, root)
+        if package.get('glob_compatibility'):
+            run(['node', str(TOOLS / 'helpers/glob-compatibility.mjs'), str(directory)], root, environment)
+            count += 1
         if package.get('test'):
             run_script(package, directory, package['test'], environment, run, package.get('test_arguments', []))
             count += 1

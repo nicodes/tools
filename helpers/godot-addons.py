@@ -56,6 +56,26 @@ def declaration(project):
         for field in ['asset_sha256', 'tree_sha256']:
             if not isinstance(entry.get(field), str) or not re.fullmatch('[a-f0-9]{64}', entry[field]):
                 raise ValueError('addon provenance requires exact SHA256 identities')
+    frozen = project / 'gdam.lock'
+    if frozen.exists() or frozen.is_symlink():
+        if frozen.is_symlink() or not frozen.is_file() or frozen.stat().st_size > 1 << 20:
+            raise ValueError('frozen addon lock must be a bounded regular source file')
+        resolved = json.loads(frozen.read_text())
+        requirements = {name: entry.get('tag') for name, entry in manifest.items()}
+        if resolved.get('version') != 1 or resolved.get('requirements') != requirements:
+            raise ValueError('Frozen lock requirements differ from the addon manifest')
+        releases = resolved.get('addons', {})
+        if set(releases) != {name + '@' + entry['tag'] for name, entry in lock.items()}:
+            raise ValueError('Frozen lock and byte provenance name different releases')
+        for name, entry in lock.items():
+            release = releases[name + '@' + entry['tag']]
+            if (release.get('name') != name or release.get('tag') != entry['tag']
+                    or release.get('commit_sha') != entry.get('commit')
+                    or not isinstance(entry.get('commit'), str) or not re.fullmatch('[a-f0-9]{40}', entry['commit'])
+                    or release.get('asset_id') != entry['asset_id']
+                    or release.get('asset_digest') != 'sha256:' + entry['asset_sha256']
+                    or release.get('installs') != [{'path': 'addons/' + name.replace('/', '_'), 'required_by': ['gdam.json']}]):
+                raise ValueError('Frozen lock identity or install path differs from byte provenance')
     return lock
 
 
@@ -119,9 +139,12 @@ def extract(archive, destination):
         source.extractall(destination)
 
 
-def restore(project, fetch=download):
+def restore(project, fetch=download, *, taint_markers=()):
     project = Path(project).resolve()
     lock = declaration(project)
+    if (not isinstance(taint_markers, (list, tuple)) or len(taint_markers) > 8
+            or any(not isinstance(name, str) or not re.fullmatch(r'\.[a-z][a-z0-9-]{0,79}', name) for name in taint_markers)):
+        raise ValueError('addon recovery markers must be bounded literal hidden filenames')
     try:
         verify(project)
         print('Using byte-verified addon cache.')
@@ -156,6 +179,12 @@ def restore(project, fetch=download):
             if target.exists():
                 shutil.rmtree(target)
             shutil.copytree(staging, target)
+        for marker in taint_markers:
+            path = addons / marker
+            if path.exists() or path.is_symlink():
+                if path.is_symlink() or not path.is_file():
+                    raise ValueError('addon recovery marker must be an unlinked regular file')
+                path.unlink()
     verify(project)
 
 

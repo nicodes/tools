@@ -98,7 +98,7 @@ def plan(root, config):
                 raise ValueError('native boundary selectors must name declared integration tests')
             cargo = [value['name'] for value in rust_tests.eligible(root, config, environment, system + '/' + arch)]
             builds = [value['name'] for value in rust_tests.eligible(root, config, environment, system + '/' + arch, 'build')]
-            groups = [] if config.get('components', {}).get('rust_tests') else ['unit']
+            groups = [] if any(value.get('suite', 'unit') == 'unit' for value in config.get('components', {}).get('rust_tests', [])) else ['unit']
             budget = target.get('second_wave_timeout_minutes', target.get('timeout_minutes', 30)) if wave == 2 else target.get('timeout_minutes', 30)
             if type(budget) is not int or not 1 <= budget <= 120:
                 raise ValueError('native matrix timeouts must be bounded source data')
@@ -354,7 +354,7 @@ def run_entry(root, source, tools, entry_id):
         os.environ['COOKBOOK_NATIVE_COMPONENTS'] = json.dumps(entry['components'])
     else:
         os.environ.pop('COOKBOOK_NATIVE_COMPONENTS', None)
-    for name in ['COOKBOOK_TEST_PATHS', 'COOKBOOK_NATIVE_TESTS', 'NATIVE_CLI_ARCHIVES']:
+    for name in ['COOKBOOK_TEST_PATHS', 'COOKBOOK_NATIVE_TESTS', 'NATIVE_CLI_ARCHIVES', 'COOKBOOK_NATIVE_BUILD_CHECKS']:
         os.environ.pop(name, None)
     recipe.configure_environment(root, config)
     if entry['wave'] == 2:
@@ -399,6 +399,7 @@ def prepare_host(root, config, source, tools, *, directory=None, jobs=None):
     if downloaded:
         helper('clean').clean(root, ['.artifacts/native-downloads'])
     os.environ.update(VERSION=version, DATE=date, NATIVE_CLI_ARCHIVES=str(root / '.artifacts/native-archives'))
+    os.environ['COOKBOOK_NATIVE_BUILD_CHECKS'] = json.dumps(sorted({name for row in declaration['requirements'] for name in row['build_checks']}))
     os.environ.pop('COOKBOOK_NATIVE_COMPONENTS', None)
     os.environ.pop('COOKBOOK_NATIVE_TESTS', None)
     os.environ.pop('COOKBOOK_TEST_PATHS', None)

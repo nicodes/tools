@@ -45,13 +45,19 @@ def outputs(project):
     return result
 
 
-def import_project(project, binary, run, timeout=180, arguments=(), ignored_patterns=()):
+def import_project(project, binary, run, timeout=180, arguments=(), ignored_patterns=(), preserve_defaults=False):
     if Path(project).is_symlink():
         raise ValueError('Godot project may not be a symbolic link')
     project = Path(project).resolve()
     config = project / 'project.godot'
     if config.is_symlink() or not config.is_file():
         raise ValueError('expected a regular native Godot project')
+    if type(preserve_defaults) is not bool:
+        raise ValueError('import preservation must be explicitly enabled or disabled')
+    if preserve_defaults:
+        from godot_authoring import preserve_imports
+        native_run = run
+        run = lambda argv, timeout: preserve_imports(project, lambda: native_run(argv, timeout=timeout))
     original = config.read_bytes()
     engine = subprocess.check_output([str(binary), '--version'], text=True, timeout=30).strip()
     cache = project / '.godot/imported'

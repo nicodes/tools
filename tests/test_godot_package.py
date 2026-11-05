@@ -53,6 +53,19 @@ class PackageControls(unittest.TestCase):
         self.assertEqual(json.loads((serving / 'release.json').read_text()), {'commit': 'a' * 40})
         self.assertFalse((serving / 'index.wasm').exists())
 
+    def test_root_json_metadata_keeps_the_prior_mutable_serving_location(self):
+        record=self.config['components']['godot']['web_releases'][0]
+        record['root_json']=True
+        (self.source/'runtime.json').write_text('{"fixture":true}')
+        godot_package.validate(self.root,self.config,['app/build/web','public'])
+        godot_package.package(self.root,self.config,{'SOURCE_COMMIT':'a'*40})
+        self.assertEqual((self.root/'public/runtime.json').read_text(),'{"fixture":true}')
+        manifest=json.loads((self.root/'public/release-manifest.json').read_text())
+        self.assertEqual(manifest['files']['runtime.json']['path'],'runtime.json')
+        retained=list((self.root/'public/releases').glob('*/runtime.json'))
+        self.assertEqual(len(retained),1)
+        self.assertEqual(retained[0].read_bytes(),(self.root/'public/runtime.json').read_bytes())
+
     def test_arbitrary_source_input_or_unverified_serving_tree_is_rejected(self):
         record = self.config['components']['godot']['web_releases'][0]
         record['source'] = 'app'

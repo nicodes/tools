@@ -99,6 +99,12 @@ jobs:
           tools: ${{ inputs.mode == 'fast' && 'python actionlint' || '' }}
         env:
           GH_TOKEN: ${{ github.token }}
+      - name: Prepare declared image capabilities
+        if: inputs.mode == 'full' && runner.os == 'Linux'
+        uses: ./_cookbook/docker-ci
+      - name: Restore bounded Cargo compiler intermediates
+        if: inputs.mode == 'full'
+        uses: ./_cookbook/compiler-cache
       - name: Run Make gate
         id: gate
         env:
@@ -113,3 +119,8 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 7
+      - name: Save successful bounded Cargo compiler intermediates
+        if: inputs.mode == 'full'
+        uses: ./_cookbook/compiler-cache
+        with:
+          mode: save

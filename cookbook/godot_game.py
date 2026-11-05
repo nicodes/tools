@@ -24,6 +24,9 @@ TOOLS = Path(__file__).resolve().parents[1]
 
 
 def helper(name):
+    directory = str(TOOLS / 'helpers')
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
     spec = importlib.util.spec_from_file_location('game_' + name.replace('-', '_'), TOOLS / 'helpers' / (name + '.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -55,7 +58,7 @@ def project(root, config):
 def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
-               'import_ignored_patterns', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
+               'import_ignored_patterns', 'addon_taint_markers', 'preserve_import_defaults', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
                'prepare', 'postprocess', 'packs', 'web_releases', 'import_stage', 'rust_web', 'extensions'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
@@ -101,6 +104,9 @@ def validate_config(root, config):
         installed = record.get('installed', '/srv/public')
         if not isinstance(installed, str) or not installed.startswith('/') or '..' in Path(installed).parts or '\\' in installed:
             raise ValueError('static image contracts require literal installed paths')
+    if components.get('browser'):
+        import godot_browser
+        godot_browser.declaration(root, config)
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
 
@@ -222,6 +228,9 @@ def setup(root, config, env):
         node_component.install(root, package_linters(config) if stage == 'fast' else packages(config), env, sdk)
     if stage != 'full':
         return
+    if components.get('browser') and not env.get('COOKBOOK_GODOT_ENTRY'):
+        import godot_browser
+        godot_browser.setup(root, config, env)
     directory, settings = project(root, config)
     pins = godot_pins(root)
     (root / '.artifacts').mkdir(exist_ok=True)
@@ -232,7 +241,7 @@ def setup(root, config, env):
          '--templates-checksum', pins['GODOT_TEMPLATES_CHECKSUM'], '--templates',
          '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, env)
     if (directory / 'gdam.json').exists():
-        helper('godot-addons').restore(directory)
+        helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []))
     if settings.get('import_stage', 'setup') == 'setup':
         import_native(root, config, env)
 
@@ -243,7 +252,7 @@ def import_native(root, config, env):
     helper('godot-project').import_project(directory, env['GODOT_BIN'],
         lambda argv, timeout: strict.main(argv, timeout=timeout, environment=env),
         timeout=settings.get('import_timeout', 180), arguments=settings.get('import_arguments', []),
-        ignored_patterns=settings.get('import_ignored_patterns', []))
+        ignored_patterns=settings.get('import_ignored_patterns', []), preserve_defaults=settings.get('preserve_import_defaults', False))
 
 
 def current_build(root, config, verify):
@@ -278,7 +287,9 @@ def native_tests(root, config, env, suite):
     godot_entries = [entry for entry in entries if entry['runner'] == 'godot-check']
     others = [entry for entry in entries if entry['runner'] != 'godot-check']
     if others:
-        run_entries(root, {**config, 'tests': {suite: others}}, env, suite)
+        import godot_browser
+        custom = {'godot-browser': lambda checkout, entry, environment: godot_browser.journeys(checkout, config, environment, entry)}
+        run_entries(root, {**config, 'tests': {suite: others}}, env, suite, custom_runners=custom)
     if godot_entries:
         jobs = settings.get('test_jobs', 4)
         if type(jobs) is not int or not 1 <= jobs <= 16:

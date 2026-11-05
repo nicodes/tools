@@ -6,6 +6,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import delivery_workflows as delivery
+import generate
 
 
 class DeliveryWorkflows(unittest.TestCase):
@@ -59,6 +60,39 @@ class DeliveryWorkflows(unittest.TestCase):
         self.assertIn('BACKUP_S3_ACCESS_KEY: ${{ secrets.BACKUP_S3_ACCESS_KEY }}', result)
         before_deploy = result.split('  deploy:')[0]
         self.assertNotIn('secrets.', before_deploy)
+
+    def test_production_retains_host_cd_identity_without_duplicate_main_builds(self):
+        self.write()
+        (self.root / 'tests').mkdir()
+        (self.root / 'tests/unit.py').write_text('assert 1 + 1 == 2\n')
+        (self.root / 'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        files = generate.workflow_files(self.root, 'b' * 40)
+        self.assertNotIn('  push:', files['.github/workflows/ci.yml'])
+        self.assertNotIn('  pull_request:', files['.github/workflows/cd.yml'])
+        self.assertIn('  push:', files['.github/workflows/cd.yml'])
+        self.assertIn('merge-gate: false', files['.github/workflows/cd.yml'])
+        self.assertNotIn('application-delivery', files['.github/workflows/ci.yml'])
+        self.assertIn('application-delivery', files['.github/workflows/cd.yml'])
+
+    def test_combined_delivery_keeps_one_existing_job_deadline(self):
+        self.data.update(combined=True, publish_timeout=15, deploy_timeout=15)
+        self.write()
+        result = delivery.jobs(self.root, self.config, 'b' * 40)
+        self.assertNotIn('  publish:\n', result)
+        self.assertIn('needs: validate', result)
+        self.assertIn('timeout-minutes: 15', result)
+        self.assertIn('application-publication@', result)
+        self.assertIn('application-delivery@', result)
+        self.assertLess(result.index('application-publication@'), result.index('application-delivery@'))
+        self.data['publish_timeout'] = 35
+        self.write()
+        with self.assertRaises(ValueError):
+            delivery.declaration(self.root, self.config)
+
+    def test_source_bound_release_health_assertion_is_preserved(self):
+        self.data['health_urls'].append(dict(url='https://example.test/release.json', contains='{revision}'))
+        self.write()
+        self.assertEqual(delivery.declaration(self.root, self.config)['health_urls'][1]['contains'], '{revision}')
 
 
 if __name__ == '__main__':

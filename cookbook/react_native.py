@@ -19,6 +19,7 @@ import node_component
 import postgres_fixture
 import expo_exports
 import source_policy
+import application_fixtures
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -26,7 +27,7 @@ ENVIRONMENT = re.compile('[A-Z][A-Z0-9_]*\\Z')
 PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
                          'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE',
                          'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
-PHASES = {'setup', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
+PHASES = {'setup', 'lint', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
 
 
 def helper(name):
@@ -258,6 +259,7 @@ def lint(root, config, environment):
     images.validate_compose(root, config, environment, run)
     if config.get('tests', {}).get('lint'):
         run_entries(root, config, environment, 'lint')
+    phase(root, config, environment, 'lint')
 
 
 def build(root, config, environment):
@@ -271,6 +273,7 @@ def build(root, config, environment):
             raise ValueError('development-only environment cannot enter a shipping build: ' + name)
     phase(root, config, environment, 'pre_packages')
     node_component.build(root, packages(config), environment, run)
+    node_component.link(root, config, environment, run)
     phase(root, config, environment, 'pre_export')
     directory = relative(root, app.get('directory', 'app'), exists=True)
     run([sys.executable, str(TOOLS / 'helpers/export-web.py'), '--app', str(directory)], root, environment)
@@ -402,6 +405,8 @@ def behavioral_tests(root, config, environment, suite):
 
 def native_behavioral_tests(root, config, environment, suite):
     count = 0
+    if suite == 'integration' and application_fixtures.recovery(root, config, environment, run):
+        count += 1
     if suite == 'unit':
         count += node_component.test(root, packages(config), environment, run)
     records = {}

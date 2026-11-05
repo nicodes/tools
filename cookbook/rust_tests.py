@@ -13,7 +13,7 @@ def records(root, config):
         raise ValueError('native Cargo test declarations must be bounded')
     names = set()
     for value in declarations:
-        if not isinstance(value, dict) or set(value) - {'name', 'component', 'manifest', 'selectors', 'roles', 'platforms', 'suite'}:
+        if not isinstance(value, dict) or set(value) - {'name', 'component', 'manifest', 'selectors', 'roles', 'platforms', 'suite', 'dependency_context', 'reuse_native_build'}:
             raise ValueError('unsupported native Cargo test declaration')
         name = value.get('name')
         if not isinstance(name, str) or not re.fullmatch('[a-z][a-z0-9-]{0,63}', name) or name in names:
@@ -21,6 +21,10 @@ def records(root, config):
         names.add(name)
         if value.get('suite', 'unit') not in {'unit', 'build'}:
             raise ValueError('Cargo selector checks must declare unit or build validation coverage')
+        if value.get('dependency_context', 'role') not in {'none', 'role'}:
+            raise ValueError('native Cargo checks must select their explicit dependency variant')
+        if type(value.get('reuse_native_build', False)) is not bool or (value.get('reuse_native_build') and value.get('suite') != 'build'):
+            raise ValueError('only compiler checks may reuse joined native build acceptance')
         if not isinstance(value.get('selectors', {}), dict):
             raise ValueError('Cargo test selectors must be native data')
         for field in ['roles', 'platforms']:
@@ -48,7 +52,19 @@ def component(root, config, value):
 def eligible(root, config, environment, platform, suite='unit'):
     graph = config.get('components', {}).get('native')
     roles = {value['name'] for value in native_components.selection(config, environment)} if graph else set()
-    return [value for value in records(root, config) if value.get('suite', 'unit') == suite
+    declarations = records(root, config)
+    covered = []
+    if environment.get('COOKBOOK_NATIVE_BUILD_CHECKS'):
+        import json
+        value = environment['COOKBOOK_NATIVE_BUILD_CHECKS']
+        if len(value) > 65536:
+            raise ValueError('joined compiler check selection exceeds its bound')
+        covered = json.loads(value)
+        known = {row['name'] for row in declarations if row.get('suite') == 'build'}
+        if not isinstance(covered, list) or any(not isinstance(name, str) for name in covered) or len(covered) != len(set(covered)) or set(covered)-known:
+            raise ValueError('joined compiler checks differ from the native source declaration')
+    return [value for value in declarations if value.get('suite', 'unit') == suite
+            and not (value.get('reuse_native_build') and value['name'] in covered)
             and (not value.get('roles') or bool(set(value['roles']) & roles))
             and (not value.get('platforms') or platform in value['platforms'])]
 
@@ -61,7 +77,7 @@ def run_selected(root, config, environment, target_record, names, run, suite='un
     for name in names:
         value = allowed[name]
         values = dict(environment)
-        if config.get('components', {}).get('native') and value.get('roles'):
+        if config.get('components', {}).get('native') and value.get('roles') and value.get('dependency_context', 'role') == 'role':
             graph = [item for item in native_components.selection(config, environment) if item['name'] in value['roles']]
             if not graph:
                 raise ValueError('native Cargo check does not belong to the selected role wave')

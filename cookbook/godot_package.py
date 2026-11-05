@@ -91,7 +91,7 @@ def validate(root, config, artifacts):
         helper('clean').planned(root, [record['destination'], *([record['record']] if record.get('record') else [])])
     for record in values.get('web_releases', []):
         allowed = {'source', 'output', 'max_wasm_bytes', 'max_transfer_bytes', 'brotli', 'relative_urls',
-                   'versioned_only', 'root_files', 'policy', 'revision_metadata'}
+                   'versioned_only', 'root_files', 'root_json', 'policy', 'revision_metadata'}
         if not isinstance(record, dict) or set(record) - allowed:
             raise ValueError('unknown native Web packaging declaration')
         source, output = relative(root, record['source']), relative(root, record['output'])
@@ -110,6 +110,8 @@ def validate(root, config, artifacts):
         for name in ['brotli', 'relative_urls', 'versioned_only']:
             if type(record.get(name, False)) is not bool:
                 raise ValueError('native Web switches must be literal booleans')
+        if type(record.get('root_json', False)) is not bool:
+            raise ValueError('mutable root JSON selection must be an explicit native switch')
         if not isinstance(record.get('root_files', []), list):
             raise ValueError('root payload metadata must be a literal filename list')
         helper('clean').planned(root, [record['output']])
@@ -208,7 +210,7 @@ def package(root, config, environment):
         helper('godot_web_release').prepare(output, source_commit=environment['SOURCE_COMMIT'],
             max_wasm_bytes=record.get('max_wasm_bytes', 0), max_transfer_bytes=record.get('max_transfer_bytes', 0),
             use_brotli=record.get('brotli', False), relative_urls=record.get('relative_urls', False),
-            versioned_only=record.get('versioned_only', False), root_files=record.get('root_files', []),
+            versioned_only=record.get('versioned_only', False), root_files=[*record.get('root_files', []), *([path.name for path in output.glob('*.json') if path.name != 'release-manifest.json'] if record.get('root_json') else [])],
             policy=record.get('policy'))
         if record.get('revision_metadata'):
             destination = relative(output, record['revision_metadata'])

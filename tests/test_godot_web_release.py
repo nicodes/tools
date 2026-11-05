@@ -13,6 +13,7 @@ import gzip
 import json
 import hashlib
 import re
+import os
 from urllib.parse import urljoin
 
 
@@ -22,6 +23,22 @@ class ArtifactTests(unittest.TestCase):
         (root/'index.js').write_bytes(b'loader')
         (root/'index.wasm').write_bytes(b'engine')
         (root/'index.pck').write_bytes(self.pack(['res://main.scn']))
+
+    def test_imported_authored_source_sheets_cannot_leak_through_hashed_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            previous=Path.cwd()
+            try:
+                os.chdir(temporary)
+                source=Path('app/src/assets/sheets');source.mkdir(parents=True)
+                (source/'source.png').write_bytes(b'owned authoring sheet')
+                root=Path('export');root.mkdir();self.export(root)
+                (root/'index.pck').write_bytes(self.pack(['res://.godot/imported/source.png-123.ctex']))
+                with self.assertRaisesRegex(ValueError,'Development resources'):
+                    prepare(root,policy={'forbidden_import_source_directories':['app/src/assets/sheets']})
+                with self.assertRaisesRegex(ValueError,'owned native directory'):
+                    prepare(root,policy={'forbidden_import_source_directories':['../foreign']})
+            finally:
+                os.chdir(previous)
 
     def test_frozen_shell_and_precompressed_bytes_identify_the_same_payload(self):
         with tempfile.TemporaryDirectory() as directory:

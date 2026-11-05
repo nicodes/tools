@@ -63,10 +63,10 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
     allowed = {'payload_directories', 'forbidden_prefixes', 'forbidden_names',
                'required_pack_paths', 'deferred_payloads', 'brotli_wasm', 'brotli_timeout',
                'recovery_id', 'failure_function', 'release_root', 'strip_cache_query',
-               'max_file_bytes', 'max_tree_bytes', 'pack_metadata'}
+               'max_file_bytes', 'max_tree_bytes', 'pack_metadata', 'forbidden_import_source_directories'}
     if not isinstance(policy, dict) or set(policy) - allowed:
         raise ValueError('Unknown Godot payload policy')
-    for key in ['payload_directories', 'forbidden_prefixes', 'forbidden_names', 'required_pack_paths']:
+    for key in ['payload_directories', 'forbidden_prefixes', 'forbidden_names', 'required_pack_paths', 'forbidden_import_source_directories']:
         values = policy.get(key, [])
         if not isinstance(values, list) or any(not isinstance(value, str) or not value or '\0' in value for value in values):
             raise ValueError('Payload policy requires literal path lists')
@@ -95,6 +95,12 @@ def prepare(root, source_commit=None, max_wasm_bytes=0, max_transfer_bytes=0, us
         or Path(p).name in {".env.json", "gdam.link.json", *policy.get("forbidden_names", [])}
         or ("addons/" in p and "/examples/" in p)
     )]
+    for directory in policy.get('forbidden_import_source_directories', []):
+        source = Path(directory)
+        if source.is_absolute() or '..' in source.parts or '\\' in directory or source.is_symlink() or any(parent.is_symlink() for parent in source.parents):
+            raise ValueError('Imported source policy must stay in an owned native directory')
+        names = {path.name for path in source.glob('*.png')}
+        forbidden += [path for path in paths if '.godot/imported/' in path and any(Path(path).name.startswith(name + '-') for name in names)]
     if forbidden:
         raise ValueError("Development resources in release:\n" + "\n".join(forbidden))
 
