@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { resolve, join, extname, sep } from 'node:path';
 
 
-export async function stackFixture(project, journey, { routeFile = path => path, kind = 'integration' } = {}) {
+export async function stackFixture(project, journey, { routeFile = path => path, kind = 'integration', webDirectory = 'app/dist-e2e' } = {}) {
 assert(['integration', 'artifact', 'browser'].includes(kind));
 const root = process.cwd();
 const scratch = await mkdtemp(join(tmpdir(), `${project}-browser-`));
@@ -92,7 +92,10 @@ try {
     response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ keys: [jwk] }));
   }));
   const proxy = fixtureProxy();
-  const webRoot = resolve('app/dist-e2e');
+  assert(typeof webDirectory === 'string' && !webDirectory.startsWith('/') && !webDirectory.split(/[\\/]/).includes('..'),
+    'browser fixture export must stay in the checkout');
+  const webRoot = resolve(webDirectory);
+  assert(webRoot.startsWith(root + sep), 'browser fixture export must stay in the checkout');
   const web = await listen(createServer(async (request, response) => {
     if (proxy.handle(request, response)) return;
     try {
