@@ -189,6 +189,17 @@ def validate_config(root, config):
         if name not in {'status','migrate','seed','reset'} or config.get('dev',{}).get('kind')!='native':
             raise ValueError('database operations require an implemented native application lifecycle')
         application_development.native_entry(root,entry,{'APP_VERSION':'0'*40},allowed_roots={'app','api','core','tests'})
+    for entries in config.get('tests', {}).values():
+        for entry in entries:
+            policy=entry.get('policy',{})
+            if policy:
+                if (entry.get('runner')!='godot-check' or not isinstance(policy,dict)
+                        or set(policy)-{'deferred_autoloads'} or type(policy.get('deferred_autoloads',False)) is not bool):
+                    raise ValueError('Godot game test policies require a literal deferred autoload switch')
+                if policy.get('deferred_autoloads'):
+                    source=relative(root,entry['path'],exists=True)
+                    if source.suffix!='.gd' or not source.is_relative_to(directory) or entry.get('args'):
+                        raise ValueError('deferred Node tests require an owned project script and no extra arguments')
     if config.get('package'):
         raise ValueError('Godot delivery packaging integration is not implemented yet')
 
@@ -407,7 +418,12 @@ def native_godot(root, config, entry, env):
     source = relative(root, entry['path'], exists=True)
     cwd = relative(root, entry.get('cwd', '.'), exists=True)
     argv = [env['GODOT_BIN'], '--headless', '--path', str(directory)]
-    if source.suffix == '.gd':
+    if entry.get('policy',{}).get('deferred_autoloads'):
+        if (source.suffix!='.gd' or not source.is_relative_to(directory) or entry.get('args')
+                or entry['policy']['deferred_autoloads'] is not True):
+            raise ValueError('deferred Node tests require an owned project script and a literal true policy')
+        argv += ['--script',str(TOOLS/'helpers/godot-test-entry.gd'),'--','res://'+source.relative_to(directory).as_posix()]
+    elif source.suffix == '.gd':
         argv += ['--script', str(source)]
     else:
         argv.append(str(source))
