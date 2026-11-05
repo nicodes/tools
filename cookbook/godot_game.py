@@ -557,12 +557,12 @@ def compile_outputs(root, config, env):
     # input files. No product tests or dependency installation occur here.
     groups = {}
     for export in exports:
-        native = relative(root, export.get('project', settings.get('project', 'app')), exists=True)
+        native_project = relative(root, export.get('project', settings.get('project', 'app')), exists=True)
         arguments = tuple(export.get('import_arguments', settings.get('import_arguments', [])))
-        key = (native, arguments, export.get('timeout', 600), export.get('import_timeout', settings.get('import_timeout', 180)))
+        key = (native_project, arguments, export.get('timeout', 600), export.get('import_timeout', settings.get('import_timeout', 180)))
         groups.setdefault(key, []).append((export['preset'], relative(root, export['output']), export.get('kind', 'release')))
-    for (native, arguments, timeout, import_timeout), presets in groups.items():
-        helper('godot-export').export(native, presets, binary=env['GODOT_BIN'],
+    for (native_project, arguments, timeout, import_timeout), presets in groups.items():
+        helper('godot-export').export(native_project, presets, binary=env['GODOT_BIN'],
             import_arguments=arguments, timeout=timeout, import_timeout=import_timeout)
     godot_package.runtime(root, config)
     godot_package.packs(root, config, env)
@@ -571,7 +571,7 @@ def compile_outputs(root, config, env):
     if config.get('components', {}).get('images'):
         if config.get('components', {}).get('compose'):
             images.validate_compose(root, config, env, run)
-        images.build(root, config, env, run)
+        images.build(root, config, env, run, native=native)
         godot_static.stage(root, config, env, run)
         image_fixtures.package(root,config,env,run)
         images.package(root, config, env, run)

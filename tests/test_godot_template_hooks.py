@@ -36,5 +36,41 @@ class TemplateHookControls(unittest.TestCase):
             game.validate_outputs(self.root,self.config,{},compiler=False)
         template.verify.assert_not_called();template.setup.assert_not_called()
 
+    def test_image_fixture_preparation_runs_only_in_the_build_phase(self):
+        from contextlib import ExitStack
+        import subprocess
+        fixture = self.root / 'tests/fixtures/prepare.py'
+        fixture.parent.mkdir(parents=True)
+        fixture.write_text('from pathlib import Path\nPath("fixture-ready").write_text("prepared bytes")\n')
+        record = {'name': 'gate-fixture', 'dockerfile': 'tests/fixtures/Dockerfile',
+                  'pull': False, 'native': [{'runner': 'python', 'path': 'tests/fixtures/prepare.py'}]}
+        (fixture.parent / 'Dockerfile').write_text('FROM scratch\n')
+        config = {'components': {'godot': {'project': 'app', 'exports': [
+            {'preset': 'Web', 'output': 'app/build/web/index.html'}]}, 'images': [record]}}
+        effects = []
+        def execute(argv, cwd, environment, *args, **kwargs):
+            if argv[0] == sys.executable:
+                subprocess.run(argv, cwd=cwd, check=True)
+                effects.append('native preparation')
+            elif argv[:3] == ['docker', 'buildx', 'build']:
+                self.assertEqual((self.root / 'fixture-ready').read_text(), 'prepared bytes')
+                effects.append('image build')
+            else:
+                self.fail('unexpected build effect: ' + repr(argv))
+        with ExitStack() as stack:
+            for owner, name in [(game, 'build_rust'), (game, 'validate_outputs'),
+                    (game.node_component, 'build'), (game.go_component, 'build'),
+                    *[(game.godot_package, name) for name in ['author', 'extensions', 'runtime', 'packs', 'package']],
+                    (game.godot_static, 'stage'), (game.image_fixtures, 'package'), (game.images, 'package')]:
+                stack.enter_context(patch.object(owner, name))
+            stack.enter_context(patch.object(game.godot_sdk, 'activate', return_value={}))
+            stack.enter_context(patch.object(game, 'helper', return_value=MagicMock()))
+            stack.enter_context(patch.object(game.images, 'definition', return_value={
+                'image_base': 'ghcr.io/fixture/app', 'inputs': {'images': ['ghcr.io/fixture/app-gate-fixture:{revision}']}}))
+            stack.enter_context(patch.object(game, 'run', side_effect=execute))
+            self.assertFalse((self.root / 'fixture-ready').exists())
+            game.compile_outputs(self.root, config, {'APP_VERSION': 'a' * 40, 'GODOT_BIN': 'reviewed-engine'})
+        self.assertEqual(effects, ['native preparation', 'image build'])
+
 
 if __name__=='__main__':unittest.main()
