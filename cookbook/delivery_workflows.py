@@ -17,9 +17,15 @@ def declaration(root, config):
     data = json.loads(path.read_text())
     keys = {'version', 'project', 'komizo_ref', 'publish_runner', 'publish_timeout',
             'deploy_runner', 'deploy_timeout', 'health_urls', 'secrets', 'variables',
-            'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined'}
+            'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined', 'mode', 'static'}
     if not isinstance(data, dict) or set(data) - keys or data.get('version') != 1:
         raise ValueError('unsupported delivery declaration')
+    mode = data.get('mode', 'application-images')
+    if mode not in {'application-images', 'godot-static'} or (mode == 'application-images' and 'static' in data):
+        raise ValueError('delivery mode must select its implemented publication contract')
+    if mode == 'godot-static':
+        import godot_static
+        godot_static.declaration(Path(root), config)
     if not re.fullmatch('[a-z][a-z0-9-]{0,62}', data.get('project', '')):
         raise ValueError('invalid delivery project')
     if not re.fullmatch('[a-f0-9]{40}', data.get('komizo_ref', '')):
