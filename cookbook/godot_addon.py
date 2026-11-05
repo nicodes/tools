@@ -83,6 +83,9 @@ def artifact_paths(root, config):
 
 def evidence_paths(root, config):
     paths = list(config.get('artifacts', {}).get('evidence_paths', []))
+    for name in config.get('publication', {}).get('evidence_assets', []):
+        if name not in paths:
+            paths.append(name)
     if config.get('publication', {}).get('provenance'):
         paths.append('dist/CANDIDATE.json')
     if len(paths) != len(set(paths)):

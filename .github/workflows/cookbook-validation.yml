@@ -39,6 +39,7 @@ jobs:
       REQUEST_HEAD: ${{ inputs.head }}
       REQUEST_BASE: ${{ inputs.base }}
       COOKBOOK_CANDIDATE_COMMIT: ${{ inputs.head || github.event.pull_request.head.sha || inputs.source }}
+      REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
       MISE_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Validate immutable source and accepted cookbook identities
