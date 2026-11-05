@@ -90,6 +90,31 @@ print('native fixture reached')
         self.assertNotIn('make dev ', self.make('help').stdout)
         self.assertNotEqual(self.make('dev').returncode, 0)
 
+    def test_emscripten_node_is_confined_to_compiler_execution(self):
+        from unittest.mock import patch
+        import os
+        from configuration import load
+        import godot_game
+        config = load(self.root)
+        config['components']['rust'] = [{'manifest': 'core/Cargo.toml'}]
+        (self.root / 'core').mkdir()
+        (self.root / 'core/Cargo.toml').write_text('[package]\nname="native-control"\nversion="0.1.0"\n')
+        env = godot_game.environment(self.root, config)
+        env['PATH'] = '/caller-pinned-node:' + os.environ['PATH']
+        compiler = {**env, 'PATH': '/emscripten-bundled-node', 'LIBCLANG_PATH': '/pinned-libclang'}
+        seen = []
+        def build(root, components, values, run):
+            seen.append(('compiler', values['PATH']))
+        def validate(root, components, values, run):
+            seen.append(('validation', values['PATH']))
+            self.assertEqual(values['LIBCLANG_PATH'], '/pinned-libclang')
+        with patch.dict(os.environ), patch.object(godot_game.godot_sdk, 'activate', return_value=compiler), \
+                patch.object(godot_game.rust_component, 'build', side_effect=build), \
+                patch.object(godot_game.rust_component, 'validate_build', side_effect=validate):
+            godot_game.compile_outputs(self.root, config, env)
+            self.assertEqual(os.environ['PATH'], env['PATH'])
+        self.assertEqual(seen, [('compiler', '/emscripten-bundled-node'), ('validation', env['PATH'])])
+
 
 if __name__ == '__main__':
     unittest.main()

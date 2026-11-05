@@ -287,13 +287,17 @@ def validate_outputs(root, config, env, compiler=False):
 
 
 def compile_outputs(root, config, env):
-    env = godot_sdk.activate(root, config, env)
-    os.environ.update(env)
+    compiler_environment = godot_sdk.activate(root, config, env)
     directory, settings = project(root, config)
     if (directory / 'gdam.json').exists():
         helper('godot-addons').verify(directory)
     if config.get('components', {}).get('rust'):
-        rust_component.build(root, config['components']['rust'], env, run)
+        rust_component.build(root, config['components']['rust'], compiler_environment, run)
+    # Emscripten owns a bundled Node for its compiler. Native app packaging must
+    # keep the caller's Mise Node/Bun selection and its reviewed compression bytes.
+    if compiler_environment.get('LIBCLANG_PATH'):
+        env = {**env, 'LIBCLANG_PATH': compiler_environment['LIBCLANG_PATH']}
+    os.environ.update(env)
     godot_package.extensions(root, config, env)
     godot_package.author(root, config, env, run, 'prepare')
     if settings.get('import_stage', 'setup') == 'build':
