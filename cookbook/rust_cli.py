@@ -54,7 +54,7 @@ def required_tools(root, config, stage):
             names.append('shellcheck')
     else:
         names += ['cargo:cargo-audit']
-        if config.get('security', {}).get('trivy_paths'):
+        if config.get('security', {}).get('trivy_paths') or config.get('security', {}).get('rust_inventory_manifests'):
             names.append('trivy')
     for value in config.get('node', {}).get('packages', []):
         package, _directory = node_component.validate(value, root)
@@ -72,6 +72,8 @@ def environment(root, config):
              'VERSION': os.environ.get('VERSION', 'dev'), 'DATE': os.environ.get('DATE', 'unknown'),
              'PYTHONDONTWRITEBYTECODE': '1', 'CARGO_INCREMENTAL': '0',
              'RUNNER_TEMP': os.environ.get('RUNNER_TEMP', str(root / '.artifacts/tmp'))}
+    if config.get('components', {}).get('browser'):
+        value['PLAYWRIGHT_BROWSERS_PATH'] = str(root / '.artifacts/playwright')
     if value.get('RUST_TARGET', '').endswith('-pc-windows-msvc'):
         value['RUSTFLAGS'] = value.get('RUSTFLAGS', '') + ' -C target-feature=+crt-static'
     for name in ['CC_x86_64_unknown_linux_musl', 'CC_aarch64_unknown_linux_musl']:
@@ -79,6 +81,9 @@ def environment(root, config):
     for name, path in config.get('artifacts', {}).get('binary_environment', {}).items():
         if not re.fullmatch('[A-Z][A-Z0-9_]*', name):
             raise ValueError('invalid native binary environment selector')
+        if '{' in path:
+            record = selected_target(package_data(root, config), value)
+            path = helper('native_cli').render(path, {'platform': record['platform'], 'arch': record['arch']})
         value[name] = str(binary_path(root, path))
     for fixture in config.get('components', {}).get('fixtures', []):
         record = helper('native_cli').native_target({'native_targets': fixture['native_targets']})
@@ -120,7 +125,11 @@ def verification_scope(root, config):
 
 
 def artifact_paths(root, config):
-    return verification_scope(root, config)['artifacts']
+    return [*verification_scope(root, config)['artifacts'], *evidence_paths(root, config)]
+
+
+def evidence_paths(root, config):
+    return config.get('artifacts', {}).get('evidence_paths', [])
 
 
 def current_build(root, config):
@@ -274,13 +283,10 @@ def product_tests(root, config, environment, suite, selected=None):
         record = selected_target(package_data(root, config), environment)
         arguments.update({'{native.' + value['name'] + '}': str(native_components.output(root, value, native_components.platform(record)))
                           for value in native_components.records(config)})
-    for entry in entries:
-        executable = {'python': sys.executable, 'node': 'node', 'bun': 'bun', 'bash': 'bash'}.get(entry['runner'])
-        if executable is None:
-            raise ValueError('unsupported Rust recipe native test entry')
-        run([executable, str(relative(root, entry['path'], exists=True)),
-             *[arguments.get(value, value) for value in entry.get('args', [])]],
-            root, environment, timeout=entry.get('timeout', 300))
+    if entries:
+        from native_tests import run_entries
+        selected = [{**entry, 'args': [arguments.get(value, value) for value in entry.get('args', [])]} for entry in entries]
+        run_entries(root, {**config, 'tests': {suite: selected}}, environment, suite)
     return len(entries)
 
 
@@ -308,6 +314,12 @@ def setup(root, config, environment):
             helper('native_cli').immutable_fixture(root, fixture, install=True)
     if config.get('node', {}).get('packages'):
         node_component.install(root, config['node']['packages'], environment, pinned)
+    browser = config.get('components', {}).get('browser')
+    if stage == 'full' and browser and not os.environ.get('COOKBOOK_NATIVE_COMPONENTS'):
+        if not isinstance(browser, dict) or set(browser)-{'package', 'cli_version'}:
+            raise ValueError('unsupported native browser setup setting')
+        helper('playwright-local').prepare(root, browser['package'], cli_version=browser.get('cli_version'),
+            run=lambda argv, **kwargs: subprocess.run(['mise', 'exec', '--', *argv], **kwargs))
     (root / '.artifacts/tmp').mkdir(parents=True, exist_ok=True)
 
 
@@ -335,6 +347,13 @@ def security(root, config, environment):
     for path in config.get('security', {}).get('trivy_paths', []):
         run(['trivy', 'fs', '--scanners', 'vuln', '--severity', 'HIGH,CRITICAL', '--exit-code', '1',
              str(relative(root, path, exists=True))], root, environment)
+    manifests = config.get('security', {}).get('rust_inventory_manifests', [])
+    if manifests:
+        known = {value.get('manifest', 'Cargo.toml') for value in components(config)}
+        if not isinstance(manifests, list) or set(manifests)-known:
+            raise ValueError('source dependency inventory must select owned Cargo components')
+        import images
+        images.rust_inventory(root, manifests, environment, run)
     node_component.audit(root, config.get('node', {}).get('packages', []), environment, run)
     product_tests(root, config, environment, 'security')
 
