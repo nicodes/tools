@@ -81,14 +81,20 @@ def compile_native(command, directory, environment, timeout):
             if os.name == 'nt':
                 process.terminate()
             else:
-                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 if os.name == 'nt':
                     process.kill()
                 else:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 process.wait()
 
 
