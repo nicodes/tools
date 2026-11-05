@@ -18,6 +18,7 @@ import images
 import node_component
 import postgres_fixture
 import expo_exports
+import source_policy
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -209,6 +210,8 @@ def setup(root, config, environment):
     if pin != '.'.join(map(str, sys.version_info[:3])):
         raise ValueError('setup requires the exact caller-pinned Python SDK; run make setup')
     run(['mise', 'install', *required_tools(root, config, stage)], root, environment)
+    if stage in {'fast', 'full', 'local'}:
+        source_policy.setup(root, config, environment)
     def sdk(arguments, directory, values, timeout=None):
         run(['mise', 'exec', '--', *arguments], directory, values, timeout)
     selected = []
@@ -237,6 +240,7 @@ def setup(root, config, environment):
 def lint(root, config, environment):
     run(['actionlint'], root, environment)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, environment)
+    source_policy.check(root, config, environment, run)
     if config.get('lint', {}).get('auth_policy'):
         run(['bun', str(TOOLS / 'helpers/auth-boundary.mjs'), '--policy',
              str(relative(root, config['lint']['auth_policy'], exists=True))], root, environment)

@@ -5,6 +5,7 @@ check: install lint unit build vuln integration
 test: unit integration
 
 install:
+	python3 cookbook/source_policy.py setup
 	rustup component add --toolchain 1.94.0 rustfmt clippy
 	cargo fetch --locked
 
