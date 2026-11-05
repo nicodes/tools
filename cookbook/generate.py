@@ -5,13 +5,14 @@ import hashlib
 from pathlib import Path
 import re
 
-from configuration import load
+from configuration import load, ci_settings
 
 
 def workflow_files(root, revision):
     if not re.fullmatch('[a-f0-9]{40}', revision):
         raise ValueError('cookbook workflows require a full source pin')
     config = load(root)
+    ci = ci_settings(config)
     if config['recipe'] != 'godot-addon':
         raise ValueError('workflow callers for this recipe are not implemented yet')
     header = '# Generated cookbook caller. Change recipe data and regenerate.\n'
@@ -68,6 +69,8 @@ jobs:
       tools-ref: PIN
       pull-request: ${{ inputs.pull-request }}
 '''.replace('PIN', revision)}
+    files['.github/workflows/ci.yml'] += ('      runner: ' + ci['runner'] + '\n'
+        + '      timeout-minutes: ' + str(ci['timeout_minutes']) + '\n')
     if config.get('publication'):
         import publication_workflows
         files.update(publication_workflows.workflow_files(root, revision))

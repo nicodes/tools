@@ -23,6 +23,8 @@ jobs:
       head: ${{ steps.candidate.outputs.head }}
       base: ${{ steps.candidate.outputs.base }}
       cookbook: ${{ steps.candidate.outputs.cookbook_commit }}
+      runner: ${{ steps.candidate.outputs.validation_runner }}
+      timeout: ${{ steps.candidate.outputs.validation_timeout }}
     steps:
       - name: Check out trusted merge controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -57,6 +59,8 @@ jobs:
       head: ${{ needs.snapshot.outputs.head }}
       base: ${{ needs.snapshot.outputs.base }}
       mode: full
+      runner: ${{ needs.snapshot.outputs.runner }}
+      timeout-minutes: ${{ fromJSON(needs.snapshot.outputs.timeout) }}
   finalize:
     name: Merge validated candidate
     needs: [snapshot, validate]

@@ -11,6 +11,12 @@ name: Recipe CI
       merge-gate:
         type: boolean
         default: false
+      runner:
+        type: string
+        default: ubuntu-24.04
+      timeout-minutes:
+        type: number
+        default: 30
 permissions: {}
 jobs:
   fast:
@@ -23,6 +29,8 @@ jobs:
       tools-ref: ${{ inputs.tools-ref }}
       source: ${{ inputs.source }}
       mode: fast
+      runner: ${{ inputs.runner }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}
   full:
     name: Full source checks
     if: github.event_name != 'pull_request' || !inputs.merge-gate
@@ -33,3 +41,5 @@ jobs:
       tools-ref: ${{ inputs.tools-ref }}
       source: ${{ inputs.source }}
       mode: full
+      runner: ${{ inputs.runner }}
+      timeout-minutes: ${{ inputs.timeout-minutes }}

@@ -10,6 +10,7 @@ import re
 import tomllib
 import urllib.error
 import urllib.request
+from configuration import ci_settings
 
 TOOLS = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('request_merge_candidate', TOOLS / 'helpers/merge-candidate.py')
@@ -82,6 +83,8 @@ def snapshot(repository, number):
     if accepted.get('status') not in {'ahead', 'identical'}:
         raise ValueError('recipe cookbook pin must already be accepted on Tools main')
     receipt.update(cookbook_commit=tools, test_groups=groups)
+    settings = ci_settings(declaration)
+    receipt.update(validation_runner=settings['runner'], validation_timeout=str(settings['timeout_minutes']))
     status(repository, receipt['head'], 'pending', 'Validating current head with base ' + receipt['base'][:12])
     return receipt
 
@@ -168,7 +171,7 @@ def main():
             args.receipt.write_text(json.dumps(value, indent=2) + '\n')
             if os.environ.get('GITHUB_OUTPUT'):
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-                    for name in ['head', 'base', 'candidate', 'tree', 'cookbook_commit']:
+                    for name in ['head', 'base', 'candidate', 'tree', 'cookbook_commit', 'validation_runner', 'validation_timeout']:
                         output.write(name + '=' + value[name] + '\n')
         else:
             value = read_json(args.receipt)

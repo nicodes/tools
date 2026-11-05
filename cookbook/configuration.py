@@ -9,6 +9,17 @@ RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
            'bash', 'godot', 'godot-suite', 'godot-check'}
 
 
+def ci_settings(data):
+    values = data.get('ci', {})
+    if not isinstance(values, dict) or set(values)-{'runner', 'timeout_minutes'}:
+        raise ValueError('CI settings require literal runner and existing bounded job budget')
+    result = {'runner': 'ubuntu-24.04', 'timeout_minutes': 30, **values}
+    if (not isinstance(result['runner'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', result['runner'])
+            or type(result['timeout_minutes']) is not int or not 1 <= result['timeout_minutes'] <= 180):
+        raise ValueError('CI runner and job budget must be bounded source data')
+    return result
+
+
 def relative(root, name, *, exists=False):
     if (not isinstance(name, str) or not name or '\\' in name or ':' in name
             or any(ord(character) < 32 for character in name)):
@@ -33,11 +44,12 @@ def load(root):
         raise ValueError('recipe configuration must be a bounded regular source file')
     data = tomllib.loads(path.read_text())
     allowed = {'version', 'recipe', 'package', 'tests', 'lint', 'format', 'clean',
-               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication'}
+               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication', 'ci'}
     if set(data) - allowed or data.get('version') != 1 or data.get('recipe') not in RECIPES:
         raise ValueError('unsupported cookbook configuration')
     if 'tasks' in data or 'commands' in data:
         raise ValueError('recipe data cannot define another task implementation')
+    ci_settings(data)
     tests = data.get('tests', {})
     if set(tests) - SUITES:
         raise ValueError('unknown test suite')
