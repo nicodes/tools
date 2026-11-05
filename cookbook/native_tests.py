@@ -17,7 +17,7 @@ def godot_runner():
     return module
 
 
-def run_entries(root, config, environment, suite, custom_runners=None):
+def run_entries(root, config, environment, suite, custom_runners=None, command_wrapper=None):
     entries = config.get('tests', {}).get(suite, [])
     if not entries:
         raise ValueError('test group has no declared product checks: ' + suite)
@@ -61,6 +61,8 @@ def run_entries(root, config, environment, suite, custom_runners=None):
             command = ['bun', 'test', '--bail', *arguments, str(program)]
         else:
             raise ValueError('recipe does not implement native test runner: ' + kind)
+        if command_wrapper:
+            command = command_wrapper(command, environment)
         if kind == 'python-unittest':
             result = subprocess.run(command, cwd=cwd, env=environment, timeout=timeout, capture_output=True, text=True)
             print(result.stdout, end='')

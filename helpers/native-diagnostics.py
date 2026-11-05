@@ -6,7 +6,40 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tomllib
+
+
+
+def generated_report(root, path, config):
+    """Admit a narrow generated report location, never a tracked source tree."""
+    reports = len(path.parts) >= 2 and re.fullmatch('[A-Za-z][A-Za-z0-9_-]*-reports', path.parts[0])
+    project = config.get('components', {}).get('godot', {}).get('project')
+    build = False
+    if isinstance(project, str) and (project == '.' or re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*', project)):
+        project_path = Path(project)
+        if not any(part in {'.', '..', '.git'} for part in project_path.parts):
+            owned_build = project_path / 'build'
+            build = path.is_relative_to(owned_build) and path != owned_build
+            if build:
+                source = root / project_path / 'project.godot'
+                if (not source.is_file() or any(item.is_symlink() for item in [source, *source.parents])):
+                    raise ValueError('native build reports require the configured owned Godot project')
+    if not (reports or build):
+        return False
+    try:
+        prefix = subprocess.check_output(['git', '-C', str(root), 'rev-parse', '--show-prefix'],
+            stderr=subprocess.DEVNULL, timeout=30)
+        tracked = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-z', '--', path.as_posix()],
+            stderr=subprocess.DEVNULL, timeout=30)
+        if build:
+            subprocess.check_output(['git', '-C', str(root), 'ls-files', '--error-unmatch', '--',
+                (Path(project) / 'project.godot').as_posix()], stderr=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError('native report locations require an actual source checkout') from error
+    if prefix.strip() or tracked:
+        raise ValueError('native report locations may not select tracked source files')
+    return True
 
 
 def declaration(root, config, *, inspect=False, status=None):
@@ -30,7 +63,8 @@ def declaration(root, config, *, inspect=False, status=None):
         if (not name or len(name)>240 or not re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/?',name)
                 or any(part in {'.','..','.git'} for part in path.parts)
                 or not ((path.parts[0] in {'.artifacts','tmp'} and len(path.parts)>1)
-                    or re.fullmatch('[A-Za-z][A-Za-z0-9_-]*-evidence',path.parts[0]))):
+                    or re.fullmatch('[A-Za-z][A-Za-z0-9_-]*-evidence',path.parts[0])
+                    or generated_report(root,path,config))):
             raise ValueError('native outputs require explicit generated output locations')
         target=root/path
         if any(value.is_symlink() for value in [target,*target.parents]):
