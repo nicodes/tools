@@ -89,8 +89,14 @@ class ValidationEvidence(unittest.TestCase):
         with self.assertRaises(ValueError):
             publication.identity(self.root, self.config, 'unknown')
         (self.root / 'addon/plugin.cfg').write_text('[plugin]\nversion="0.0.9"\n')
-        with self.assertRaisesRegex(ValueError, 'plugin version'):
+        with self.assertRaisesRegex(ValueError, 'unchanged tracked source'):
             publication.identity(self.root, self.config, 'patch')
+        subprocess.run(['git', 'add', 'addon/plugin.cfg'], cwd=self.root, check=True)
+        subprocess.run(['git', '-c', 'user.name=CI Controls', '-c', 'user.email=ci@example.invalid',
+                        'commit', '-qm', 'native version mismatch'], cwd=self.root, check=True)
+        with patch.dict(os.environ, {'GITHUB_SHA': ci.git(self.root, 'rev-parse', 'HEAD')}):
+            with self.assertRaisesRegex(ValueError, 'plugin version'):
+                publication.identity(self.root, self.config, 'patch')
 
 
 if __name__ == '__main__':
