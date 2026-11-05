@@ -5,7 +5,7 @@ import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, realpath, lstat, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve, join, extname, sep } from 'node:path';
 
@@ -92,10 +92,16 @@ try {
     response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ keys: [jwk] }));
   }));
   const proxy = fixtureProxy();
-  assert(typeof webDirectory === 'string' && !webDirectory.startsWith('/') && !webDirectory.split(/[\\/]/).includes('..'),
+  assert(typeof webDirectory === 'string' && !webDirectory.startsWith('/') && !/[\\:\x00-\x1f]/.test(webDirectory)
+    && !webDirectory.split('/').some(part => !part || part === '..' || part === '.git'),
     'browser fixture export must stay in the checkout');
   const webRoot = resolve(webDirectory);
   assert(webRoot.startsWith(root + sep), 'browser fixture export must stay in the checkout');
+  let checked = root;
+  for (const part of webRoot.slice(root.length + 1).split(sep)) {
+    checked = join(checked, part);
+    assert(!(await lstat(checked)).isSymbolicLink(), 'browser fixture export cannot traverse links');
+  }
   const web = await listen(createServer(async (request, response) => {
     if (proxy.handle(request, response)) return;
     try {
@@ -108,6 +114,10 @@ try {
           try { await stat(file + '.html'); file += '.html'; }
           catch { file = join(webRoot, 'index.html'); }
         }
+      }
+      const actual = await realpath(file);
+      if (!actual.startsWith(webRoot + sep) || actual.slice(webRoot.length + 1).split(sep).includes('.git')) {
+        response.writeHead(403).end(); return;
       }
       const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
         '.ttf': 'font/ttf', '.png': 'image/png', '.svg': 'image/svg+xml', '.json': 'application/json' };
