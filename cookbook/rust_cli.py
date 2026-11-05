@@ -132,9 +132,11 @@ def current_build(root, config):
 
 def package_data(root, config):
     package = config.get('package', {})
-    required = {'binary', 'output', 'version_arguments', 'version_template', 'native_targets'}
+    required = {'binary', 'output', 'version_arguments', 'native_targets'}
     if not required <= package.keys():
         raise ValueError('native CLI package data must declare executable, identity and complete target matrix')
+    if not package.get('version_template') and not package.get('version_fields'):
+        raise ValueError('native package must declare plain or machine version/source identity')
     native = helper('native_cli')
     names = [native.archive_name(package, item) for item in package['native_targets']]
     if not names or len(names) != len(set(names)):

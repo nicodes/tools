@@ -151,6 +151,7 @@ def write_archive(root, binary, package, record, destination):
 
 def identity_values(package, record, environment):
     return {'binary': package['binary'], 'version': environment.get('VERSION', 'dev'),
+            'version_plain': environment.get('VERSION', 'dev').removeprefix('v'),
             'commit': environment['COMMIT'], 'date': environment.get('DATE', 'unknown'),
             'target': environment.get('RUST_TARGET', ''), 'platform': record['platform'], 'arch': record['arch']}
 
@@ -167,9 +168,23 @@ def render(template, values):
 def verify_identity(binary, package, record, environment):
     binary = str(Path(binary).resolve())
     values = identity_values(package, record, environment)
-    expected = render(package['version_template'], values)
     output = subprocess.check_output([binary, *package['version_arguments']], text=True, timeout=10).strip()
-    if output != expected:
+    if package.get('version_fields'):
+        actual = json.loads(output)
+        fields = package['version_fields']
+        if not isinstance(fields, dict) or not fields:
+            raise ValueError('native machine identity must declare actual source fields')
+        for name, template in fields.items():
+            if not isinstance(name, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*', name):
+                raise ValueError('native identity fields must select JSON object keys')
+            selected = actual
+            for part in name.split('.'):
+                if not isinstance(selected, dict) or part not in selected:
+                    raise ValueError('native machine identity omitted its source fields')
+                selected = selected[part]
+            if selected != render(template, values):
+                raise ValueError('native machine identity differs from the requested source/version')
+    elif output != render(package['version_template'], values):
         raise ValueError('native executable version/source differs from the requested build')
     if package.get('info_arguments'):
         actual = json.loads(subprocess.check_output([binary, *package['info_arguments']], text=True, timeout=10))

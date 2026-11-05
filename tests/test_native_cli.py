@@ -41,6 +41,17 @@ class NativeArchive(unittest.TestCase):
                 extracted = native.inspect_archive(archive, self.package, record, self.root / ('installed' + system))
                 self.assertEqual(extracted.read_bytes(), self.binary.read_bytes())
 
+    def test_machine_identity_checks_nested_source_fields_and_plain_release_versions(self):
+        package = self.package | {'version_arguments': ['--json', 'version'], 'version_fields': {'result.version': '{version}', 'result.commit': '{commit}'}}
+        record = self.record('Linux')
+        environment = {'VERSION': 'v1.2.3', 'COMMIT': 'a' * 40}
+        with patch.object(native.subprocess, 'check_output', return_value=json.dumps({'ok': True, 'result': {'version': 'v1.2.3', 'commit': 'a' * 40, 'build': 'hash'}})):
+            native.verify_identity(self.binary, package, record, environment)
+        for result in [{'result': {'version': 'v1.2.3', 'commit': 'b' * 40}}, {'result': {'version': 'v1.2.3'}}]:
+            with patch.object(native.subprocess, 'check_output', return_value=json.dumps(result)), self.assertRaises(ValueError):
+                native.verify_identity(self.binary, package, record, environment)
+        self.assertEqual(native.render('{version_plain}', native.identity_values(package, record, environment)), '1.2.3')
+
     def test_product_notices_keep_their_archive_name_with_safe_source_aliases(self):
         notice = self.root / 'vendor/dependency/NOTICE'
         notice.parent.mkdir(parents=True)
