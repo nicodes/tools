@@ -16,6 +16,7 @@ import tomllib
 from configuration import load, relative
 import images
 import node_component
+import postgres_fixture
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -362,6 +363,13 @@ def security(root, config, environment):
 
 
 def behavioral_tests(root, config, environment, suite):
+    # Native disposable databases are test fixtures, independent of retained dev
+    # data. Their role policy and cleanup are identical in Make and Actions.
+    with postgres_fixture.context(root, config, environment, suite) as selected:
+        native_behavioral_tests(root, config, selected, suite)
+
+
+def native_behavioral_tests(root, config, environment, suite):
     count = 0
     if suite == 'unit':
         count += node_component.test(root, packages(config), environment, run)
