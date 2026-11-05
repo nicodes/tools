@@ -132,6 +132,21 @@ class GodotPacketControls(unittest.TestCase):
             matrix['proofs'].pop()
             with self.assertRaises(ValueError): c.require_units(Path('/fixture'), config, environment)
 
+    def test_entirely_delegated_e2e_group_requires_an_actual_exact_join(self):
+        config=self.config()
+        config['tests']['e2e']=[{'name':'test-browser','runner':'node','path':'tests/browser/flows.mjs'}]
+        config['ci']['godot']['gates']=[{'name':'browser','runner':'ubuntu-24.04','timeout_minutes':15,'suite':'e2e','tests':['test-browser']}]
+        plan=c.plan(None,config)
+        matrix={'requirements':plan['requirements'],'host_groups':plan['host_groups'],
+                'proofs':[self.proof(entry) for entry in plan['requirements'] if entry['kind']!='host']}
+        with patch.object(c,'host_matrix',return_value=matrix):
+            joined=c.require_group(Path('/fixture'),config,{},'e2e')
+            self.assertEqual(joined['local_cases'],[])
+            self.assertEqual(len(joined['delegated_cases']),1)
+            gate=next(proof for proof in matrix['proofs'] if proof['entry']['kind']=='test')
+            gate['executed_cases']=[]
+            with self.assertRaises(ValueError):c.require_group(Path('/fixture'),config,{},'e2e')
+
 
 if __name__ == '__main__':
     unittest.main()

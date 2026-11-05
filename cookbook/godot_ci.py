@@ -488,7 +488,9 @@ def host_matrix(root, config, environment):
     for proof in matrix.get('proofs', []):
         entry = declaration_entry(root, config, proof.get('entry', {}).get('id'))
         validate_partial(proof, entry, matrix['source_commit'], matrix['cookbook_commit'], environment, configuration_hash(root))
-    if {proof['entry']['id'] for proof in matrix.get('proofs', [])} != {row['id'] for row in declaration['requirements'] if row['kind'] != 'host'}:
+    required = [row for row in declaration['requirements'] if row['kind'] != 'host']
+    if (len(matrix.get('proofs', [])) != len(required) or
+            {proof['entry']['id'] for proof in matrix.get('proofs', [])} != {row['id'] for row in required}):
         raise ValueError('Godot host join omitted partial worker coverage')
     return matrix
 
@@ -532,6 +534,27 @@ def require_units(root, config, environment):
         raise ValueError('Godot whole-unit acceptance requires every declared disjoint shard')
     return declaration['unit_inventory']
 
+
+
+def require_group(root, config, environment, suite):
+    """A whole group passes only after its local checks and exact delegated union."""
+    matrix=host_matrix(root,config,environment)
+    if suite not in matrix['host_groups']:
+        raise ValueError('host join may accept only an implemented whole test group')
+    expected={case_id(suite,entry) for entry in config.get('tests',{}).get(suite,[])}
+    host=next(row for row in matrix['requirements'] if row['kind']=='host')
+    local=expected & set(host['cases'])
+    delegated=[]
+    for proof in matrix['proofs']:
+        entry=proof['entry']
+        if (entry['kind']=='unit' and suite=='unit') or (entry['kind']=='test' and entry['suite']==suite):
+            if proof.get('executed_cases')!=entry['cases']:
+                raise ValueError('delegated group evidence differs from its written assertion scope')
+            delegated.extend(proof['executed_cases'])
+    if len(delegated)!=len(set(delegated)) or local & set(delegated) or local | set(delegated)!=expected:
+        raise ValueError('whole group requires the exact disjoint local and delegated assertion union')
+    if suite=='unit':require_units(root,config,environment)
+    return {'group':suite,'local_cases':sorted(local),'delegated_cases':sorted(delegated),'status':'passed'}
 
 def finalize_host(host, matrix):
     if (not isinstance(matrix, dict) or host.get('status') != 'passed' or host.get('build_verified') is not True
