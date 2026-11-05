@@ -473,6 +473,8 @@ def download(root, source, environment, entries):
 
 def import_build(root, config, source_directory, proof):
     import ci
+    if Path.cwd().resolve() != root.resolve():
+        raise ValueError('Godot build import requires the current exact checkout')
     files = {name: value for name, value in proof['build']['artifacts'].items() if not name.startswith('image:')}
     for name in files:
         if not allowed_output(name, config, root):
@@ -496,7 +498,7 @@ def import_build(root, config, source_directory, proof):
             value = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', name[6:]], text=True, timeout=60).strip()
             if value != expected:
                 raise ValueError('loaded image differs from the immutable accepted build identity')
-    ci.verification().write(root / '.artifacts/verification/build.json', proof['build'])
+    ci.verification().write(Path('.artifacts/verification/build.json'), proof['build'])
 
 
 def matrix_path(root):

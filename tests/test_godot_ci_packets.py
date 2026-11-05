@@ -1,5 +1,6 @@
 """Reject incomplete, stale, substituted and falsely complete Godot evidence."""
 import copy
+from contextlib import chdir
 import hashlib
 import json
 from pathlib import Path
@@ -113,7 +114,20 @@ class GodotPacketControls(unittest.TestCase):
             proof = self.proof(entry); proof['executables'] = {'public/index.html': False}
             (stage / 'godot-proof.json').write_text(json.dumps(proof))
             with patch.object(c, 'configuration_hash', return_value=self.canonical), patch('ci.git', return_value=self.tree):
-                c.packet(root, stage, config, self.source, self.tools, entry, self.environment)
+                accepted = c.packet(root, stage, config, self.source, self.tools, entry, self.environment)
+                with self.assertRaisesRegex(ValueError, 'current exact checkout'):
+                    c.import_build(root, config, stage, accepted)
+                self.assertFalse((root / 'public').exists())
+                with chdir(root):
+                    c.import_build(root, config, stage, accepted)
+                    self.assertEqual((root / 'public/index.html').read_bytes(), b'fixture')
+                    receipt = root / '.artifacts/verification/build.json'
+                    self.assertEqual(json.loads(receipt.read_text()), accepted['build'])
+                    receipt.unlink()
+                    receipt.symlink_to(root / 'outside-receipt.json')
+                    with self.assertRaisesRegex(ValueError, 'owned regular file'):
+                        c.import_build(root, config, stage, accepted)
+                    self.assertFalse((root / 'outside-receipt.json').exists())
                 payload.write_bytes(b'changed')
                 with self.assertRaises(ValueError): c.packet(root, stage, config, self.source, self.tools, entry, self.environment)
                 payload.write_bytes(b'fixture'); (stage / 'extra').write_bytes(b'undeclared')
