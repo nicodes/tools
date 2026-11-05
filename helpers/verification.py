@@ -113,15 +113,15 @@ def identity(declaration):
         if not raw:
             continue
         path = Path(os.fsdecode(raw))
-        if any(path.match(pattern) or str(path).startswith(pattern.rstrip('/')+'/')
+        if any(path.match(pattern) or path.as_posix().startswith(pattern.rstrip('/')+'/')
                for pattern in [*declaration['artifacts'], declaration['evidence_directory']]):
             continue
         if path.is_symlink():
-            files[str(path)] = {'link': os.readlink(path)}
+            files[path.as_posix()] = {'link': os.readlink(path)}
         elif path.is_file():
-            files[str(path)] = {'sha256': sha(path), 'executable': bool(path.stat().st_mode & 0o111)}
+            files[path.as_posix()] = {'sha256': sha(path), 'executable': bool(path.stat().st_mode & 0o111)}
         else:
-            files[str(path)] = None
+            files[path.as_posix()] = None
     values = {name: os.environ.get(name, '') for name in declaration['environment']}
     wire = {'revision': git('rev-parse', 'HEAD'), 'files': files, 'environment': values,
             'variant': os.environ.get('BUILD_VARIANT', 'production'), 'scope': declaration}
@@ -153,13 +153,13 @@ def artifacts(declaration):
             candidates.extend(sorted(match.rglob('*')) if match.is_dir() else [match])
         regular = [path for path in candidates if path.is_file()]
         evidence = declaration['evidence_directory'].rstrip('/')
-        regular = [path for path in regular if str(path) != evidence and not str(path).startswith(evidence+'/')]
+        regular = [path for path in regular if path.as_posix() != evidence and not path.as_posix().startswith(evidence+'/')]
         if not regular:
             raise ValueError('a declared build artifact is missing')
         for path in regular:
             if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
                 raise ValueError('build artifacts must not follow links')
-            found[str(path)] = sha(path)
+            found[path.as_posix()] = sha(path)
     refs = resolve_images(declaration, git('rev-parse', 'HEAD'))
     if refs:
         images = json.loads(subprocess.check_output(['docker', 'image', 'inspect', *refs], timeout=60))
