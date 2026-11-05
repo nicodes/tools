@@ -290,7 +290,26 @@ def static_image(image, source, installed='/srv/public'):
     return expected
 
 
-def rust_inventory(root, manifests, environment, run):
+def rust_inventory_manifests(root,config):
+    components=config.get('components',{}).get('rust',[])
+    policy=config.get('security',{})
+    values=policy.get('rust_inventory_manifests',sorted({record['manifest'] for record in components}))
+    if not components and 'rust_inventory_manifests' not in policy:return []
+    if (not isinstance(values,list) or not 1<=len(values)<=64 or any(not isinstance(value,str) for value in values)
+            or len(set(values))!=len(values)):
+        raise ValueError('Rust security requires distinct bounded owning Cargo manifests')
+    if type(config.get('security',{}).get('rust_inventory_sbom',False)) is not bool:
+        raise ValueError('Rust inventory SBOM selection must be explicit')
+    for name in values:
+        manifest=relative(root,name,exists=True)
+        if manifest.name!='Cargo.toml' or not manifest.is_file():raise ValueError('Rust inventory selects native Cargo manifests')
+        lock=relative(root,str(Path(name).with_name('Cargo.lock')),exists=True)
+        if not lock.is_file():raise ValueError('Rust inventories require their actual owning regular lockfiles')
+    return list(values)
+
+
+def rust_inventory(root, manifests, environment, run, *, sbom=False):
+    if type(sbom) is not bool:raise ValueError('Rust inventory SBOM selection must be explicit')
     if not manifests or len(set(manifests)) != len(manifests):
         raise ValueError('Rust inventory scanning requires declared Cargo manifests')
     directory = relative(root, '.artifacts/security/rust-inputs')
@@ -306,6 +325,13 @@ def rust_inventory(root, manifests, environment, run):
     run(['trivy', 'fs', '--quiet', '--scanners', 'vuln', '--pkg-types', 'library',
          '--include-dev-deps', '--list-all-pkgs', '--format', 'json', '--output', str(report), str(directory)],
         root, environment)
+    if sbom:
+        inventory=root/'.artifacts/security/rust-source-sbom.json'
+        run(['trivy','fs','--quiet','--scanners','vuln','--pkg-types','library',
+             '--include-dev-deps','--list-all-pkgs','--format','cyclonedx','--output',str(inventory),str(directory)],root,environment)
+        bom=json.loads(inventory.read_text())
+        if bom.get('bomFormat')!='CycloneDX' or not isinstance(bom.get('components'),list) or not bom['components']:
+            raise ValueError('Rust dependency SBOM is missing its complete package inventory')
     value = json.loads(report.read_text())
     if value.get('SchemaVersion') != 2 or not isinstance(value.get('Results'), list):
         raise ValueError('unsupported Rust dependency report')

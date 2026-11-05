@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tomllib
@@ -18,14 +17,17 @@ import images
 import node_component
 import postgres_fixture
 import expo_exports
+import rust_staging
 import source_policy
 import application_fixtures
+import application_development
+import komizo_sdk
 from native_tests import run_entries
 
 TOOLS = Path(__file__).resolve().parents[1]
 ENVIRONMENT = re.compile('[A-Z][A-Z0-9_]*\\Z')
-PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
-                         'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE',
+PROTECTED_ENVIRONMENT = {'APP_VERSION', 'CI', 'TOOLS_ROOT', 'KOMIZO_ACTIONS_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN',
+                         'TOOLS_VERIFICATION_SESSION', 'REQUEST_HEAD', 'REQUEST_BASE', 'COOKBOOK_PREVIEW_NUMBER',
                          'GOTOOLCHAIN', 'RUSTUP_AUTO_INSTALL'}
 PHASES = {'setup', 'lint', 'pre_packages', 'pre_export', 'post_export', 'post_public', 'pre_images', 'post_images', 'fixtures', 'validate'}
 
@@ -67,6 +69,11 @@ def configure_environment(root, config):
               'MISE_TRUSTED_CONFIG_PATHS': str(root)}
     if os.environ.get('APP_VERSION') not in {None, '', revision}:
         raise ValueError('APP_VERSION must match this exact source checkout')
+    komizo=komizo_sdk.source_root(root,config)
+    if komizo is not None:
+        if os.environ.get('KOMIZO_ACTIONS_ROOT') not in {None,'',str(komizo)}:
+            raise ValueError('KOMIZO_ACTIONS_ROOT must select this checkout exact accepted SDK')
+        values['KOMIZO_ACTIONS_ROOT']=str(komizo)
     app = config.get('components', {}).get('app', {})
     defaults = app.get('environment', {})
     if not isinstance(defaults, dict):
@@ -74,14 +81,14 @@ def configure_environment(root, config):
     for name, value in defaults.items():
         if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str) or '\0' in value:
             raise ValueError('application build environment contains an invalid literal')
-        if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_')):
+        if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')):
             raise ValueError('application literals may not replace source, workflow or pinned SDK authority')
         values[name] = os.environ.get(name, value)
     if preview_context(os.environ):
         for name, value in app.get('preview_environment', {}).items():
             if not ENVIRONMENT.fullmatch(name) or not isinstance(value, str):
                 raise ValueError('preview public environment must use literal named values')
-            if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_')):
+            if name in PROTECTED_ENVIRONMENT or name.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')):
                 raise ValueError('preview literals may not replace source, workflow or pinned SDK authority')
             values[name] = os.environ.get(name, value)
         for name, source in app.get('preview_variables', {}).items():
@@ -132,7 +139,8 @@ def required_tools(root, config, stage):
 def verification_scope(root, config):
     definition = images.definition(root, config)
     inputs = {key: list(value) for key, value in definition['inputs'].items()}
-    inputs['artifacts'] += config.get('artifacts', {}).get('fixture_paths', []) + expo_exports.artifact_paths(root, config)
+    inputs['artifacts'] += (config.get('artifacts', {}).get('fixture_paths', []) + expo_exports.artifact_paths(root, config)
+                            + rust_staging.artifact_paths(rust_components(config)))
     return helper('verification').scope(**inputs)
 
 
@@ -152,30 +160,15 @@ def run(arguments, root, environment, timeout=None):
     subprocess.run(arguments, cwd=root, env=environment, check=True, timeout=timeout)
 
 
+
+def development_api():
+    from types import SimpleNamespace
+    return SimpleNamespace(**{name:globals()[name] for name in [
+        'run','native','select_port','pinned_ghenv','development_project',
+        'isolated_operation','stop_services','helper']})
+
 def native(root, entries, environment, *, sdk=False, long_running=False):
-    for entry in entries:
-        if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'cwd', 'args', 'timeout', 'environment', 'phase', 'stages'}:
-            raise ValueError('invalid native product component entry')
-        path = relative(root, entry.get('path'), exists=True)
-        if not path.is_file() or Path(entry['path']).parts[0] not in {'app', 'api', 'internal', 'tests'}:
-            raise ValueError('native product generators and assertions must remain in their owning component')
-        runner = {'python': sys.executable, 'node': 'node', 'bun': 'bun', 'bash': 'bash'}.get(entry.get('runner'))
-        if runner is None:
-            raise ValueError('unknown native product component runner')
-        arguments = entry.get('args', [])
-        if not isinstance(arguments, list) or any(not isinstance(value, str) or '\0' in value for value in arguments):
-            raise ValueError('native product arguments must be literal strings')
-        timeout = None if long_running else entry.get('timeout', 300)
-        if not long_running and (type(timeout) is not int or not 1 <= timeout <= 3600):
-            raise ValueError('native product operations require bounded deadlines')
-        values = entry.get('environment', {})
-        if not isinstance(values, dict) or any(not ENVIRONMENT.fullmatch(key) or not isinstance(value, str) for key, value in values.items()):
-            raise ValueError('native product environment must use literal named values')
-        values = {key: value.replace('{revision}', environment['APP_VERSION']) for key, value in values.items()}
-        command = [runner, str(path), *arguments]
-        if sdk:
-            command = ['mise', 'exec', '--', *command]
-        run(command, relative(root, entry.get('cwd', '.'), exists=True), environment | values, timeout)
+    return application_development.native(root, entries, environment, api=development_api(), sdk=sdk, long_running=long_running, protected_environment=PROTECTED_ENVIRONMENT)
 
 
 def phase(root, config, environment, name, stage='full'):
@@ -198,7 +191,9 @@ def phase(root, config, environment, name, stage='full'):
 def cargo_records(config, environment):
     records = []
     for value in rust_components(config):
-        record = {key: item for key, item in value.items() if key != 'output_directory'}
+        record = {key: item for key, item in value.items() if key not in {'output_directory','output_names'}}
+        if any(key in PROTECTED_ENVIRONMENT or key.startswith(('GITHUB_', 'MISE_', 'COOKBOOK_', 'REQUEST_')) for key in record.get('environment', {})):
+            raise ValueError('Rust component environment may not replace execution authority')
         record['environment'] = {key: item.replace('{revision}', environment['APP_VERSION'])
                                  for key, item in record.get('environment', {}).items()}
         records.append(record)
@@ -211,6 +206,7 @@ def setup(root, config, environment):
     if pin != '.'.join(map(str, sys.version_info[:3])):
         raise ValueError('setup requires the exact caller-pinned Python SDK; run make setup')
     run(['mise', 'install', *required_tools(root, config, stage)], root, environment)
+    komizo_sdk.setup(root,config,environment)
     if stage in {'fast', 'full', 'local'}:
         source_policy.setup(root, config, environment)
     def sdk(arguments, directory, values, timeout=None):
@@ -242,6 +238,9 @@ def lint(root, config, environment):
     run(['actionlint'], root, environment)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, environment)
     source_policy.check(root, config, environment, run)
+    for name in config.get('lint', {}).get('caddy_dockerfiles', []):
+        run(['bash', str(TOOLS / 'helpers/caddy-pin.sh'),
+             str(relative(root, name, exists=True))], root, environment)
     if config.get('lint', {}).get('auth_policy'):
         run(['bun', str(TOOLS / 'helpers/auth-boundary.mjs'), '--policy',
              str(relative(root, config['lint']['auth_policy'], exists=True))], root, environment)
@@ -303,24 +302,9 @@ def build(root, config, environment):
             (target / 'release.json').write_text(json.dumps({'revision': environment['APP_VERSION']}) + '\n')
     phase(root, config, environment, 'post_public')
     images.validate_compose(root, config, environment, run)
+    build_rust(root, config, environment)
     records = cargo_records(config, environment)
     if records:
-        cargo().build(root, records, environment, run)
-        for original, record in zip(rust_components(config), records, strict=True):
-            if record.get('build', {}).get('enabled', True) is False:
-                continue
-            options = record | record.get('build', {})
-            profile = options.get('profile', 'release')
-            target = Path(environment.get('CARGO_TARGET_DIR', str(root / Path(record['manifest']).parent / 'target')))
-            if record.get('target_directory'):
-                target = relative(root, record['target_directory'])
-            if record.get('target'):
-                target /= record['target']
-            target /= 'release' if profile == 'release' else 'debug'
-            destination = relative(root, original.get('output_directory', '.artifacts'))
-            destination.mkdir(parents=True, exist_ok=True)
-            for name in options.get('binaries', []):
-                shutil.copy2(target / name, destination / name)
         cargo().validate_build(root, records, environment, run)
     caddy = config.get('components', {}).get('caddy', {})
     if caddy:
@@ -339,6 +323,12 @@ def build(root, config, environment):
     images.package(root, config, environment, run)
     validate_outputs(root, config, environment)
 
+
+def build_rust(root, config, environment):
+    """Compile and stage declared native binaries; usable by an owned local service."""
+    records = cargo_records(config, environment)
+    if records:
+        rust_staging.compile_and_stage(root, rust_components(config), records, environment, run)
 
 def validate_outputs(root, config, environment):
     images.validate_release(root, config, environment)
@@ -469,118 +459,35 @@ def check_sdks(root, config, operation, environment, suite=None):
 
 
 def development_project(root, config=None):
-    # Preserve the existing checkout identity; retained database volumes continue
-    # to belong to exactly the same development project after this migration.
-    config = load(root) if config is None else config
-    prefix = config.get('dev', {}).get('project_prefix', 'komizo')
-    if not isinstance(prefix, str) or not re.fullmatch('[a-z][a-z0-9-]{0,31}', prefix):
-        raise ValueError('development project identity requires a bounded native prefix')
-    return prefix + '-' + hashlib.sha256(os.path.normpath(str(root)).encode()).hexdigest()[:16]
-
+    return application_development.development_project(root, config)
 
 def select_port(preferred, attempts=100):
-    if type(preferred) is not int or type(attempts) is not int or not 1 <= preferred <= 65535 or not 1 <= attempts <= 1000:
-        raise ValueError('development port and bounded attempt count must be positive native integers')
-    for port in range(preferred, min(preferred + attempts, 65536)):
-        with socket.socket() as listener:
-            try:
-                listener.bind(('127.0.0.1', port))
-            except OSError:
-                continue
-            return port
-    raise ValueError('no available checkout development port')
-
-
-def launch_development(root, config, environment):
-    values = config.get('dev', {})
-    if values.get('kind') == 'expo':
-        directory = relative(root, values.get('directory', 'app'), exists=True)
-        port = select_port(values.get('port', 8081), values.get('port_attempts', 100))
-        print('Development app: http://127.0.0.1:' + str(port), flush=True)
-        run(['bun', '--no-env-file', 'run', '--cwd', str(directory), 'start', '--port', str(port)],
-            root, environment | {'EXPO_NO_DOTENV': '1'})
-    elif values.get('kind') == 'native' and values.get('program'):
-        native(root, [values['program']], environment, long_running=True)
-    else:
-        raise ValueError('development requires an implemented Expo or native product driver')
-
-
-def clean_outputs(root, config, environment):
-    stop_services(root, config, environment)
-    paths = config.get('clean', {}).get('paths', [])
-    if not paths:
-        raise ValueError('clean requires explicit generated output paths')
-    helper('clean').clean(root, paths)
-
-
-def stop_services(root, config, environment):
-    for name in config.get('dev', {}).get('cleanup_compose', []):
-        source = relative(root, name, exists=True)
-        run(['docker', 'compose', '-p', development_project(root, config), '-f', str(source), 'down'], root, environment)
-    if config.get('dev', {}).get('cleanup'):
-        native(root, [config['dev']['cleanup']], environment)
-
-
-def isolated_operation(root, config, environment, operation):
-    selected = relative(root, config.get('dev', {}).get('identity', 'ghenv.json'), exists=True)
-    base = [pinned_ghenv(root, environment), 'local', '--', 'env', 'DEV_PROJECT=' + development_project(root, config),
-            'TOOLS_ROOT=' + str(TOOLS), sys.executable, str(Path(__file__).resolve()), operation]
-    if selected.name != 'ghenv.json' or selected.parent != root:
-        raise ValueError('application development identity uses the owned root ghenv.json')
-    return base
-
+    return application_development.select_port(preferred, attempts)
 
 def pinned_ghenv(root, environment):
-    pins = tomllib.loads((root / 'mise.toml').read_text()).get('tools', {})
-    if 'github:nicodes/ghenv' not in pins:
-        raise ValueError('development identity requires an exact caller-owned ghenv SDK pin')
-    directory = Path(subprocess.check_output(['mise', 'where', 'github:nicodes/ghenv'],
-                     cwd=root, env=environment, text=True).strip()).resolve()
-    executable = Path(subprocess.check_output(['mise', 'which', 'ghenv'],
-                      cwd=root, env=environment, text=True).strip()).resolve()
-    if not executable.is_relative_to(directory) or not executable.is_file():
-        raise ValueError('ghenv must resolve inside its installed pinned SDK')
-    return str(executable)
+    return application_development.pinned_ghenv(root, environment)
 
+def launch_development(root, config, environment):
+    return application_development.launch_development(root, config, environment, api=development_api())
+
+def clean_outputs(root, config, environment):
+    return application_development.clean_outputs(root, config, environment, api=development_api())
+
+def stop_services(root, config, environment):
+    return application_development.stop_services(root, config, environment, api=development_api())
+
+def isolated_operation(root, config, environment, operation):
+    return application_development.isolated_operation(root, config, environment, operation, api=development_api())
 
 def development(root, config, environment, operation):
-    supervisor = [sys.executable, str(TOOLS / 'helpers/dev.py')]
-    if operation == 'dev:logs':
-        run([*supervisor, 'logs', '--state', '.local/dev'], root, environment)
-        return
-    if not config.get('dev'):
-        raise ValueError('application does not implement a development service')
-    if operation == 'dev:stop':
-        run([*supervisor, 'stop', '--state', '.local/dev'], root, environment)
-        cleanup = isolated_operation(root, config, environment, '_stop-services')
-        run([*supervisor, 'clean', '--state', '.local/dev', '--', *cleanup], root, environment)
-        return
-    cleanup = isolated_operation(root, config, environment, '_stop-services')
-    ghenv = pinned_ghenv(root, environment)
-    mode = environment.get('DEV_MODE', 'auto')
-    if mode not in {'auto', 'local', 'preview'}:
-        raise ValueError('development identity must be local, preview or the configured automatic mode')
-    command = [ghenv, 'dev', '--config', 'ghenv.json', '--mode', mode, '--', 'env',
-               'DEV_PROJECT=' + development_project(root, config), 'TOOLS_ROOT=' + str(TOOLS),
-               sys.executable, str(Path(__file__).resolve()), '_dev']
-    preparation = [ghenv, 'local', '--', 'env', 'COOKBOOK_STAGE=local', 'make', 'setup']
-    arguments = [*supervisor, 'run', '--state', '.local/dev', '--prepare', json.dumps(preparation),
-                 '--cleanup', json.dumps(cleanup), '--policy-input', 'mise.toml',
-                 '--policy-input', 'cookbook.toml', '--policy-input', 'ghenv.json']
-    if config['dev'].get('capture_output', False):
-        arguments += ['--log', '.local/dev/output.log']
-    run([*arguments, '--', *command], root, environment)
-
+    return application_development.development(root, config, environment, operation, api=development_api())
 
 def database(root, config, environment, operation):
-    name = operation.split(':', 1)[1]
-    entry = config.get('database', {}).get(name)
-    if not isinstance(entry, dict):
-        raise ValueError('database operation has no implemented native product entrypoint')
-    arguments = [*isolated_operation(root, config, environment, '_database'), '--suite', name]
-    if name == 'reset':
-        arguments = [sys.executable, str(TOOLS / 'helpers/dev.py'), 'clean', '--state', '.local/dev', '--', *arguments]
-    run(arguments, root, environment)
+    return application_development.database(root, config, environment, operation, api=development_api())
+
+
+def check_development_sdks(root, config, environment, operation, suite=None):
+    check_sdks(root, config, operation, environment, suite)
 
 
 def main():
@@ -599,6 +506,7 @@ def main():
         environment = configure_environment(root, config)
         if args.operation not in {'setup', 'clean', '_clean', 'dev:stop', 'dev:logs', '_stop-services'}:
             check_sdks(root, config, args.operation, environment, args.suite)
+            komizo_sdk.check(root,config,environment)
         if args.operation == 'setup':
             setup(root, config, environment)
         elif args.operation == 'fmt':

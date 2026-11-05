@@ -53,7 +53,7 @@ def load(root):
         raise ValueError('recipe configuration must be a bounded regular source file')
     data = tomllib.loads(path.read_text())
     allowed = {'version', 'recipe', 'package', 'tests', 'lint', 'format', 'clean',
-               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication', 'ci', 'delivery'}
+               'dev', 'database', 'components', 'node', 'security', 'artifacts', 'publication', 'ci', 'delivery', 'preview', 'operations'}
     if set(data) - allowed or data.get('version') != 1 or data.get('recipe') not in RECIPES:
         raise ValueError('unsupported cookbook configuration')
     if 'tasks' in data or 'commands' in data:
@@ -74,10 +74,13 @@ def load(root):
             if entry.get('runner') not in RUNNERS:
                 raise ValueError('unsupported native test runner')
             policy = entry.get('policy', {})
-            policy_keys = {'sentinel_regex', 'assertions_regex', 'allow_errors', 'editor', 'audio_driver', 'allow_error_version'}
+            policy_keys = {'sentinel_regex', 'assertions_regex', 'allow_errors', 'editor', 'audio_driver', 'allow_error_version', 'deferred_autoloads'}
             if (not isinstance(policy, dict) or set(policy)-policy_keys
                     or (policy and entry['runner'] not in {'godot', 'godot-check'})):
                 raise ValueError('native assertion policy is unsupported for this runner')
+            if 'deferred_autoloads' in policy and (data['recipe'] != 'godot-game'
+                    or entry['runner'] != 'godot-check' or type(policy['deferred_autoloads']) is not bool):
+                raise ValueError('deferred autoloads require a native Godot game check and literal boolean')
             if entry['runner'] in {'godot', 'godot-suite'}:
                 sentinel = entry.get('sentinel')
                 regex_signal = entry['runner'] == 'godot' and isinstance(policy.get('sentinel_regex'), str)
@@ -92,7 +95,9 @@ def load(root):
             if not (program.is_dir() if entry['runner'] == 'godot-suite' else
                     (program.is_file() or program.is_dir()) if discovery else program.is_file()):
                 raise ValueError('test entry must name a source file')
-            if not any(part in {'tests', 'test'} for part in Path(entry['path']).parts):
+            colocated = (entry['runner'] in {'node-test','bun-test'} and program.is_file()
+                and re.fullmatch(r'.+\.(?:test|spec)\.(?:[cm]?js|jsx|ts|tsx)',program.name))
+            if not colocated and not any(part in {'tests', 'test'} for part in Path(entry['path']).parts):
                 raise ValueError('product test entry points belong with their tests')
             arguments = entry.get('args', [])
             if not isinstance(arguments, list) or any(not isinstance(value, str) or '\0' in value for value in arguments):
@@ -110,6 +115,9 @@ def load(root):
                 raise ValueError('native tests require a bounded timeout')
     for name in data.get('clean', {}).get('paths', []):
         relative(root, name)
+    if 'operations' in data:
+        import operational_workflows
+        operational_workflows.declaration(root, data)
     return data
 
 

@@ -23,6 +23,18 @@ class RecipeConfiguration(unittest.TestCase):
         self.write('[[tests.unit]]\nrunner="python"\npath="tests/test_behavior.py"\nargs=["--case", "literal;value"]\n')
         self.assertEqual(configuration.load(self.root)['tests']['unit'][0]['args'], ['--case', 'literal;value'])
 
+    def test_deferred_autoloads_are_explicitly_limited_to_game_native_checks(self):
+        (self.root/'tests/node.gd').write_text('extends Node\n')
+        for recipe, runner, boolean, accepted in [('godot-game','godot-check','true',True),
+                ('godot-addon','godot-check','true',False),('godot-game','python','true',False),
+                ('godot-game','godot-check','"yes"',False)]:
+            (self.root/'cookbook.toml').write_text('version=1\nrecipe="'+recipe+'"\n[[tests.unit]]\n'
+                +'runner="'+runner+'"\npath="tests/node.gd"\npolicy={deferred_autoloads='+boolean+'}\n')
+            with self.subTest(recipe=recipe,runner=runner,boolean=boolean):
+                if accepted:configuration.load(self.root)
+                else:
+                    with self.assertRaises(ValueError):configuration.load(self.root)
+
     def test_declared_empty_or_unknown_suites_are_refused(self):
         for text in ['[tests]\nunit=[]\n', '[tests]\nunknown=[]\n', '[tasks]\nbuild="anything"\n']:
             with self.subTest(text=text):
@@ -41,6 +53,22 @@ class RecipeConfiguration(unittest.TestCase):
         self.write('[[tests.unit]]\nrunner="python; echo leak"\npath="tests/test_behavior.py"\n')
         with self.assertRaises(ValueError):
             configuration.load(self.root)
+
+    def test_colocated_javascript_tests_keep_native_ownership_and_literal_test_identity(self):
+        (self.root/'app/native').mkdir(parents=True)
+        for runner,name,accepted in [('bun-test','authoring.test.ts',True),
+                ('node-test','runtime.spec.mjs',True),('node-test','runtime.mjs',False),
+                ('bun','authoring.test.ts',False),('python','policy.test.py',False)]:
+            source=self.root/'app/native'/name
+            source.write_text('// real native test source\n')
+            self.write('[[tests.unit]]\nrunner="'+runner+'"\npath="app/native/'+name+'"\n')
+            with self.subTest(runner=runner,name=name):
+                if accepted:
+                    self.assertEqual(configuration.load(self.root)['tests']['unit'][0]['path'],'app/native/'+name)
+                else:
+                    with self.assertRaises(ValueError):configuration.load(self.root)
+        self.write('[[tests.unit]]\nrunner="node-test"\npath="app/native"\n')
+        with self.assertRaises(ValueError):configuration.load(self.root)
 
     def test_source_and_output_paths_reject_symlink_escapes(self):
         try:

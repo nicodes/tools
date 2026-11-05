@@ -59,16 +59,22 @@ def contents(repo, ref, path):
 
 
 def validate_policy(value):
-    keys = {'version', 'mode', 'ci_workflow', 'required_checks', 'integration_job',
-            'dispatch_workflow', 'max_group_size', 'managed_dependencies', 'sensitive_dependencies'}
-    if not isinstance(value, dict) or set(value) != keys or value.get('version') != 1:
-        raise ValueError('complete dependency policy v1 required')
+    common = {'version', 'mode', 'ci_workflow', 'required_checks', 'max_group_size',
+              'managed_dependencies', 'sensitive_dependencies'}
+    if not isinstance(value, dict) or value.get('version') not in {1, 2}:
+        raise ValueError('complete dependency policy v1 or v2 required')
+    keys = common | ({'integration_job', 'dispatch_workflow'} if value['version'] == 1 else {'request_workflow'})
+    if set(value) != keys:
+        raise ValueError('complete versioned dependency policy required')
     if value['mode'] not in ('auto', 'review') or not WORKFLOW.fullmatch(value['ci_workflow']):
         raise ValueError('invalid dependency mode or workflow')
-    if not WORKFLOW.fullmatch(value['dispatch_workflow']):
-        raise ValueError('explicit merged-main workflow required')
-    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*', value['integration_job']):
-        raise ValueError('explicit integration job required')
+    if value['version'] == 1:
+        if not WORKFLOW.fullmatch(value['dispatch_workflow']):
+            raise ValueError('explicit merged-main workflow required')
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*', value['integration_job']):
+            raise ValueError('explicit integration job required')
+    elif value['request_workflow'] != 'request-merge.yml':
+        raise ValueError('cookbook updates require the trusted requested full-validation workflow')
     checks = value['required_checks']
     if not isinstance(checks, list) or not checks or len(set(checks)) != len(checks) or not all(isinstance(c, str) and c for c in checks):
         raise ValueError('nonempty unique required checks required')
@@ -183,6 +189,8 @@ def ci_evidence(repo, head, base, policy):
         return 'blocked', 'an external status failed', None
     if any(s['state'] != 'success' for s in latest.values()):
         return 'waiting', 'an external status is pending', None
+    if policy['version'] == 2:
+        return 'ready', 'cheap checks passed; requested full validation is required before merging', None
     receipt = integration(repo, head, base, run, policy)
     if receipt is None:
         return 'stale', 'CI tested an older base; rebase and rerun required', None
@@ -203,7 +211,7 @@ def inspect(repo, number, base, policy, apply=False):
     if reason:
         return {**result, 'state': 'review', 'reason': reason}
     files = pages(f'repos/{repo}/pulls/{number}/files')
-    if not files or any(f['filename'] in ('.github/dependency-policy.json', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml') for f in files):
+    if not files or any(f['filename'] in ('.github/dependency-policy.json', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', '.github/workflows/request-merge.yml', 'cookbook.toml', 'Makefile') for f in files):
         return {**result, 'state': 'review', 'reason': 'merge policy changes require review'}
     if pull.get('mergeable_state') == 'dirty':
         return {**result, 'state': 'blocked', 'reason': 'merge conflict requires a bot rebase'}
@@ -211,6 +219,8 @@ def inspect(repo, number, base, policy, apply=False):
     result.update(state=state, reason=reason)
     if state != 'ready' or not apply:
         return result
+    if policy['version'] == 2:
+        return request_validation(repo, number, head, base, policy, result)
     # Probe the explicitly declared dispatch before an irreversible merge.
     target = api(f"repos/{repo}/actions/workflows/{policy['dispatch_workflow']}")
     if target.get('state') != 'active':
@@ -244,6 +254,23 @@ def inspect(repo, number, base, policy, apply=False):
                 'dispatch_workflow': policy['dispatch_workflow']}
     return {**result, 'state': 'merged', 'reason': 'tested integration merged; main workflow dispatched',
             'merge_commit': merged['sha'], 'dispatch_workflow': policy['dispatch_workflow']}
+
+
+
+def request_validation(repo, number, head, base, policy, result):
+    """Select the full controller; cheap checks never authorize a merge here."""
+    target = api(f"repos/{repo}/actions/workflows/{policy['request_workflow']}")
+    if (target.get('state') != 'active' or target.get('path') != '.github/workflows/request-merge.yml'
+            or type(target.get('id')) is not int or target['id'] <= 0):
+        raise ValueError('the exact requested full-validation workflow must be active')
+    fresh = api(f'repos/{repo}/pulls/{number}')
+    if (fresh['head']['sha'] != head or fresh['state'] != 'open' or fresh.get('draft')
+            or api(f'repos/{repo}/git/ref/heads/main')['object']['sha'] != base):
+        return {**result, 'state': 'stale', 'reason': 'head or base moved before full validation request'}
+    api(f"repos/{repo}/actions/workflows/{target['id']}/dispatches", 'POST', {
+        'ref': 'main', 'inputs': {'pull-request': str(number), 'expected-head': head, 'expected-base': base}})
+    return {**result, 'state': 'validation-requested',
+            'reason': 'full validation requested for the reviewed current head and base; controller owns merging'}
 
 
 def candidates(repo, event, name, policy):

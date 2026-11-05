@@ -1,6 +1,10 @@
 name: Reconcile dependency updates
 description: Review or merge verified bot updates from protected caller policy without loading product code
 inputs:
+  tools-ref:
+    description: Exact accepted cookbook checkout when used by its trusted reusable workflow
+    required: false
+    default: ''
   apply:
     description: Apply eligible updates after verifying current CI and immutable bot metadata
     required: false
@@ -22,7 +26,7 @@ runs:
       shell: bash
       env:
         TOOLS_ACTION: ${{ github.action_path }}
-        TOOLS_SOURCE: ${{ github.action_ref || github.sha }}
+        TOOLS_SOURCE: ${{ inputs.tools-ref || github.action_ref || github.sha }}
         APPLY_UPDATES: ${{ inputs.apply }}
         REPORT: ${{ inputs.output }}
       run: |

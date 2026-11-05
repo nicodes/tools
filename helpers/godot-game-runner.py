@@ -28,6 +28,8 @@ def main(argv, timeout=180, sentinel=None, forbidden=(), environment=None, cwd=N
                     environment[key] = str(Path(environment.get(xdg) or str(Path.home()/fallback))/"mise")
             environment["XDG_DATA_HOME"] = str(Path(directory)/"data")
             environment["XDG_CONFIG_HOME"] = str(Path(directory)/"config")
+            Path(environment["XDG_DATA_HOME"]).mkdir()
+            Path(environment["XDG_CONFIG_HOME"]).mkdir()
             try:
                 result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                         text=True, timeout=timeout, check=False, env=environment, cwd=cwd)
@@ -61,5 +63,13 @@ def main(argv, timeout=180, sentinel=None, forbidden=(), environment=None, cwd=N
 
 
 if __name__ == "__main__":
-    status = main(sys.argv[1:])
+    import argparse
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--timeout',type=float,default=180)
+    parser.add_argument('--sentinel')
+    parser.add_argument('--forbidden',action='append',default=[])
+    parser.add_argument('command',nargs=argparse.REMAINDER)
+    args=parser.parse_args()
+    command=args.command[1:] if args.command[:1]==['--'] else args.command
+    status = main(command,timeout=args.timeout,sentinel=args.sentinel,forbidden=args.forbidden)
     sys.exit(status if status >= 0 else 128-status)

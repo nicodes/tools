@@ -7,7 +7,7 @@ import tomllib
 from configuration import relative
 
 NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.+/-]*\Z')
-TARGET = re.compile(r'[a-z0-9_]+(?:-[a-z0-9_]+){2,}\Z')
+TARGET = re.compile(r'[a-z0-9_]+(?:-[a-z0-9_]+){1,}\Z')
 BASE_FIELDS = {'name', 'manifest', 'binaries', 'packages', 'features', 'all_features',
                'no_default_features', 'workspace', 'all_targets', 'release',
                'targets', 'target', 'target_directory', 'profile', 'test', 'build', 'lint', 'environment',
@@ -155,10 +155,11 @@ def cargo_args(component, operation, *, target=None, environment=None):
         profile = values.get('profile', 'release' if values.get('release', True) else 'dev')
         if profile == 'release':
             argv.append('--release')
+    if operation in {'unit', 'lint'} and values.get('lib'):
+        argv.append('--lib')
     if operation == 'unit':
-        for field, flag in [('lib', '--lib'), ('tests', '--tests')]:
-            if values.get(field):
-                argv.append(flag)
+        if values.get('tests'):
+            argv.append('--tests')
         for name in values.get('test_targets', []):
             argv += ['--test', name]
         if values.get('test_filter'):

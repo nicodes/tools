@@ -49,4 +49,28 @@ $(COOKBOOK_PYTHON) "$(COOKBOOK_ROOT)/cookbook/godot_game.py" dev:logs
 endef
 endif
 
+ifneq ($(filter db:status,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_db_status
+$(COOKBOOK_GAME) db:status
+endef
+endif
+
+ifneq ($(filter db:migrate,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_db_migrate
+$(COOKBOOK_GAME) db:migrate
+endef
+endif
+
+ifneq ($(filter db:seed,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_db_seed
+$(COOKBOOK_GAME) db:seed
+endef
+endif
+
+ifneq ($(filter db:reset,$(COOKBOOK_CAPABILITIES)),)
+define cookbook_db_reset
+$(COOKBOOK_GAME) db:reset
+endef
+endif
+
 include $(call cookbook_path,$(COOKBOOK_ROOT)/cookbook/common.mk)

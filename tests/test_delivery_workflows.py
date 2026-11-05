@@ -60,6 +60,9 @@ class DeliveryWorkflows(unittest.TestCase):
         self.assertIn('BACKUP_S3_ACCESS_KEY: ${{ secrets.BACKUP_S3_ACCESS_KEY }}', result)
         before_deploy = result.split('  deploy:')[0]
         self.assertNotIn('secrets.', before_deploy)
+        preparation,upload=result.split('      - uses: nicodes/komizo-actions/application-backup-upload@',1)
+        self.assertNotIn('BACKUP_S3_ACCESS_KEY',preparation)
+        self.assertIn('BACKUP_S3_ACCESS_KEY',upload)
 
     def test_production_retains_host_cd_identity_without_duplicate_main_builds(self):
         self.write()
@@ -73,6 +76,8 @@ class DeliveryWorkflows(unittest.TestCase):
         self.assertIn('merge-gate: false', files['.github/workflows/cd.yml'])
         self.assertNotIn('application-delivery', files['.github/workflows/ci.yml'])
         self.assertIn('application-delivery', files['.github/workflows/cd.yml'])
+        self.assertIn('group: deploy-source-${{ github.sha }}-', files['.github/workflows/cd.yml'])
+        self.assertIn('group: ci-${{ github.ref }}-', files['.github/workflows/ci.yml'])
 
     def test_combined_delivery_keeps_one_existing_job_deadline(self):
         self.data.update(combined=True, publish_timeout=15, deploy_timeout=15)
@@ -93,6 +98,104 @@ class DeliveryWorkflows(unittest.TestCase):
         self.data['health_urls'].append(dict(url='https://example.test/release.json', contains='{revision}'))
         self.write()
         self.assertEqual(delivery.declaration(self.root, self.config)['health_urls'][1]['contains'], '{revision}')
+
+    def test_native_environment_deadlines_and_absent_notification_are_preserved(self):
+        self.data.update(environment='Production', notify=False,
+            step_timeouts={'deploy':25,'readiness':5,'diagnostics':3},
+            report={'runner':'ubuntu-24.04','timeout_minutes':5,
+                    'step_timeouts':{'checkout':3,'setup':5,'report':3}})
+        self.write()
+        text=delivery.jobs(self.root,self.config,'b'*40)
+        self.assertIn('    environment: Production',text)
+        self.assertIn('plan-only: true',text)
+        self.assertIn('sdk-prepared: true',text)
+        self.assertIn('        timeout-minutes: 25',text)
+        self.assertIn('notify: false',text)
+        self.assertNotIn('DISCORD_WEBHOOK_URL',text)
+        self.assertIn('report-runner: ubuntu-24.04',text)
+        for changes in [{'deploy':101},{'command':5},{'readiness':True}]:
+            self.data['step_timeouts']=changes
+            self.write()
+            with self.subTest(changes=changes),self.assertRaises(ValueError):
+                delivery.declaration(self.root,self.config)
+
+    def test_readiness_and_operational_readiness_cannot_select_two_policies(self):
+        self.data['readiness_operation']=True
+        self.write()
+        with self.assertRaisesRegex(ValueError,'one native production policy'):
+            delivery.declaration(self.root,self.config)
+        self.config['operations']={'definition':'deploy/operations.json'}
+        self.assertTrue(delivery.declaration(self.root,self.config)['readiness_operation'])
+
+    def test_scoped_profile_keeps_generation_and_never_transports_profile_values(self):
+        self.data.update(service_env_profile='serving-postgres-v2',expected_generation='c'*32,secrets={},variables={})
+        self.write()
+        text=delivery.jobs(self.root,self.config,'b'*40)
+        self.assertIn('service-env-profile: serving-postgres-v2',text)
+        self.assertIn('expected-generation: '+'c'*32,text)
+        self.assertNotIn('KOMIZO_SECRET_',text)
+        import copy
+        original=copy.deepcopy(self.data)
+        for changes in [dict(expected_generation='wrong'),dict(service_env_profile='../other'),
+                        dict(secrets={'KOMIZO_SECRET_DB':'DB'}),dict(optional_secrets={'KOMIZO_SECRET_TOKEN':'TOKEN'}),
+                        dict(service_env_profile='')]:
+            self.data=original|changes;self.write()
+            with self.subTest(changes=changes),self.assertRaises(ValueError):
+                delivery.declaration(self.root,self.config)
+
+    def test_delivery_verification_and_notification_keep_distinct_native_policy(self):
+        self.data.update(validation_timeout_minutes=60,notification=dict(runner='ubuntu-slim',timeout_minutes=2,
+            step_timeouts={'notify':1},environment='Production'))
+        self.write()
+        (self.root/'tests').mkdir()
+        (self.root/'tests/unit.py').write_text('assert 2+2==4\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\ntimeout_minutes=45\n[delivery]\ndefinition="delivery.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        files=generate.workflow_files(self.root,'b'*40)
+        self.assertIn('      timeout-minutes: 45',files['.github/workflows/ci.yml'])
+        self.assertIn('      timeout-minutes: 60',files['.github/workflows/cd.yml'])
+        self.assertIn('      environment: Production',files['.github/workflows/cd.yml'])
+
+    def test_historical_dispatch_skips_new_builds_and_keeps_scoped_host_and_notification_policy(self):
+        self.data.update(historical_deploy=True,service_env_profile='serving-postgres-v2',expected_generation='c'*32,
+                         secrets={},variables={},report=False)
+        self.write()
+        (self.root/'tests').mkdir()
+        (self.root/'tests/unit.py').write_text('assert 2+2==4\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        files=generate.workflow_files(self.root,'b'*40)
+        text=files['.github/workflows/cd.yml']
+        self.assertIn('      version:',text)
+        self.assertNotIn('      version:',files['.github/workflows/ci.yml'])
+        self.assertIn("    if: inputs.version == '' || inputs.version == github.sha",text)
+        normal,rollback=text.split('\n  rollback:',1)
+        self.assertIn("&& (inputs.version == '' || inputs.version == github.sha)",normal)
+        self.assertIn("inputs.version != '' && inputs.version != github.sha",rollback)
+        self.assertIn('cookbook-historical-deploy.yml@',rollback)
+        self.assertIn('cookbook-notify.yml@',text)
+        self.assertNotIn('issues: write',text)
+        self.assertIn('needs.rollback.outputs.version || github.sha',text)
+        self.assertEqual(set(delivery.historical_deadlines(self.data)),
+                         {'checkout','setup','plan','registry','inspect','deploy','diagnostics'})
+        self.data.pop('service_env_profile');self.data.pop('expected_generation');self.write()
+        with self.assertRaisesRegex(ValueError,'fixed scoped profile'):
+            delivery.declaration(self.root,self.config)
+
+    def test_setup_connection_capture_and_download_have_actual_workflow_deadlines(self):
+        (self.root/'deploy').mkdir()
+        (self.root/'deploy/backup.json').write_text('{}\n')
+        self.data.update(backup='deploy/backup.json',upload_backup=True)
+        self.write()
+        text=delivery.jobs(self.root,self.config,'b'*40)
+        for action,minutes in [('nicodes/tools/setup@',5),('nicodes/komizo-actions/connect@',3),
+                               ('nicodes/komizo-actions/application-backup-export@',15),
+                               ('nicodes/komizo-actions/application-backup-upload@',10),
+                               ('actions/download-artifact@',5)]:
+            block=text.split('      - uses: '+action,1)[1].split('      - uses:',1)[0]
+            with self.subTest(action=action):self.assertIn('        timeout-minutes: '+str(minutes)+'\n',block)
+        admission=text.split('      - uses: nicodes/komizo-actions/application-delivery@',1)[1].split('      - uses:',1)[0]
+        self.assertNotIn('secrets.',admission)
+        capture=text.split('      - uses: nicodes/komizo-actions/application-backup-export@',1)[1].split('      - uses:',1)[0]
+        self.assertNotIn('BACKUP_S3_',capture)
 
 
 if __name__ == '__main__':

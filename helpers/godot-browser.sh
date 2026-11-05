@@ -73,11 +73,16 @@ for _attempt in {1..30}; do
       if [[ -n ${BROWSER_RUNTIME_IMAGE:-} ]]; then
         : "${BROWSER_CACHE:?Set BROWSER_CACHE to the installed Playwright browser directory}"
         : "${GDPW_BIN:?Set GDPW_BIN to the verified gd-playwright-cli executable}"
+        native_environment=()
+        read -r -a forwarded_parameters <<< "${GODOT_BROWSER_FORWARD_ENVIRONMENT:-}"
+        for parameter in "${forwarded_parameters[@]}"; do
+          native_environment+=(-e "$parameter")
+        done
         docker run --rm --init --network host --shm-size=1g --user "$(id -u):$(id -g)" \
           -e HOME=/tmp -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
           -e GATE_TLS_PORT -e GATE_TLS_SPKI -e BROWSER -e BROWSER_SOAK_SECONDS -e BROWSER_ROUTE_CYCLES \
-          -e BROWSER_TEST_MODE -e EXPECTED_SOURCE_COMMIT -e EXPECTED_IMAGE_ID \
-          -e CACHE_NEXT_PORT -e CACHE_FIRST_PORT -e CACHE_SWITCH_FILE \
+          -e BROWSER_TEST_MODE -e EXPECTED_SOURCE_COMMIT -e EXPECTED_RELEASE_ID -e EXPECTED_IMAGE_ID \
+          -e CACHE_NEXT_PORT -e CACHE_FIRST_PORT -e CACHE_SWITCH_FILE "${native_environment[@]}" \
           -v "$PWD:$PWD" -w "$PWD" -v "$BROWSER_CACHE:/ms-playwright:ro" \
           -v "$GDPW_BIN:/usr/local/bin/gd-playwright-cli:ro" "$BROWSER_RUNTIME_IMAGE" "${browser_command[@]}"
       else

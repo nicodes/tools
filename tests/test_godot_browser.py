@@ -35,7 +35,7 @@ class BrowserControls(unittest.TestCase):
             browser.journeys(self.root,self.config,environment,entry)
             call=run.call_args
             self.assertEqual(call.kwargs['env']['BROWSER'],'chromium firefox webkit')
-            self.assertEqual(call.kwargs['env']['BROWSER_TEST_MODE'],'canonical')
+            self.assertEqual(call.kwargs['env']['BROWSER_TEST_MODE'],'')
             self.assertEqual(call.kwargs['env']['BROWSER_STARTUP'],'0')
             self.assertEqual(call.kwargs['timeout'],900)
             self.assertEqual(call.kwargs['env']['GODOT_BROWSER_RUNNER'],'tests/browser/run.mjs')
@@ -66,6 +66,33 @@ class BrowserControls(unittest.TestCase):
         value['runner']='tests/browser/run.mjs'
         (self.root/value['runner']).unlink();(self.root/value['runner']).symlink_to(self.root/'app/runner.mjs')
         with self.assertRaises(ValueError):browser.declaration(self.root,self.config)
+
+    def test_named_ordinary_and_diagnostic_journeys_select_exact_declared_images(self):
+        value=self.config['components']['browser']
+        (self.root/'tests/browser/blackbox.mjs').write_text('throw Error("owned ordinary fixture");')
+        value['journeys']=[{'name':'ordinary','path':'tests/browser/blackbox.mjs','image':'gate'},
+                           {'name':'diagnostic','path':'tests/browser/run.mjs','image':'gate-diagnostic'}]
+        value['forward_environment']=['BROWSER_SOLUTION_POSITION','BROWSER_BLOCK_POSITION']
+        definition={'image_base':'ghcr.io/fixture/game','inputs':{'images':['ghcr.io/fixture/game-gate:{revision}']}}
+        self.config['components']['images']=[{'name':'gate'},{'name':'gate-diagnostic'}]
+        self.config['components']['fixture_images']={'directory':'.artifacts/fixtures/images'}
+        with patch.object(browser.images,'definition',return_value=definition),patch.object(browser.subprocess,'run') as run:
+            for journey in value['journeys']:
+                browser.journeys(self.root,self.config,{'SOURCE_COMMIT':'c'*40,'EXPECTED_RELEASE_ID':'d'*64},
+                    {'runner':'godot-browser','path':journey['path'],'timeout':900})
+                environment=run.call_args.kwargs['env']
+                self.assertEqual(environment['GATE_IMAGE'],'ghcr.io/fixture/game-'+journey['image']+':'+'c'*40)
+                self.assertEqual(environment['GODOT_BROWSER_RUNNER'],journey['path'])
+                self.assertEqual(environment['EXPECTED_RELEASE_ID'],'d'*64)
+                self.assertEqual(environment['BROWSER'],'chromium firefox webkit')
+                self.assertEqual(environment['GODOT_BROWSER_FORWARD_ENVIRONMENT'],'BROWSER_SOLUTION_POSITION BROWSER_BLOCK_POSITION')
+            value['journeys'][1]['image']='unshipped'
+            with self.assertRaises(ValueError):browser.declaration(self.root,self.config)
+
+    def test_forwarding_cannot_smuggle_workflow_sdk_or_token_authority(self):
+        for key in ['GH_TOKEN','GITHUB_TOKEN','GITHUB_RUN_ID','MISE_DATA_DIR','COOKBOOK_PREVIEW_NUMBER','REQUEST_HEAD']:
+            self.config['components']['browser']['forward_environment']=[key]
+            with self.assertRaises(ValueError):browser.declaration(self.root,self.config)
 
 
 if __name__=='__main__':unittest.main()

@@ -46,12 +46,19 @@ def load_config(file):
         raise ValueError('restore config must name an explicit project')
     if not re.fullmatch(r'[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9/._-]*', config.get('image_base', '')):
         raise ValueError('restore config must bind the application image namespace')
-    required = {'postgresql': ('runtime_role', 'dsn_file', 'api_port', 'health_path', 'root', 'env'),
+    required = {'postgresql': ('runtime_role', 'api_port', 'health_path', 'root', 'env'),
                 'pocketbase': ('db', 'binary', 'port', 'api_port', 'root', 'env', 'data_path', 'health_path', 'serve_flags')}
     backend = config.get('backend')
     if backend not in required or any(key not in config for key in required[backend]):
         raise ValueError('restore config has an unknown backend or missing application settings')
     if backend == 'postgresql':
+        transport=config.get('dsn_transport','file')
+        if transport not in {'file','environment'} or (transport=='file' and 'dsn_file' not in config):
+            raise ValueError('restore config requires its actual serving DSN transport')
+        variable=config.get('dsn_variable',SERVING_DSN_VARIABLE if transport=='file' else 'RUNTIME_DATABASE_URL')
+        if not isinstance(variable,str) or not re.fullmatch('[A-Z][A-Z0-9_]*',variable):
+            raise ValueError('restore DSN must select one native environment variable')
+        if variable in config.get('env',{}):raise ValueError('restore DSN has competing environment authority')
         for name, pattern in (('database', r'[a-z][a-z0-9_]{0,62}'),
                               ('role_namespace', r'[a-z][a-z0-9-]*')):
             if name in config and (not isinstance(config[name], str) or not re.fullmatch(pattern, config[name])):
@@ -60,6 +67,22 @@ def load_config(file):
         or not isinstance(value, str) or '\n' in value or '\r' in value for name, value in config['env'].items()):
         raise ValueError('restore environment must contain bounded single-line values')
     return config
+
+
+def serving_credentials(config,dsn):
+    transport=config.get('dsn_transport','file')
+    variable=config.get('dsn_variable',SERVING_DSN_VARIABLE if transport=='file' else 'RUNTIME_DATABASE_URL')
+    if transport=='file':
+        return {variable:config['dsn_file']},['--mount',f'type=bind,src={dsn},dst={config["dsn_file"]},readonly']
+    # This is the disposable clone credential, written only to the private
+    # env-file. It never appears in Docker argv, diagnostic errors or reports.
+    dsn=Path(dsn)
+    if dsn.is_symlink() or not dsn.is_file() or dsn.stat().st_size>8192 or dsn.stat().st_mode&0o077:
+        raise ValueError('restore DSN must be a bounded private disposable credential')
+    value=dsn.read_text().strip()
+    if not value.startswith(('postgresql://','postgres://')) or any(c in value for c in '\0\r\n'):
+        raise ValueError('restore DSN is not a single native PostgreSQL credential')
+    return {variable:value},[]
 
 
 def probe_endpoint(docker_run, watched, url, timeout=175):
@@ -183,14 +206,15 @@ def postgres_drill(project, export, key, pull=False, *, config):
                         containers.remove(name)
 
                 environment = root/'clone.env'
+                serving,mounts=serving_credentials(config,dsn)
                 environment.write_text(''.join(f'{name}={value}\n' for name, value in
-                                               {**config['env'], SERVING_DSN_VARIABLE: config['dsn_file']}.items()))
+                                               {**config['env'], **serving}.items()))
                 environment.chmod(0o600)
                 api = prefix+'-api'
                 containers.append(api)
                 blobs = restored_blob_mounts(payload, config, uid)
                 docker('run', '-d', '--name', api, *netns, *common, '--memory=192m', *blobs,
-                       '--mount', f'type=bind,src={dsn},dst={config["dsn_file"]},readonly',
+                       *mounts,
                        '--env-file', str(environment), images[api_component])
                 probe_endpoint(wget, api, f'http://127.0.0.1:{config["api_port"]}{config["health_path"]}', timeout=120)
                 if not json.loads(docker('inspect', api))[0]['State']['Running']:

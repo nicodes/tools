@@ -94,7 +94,41 @@ def budget(value):
     return value
 
 
-def plan(root, config):
+def effective_host_budget(root, config, original, environment=None):
+    """A tracked delivery policy may retain a distinct exact-main CD deadline."""
+    selected=config.get('delivery')
+    if root is None or not isinstance(selected,dict) or set(selected)!={'definition'}:
+        return original
+    path=relative(Path(root),selected['definition'],exists=True)
+    if not path.is_file() or path.stat().st_size>32768:
+        raise ValueError('Godot delivery deadlines require bounded native source data')
+    data=json.loads(path.read_text())
+    if not isinstance(data,dict) or 'validation_timeout_minutes' not in data:
+        return original
+    value=data['validation_timeout_minutes']
+    if type(data.get('version')) is not int or data['version']!=1 or type(value) is not int or not 1<=value<=180:
+        raise ValueError('Godot CD validation requires its bounded native deadline')
+    environment=os.environ if environment is None else environment
+    repository=environment.get('GITHUB_REPOSITORY','')
+    source=environment.get('GITHUB_SHA','')
+    trusted=(re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repository)
+        and SHA.fullmatch(source) and environment.get('GITHUB_REF')=='refs/heads/main'
+        and environment.get('GITHUB_WORKFLOW_SHA')==source
+        and environment.get('GITHUB_WORKFLOW_REF')==repository+'/.github/workflows/cd.yml@refs/heads/main'
+        and environment.get('GITHUB_EVENT_NAME') in {'push','workflow_dispatch'}
+        and environment.get('SOURCE_SHA',source)==source)
+    if not trusted:return original
+    requested=environment.get('COOKBOOK_VALIDATION_TIMEOUT',str(value))
+    if requested!=str(value):raise ValueError('CD caller deadline differs from native delivery policy')
+    subprocess.run(['git','-C',str(root),'ls-files','--error-unmatch','--',selected['definition']],
+        check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+    if (subprocess.check_output(['git','-C',str(root),'rev-parse','HEAD'],text=True,timeout=10).strip()!=source
+            or subprocess.check_output(['git','-C',str(root),'show','HEAD:'+selected['definition']],timeout=10)!=path.read_bytes()):
+        raise ValueError('CD validation deadline differs from its exact tracked source')
+    return value
+
+
+def plan(root, config, environment=None):
     if config.get('recipe') != 'godot-game':
         raise ValueError('Godot topology requires the native game recipe')
     values = config.get('ci', {}).get('godot')
@@ -112,6 +146,7 @@ def plan(root, config):
     groups = unit_groups(config)
     native_unit = (any(value['runner'] not in {'godot', 'godot-check'} for value in config.get('tests', {}).get('unit', []))
         or any(value.get('test', {}).get('enabled', True) for value in config.get('components', {}).get('rust', []))
+        or any(value.get('test_packages') for value in config.get('components', {}).get('go', []))
         or any(isinstance(value, dict) and (value.get('test') or value.get('test_paths')) for value in config.get('node', {}).get('packages', [])))
     native_name = values.get('host_unit_name', 'test-native') if native_unit else None
     if native_name is not None and (not isinstance(native_name, str) or not NAME.fullmatch(native_name) or native_name in groups):
@@ -147,7 +182,7 @@ def plan(root, config):
     names = set()
     production = []
     for record in gate_records:
-        allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts'}
+        allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe'}
         if not isinstance(record, dict) or set(record) - allowed or not {'name', 'runner', 'timeout_minutes'} <= set(record):
             raise ValueError('invalid native auxiliary gate')
         name, kind = record['name'], record.get('kind', 'test')
@@ -155,6 +190,16 @@ def plan(root, config):
                 or name in names or record['runner'] not in RUNNERS or kind not in {'test', 'capability', 'production'}):
             raise ValueError('auxiliary gates require distinct names, native runners and coverage roles')
         names.add(name)
+        public_fields=set(record)&{'browsers','xvfb','probe'}
+        if public_fields and kind!='production':
+            raise ValueError('public production launcher policy must not alter product or capability coverage')
+        browsers=record.get('browsers',['chromium'])
+        if browsers not in [['chromium'],['chromium','firefox','webkit']]:
+            raise ValueError('public browser coverage must retain its actual one or three native engines')
+        xvfb=record.get('xvfb',[])
+        if (not isinstance(xvfb,list) or len(xvfb)!=len(set(xvfb)) or not set(xvfb)<=set(browsers)
+                or type(record.get('probe',False)) is not bool):
+            raise ValueError('public display and probe policy requires literal covered browsers and a boolean')
         setup = record.get('setup', 'native')
         if setup not in {'native', 'godot', 'browser'}:
             raise ValueError('native gate setup must select a shared SDK capability')
@@ -206,11 +251,14 @@ def plan(root, config):
             'suite': suite, 'cases': sorted(cases), 'setup': setup, 'packages': packages, 'artifacts': inputs}
         if kind != 'test':
             value['entry'] = entry
+        if kind=='production':
+            value.update({key:record[key] for key in ['browsers','xvfb','probe'] if key in record})
         (production if kind == 'production' else requirements).append(value)
     host_cases = sorted(set(declared) - assigned)
     host_groups = ['lint', 'unit', 'security', *[name for name in ['integration', 'e2e'] if config.get('tests', {}).get(name)]]
     requirements.append({'id': 'host', 'kind': 'host', 'job': 'Godot host', 'runner': runner,
-        'timeout_minutes': budget(values.get('host_timeout_minutes', config.get('ci', {}).get('timeout_minutes', 30))),
+        'timeout_minutes': effective_host_budget(root,config,
+            budget(values.get('host_timeout_minutes', config.get('ci', {}).get('timeout_minutes', 30))),environment),
         'groups': host_groups, 'cases': host_cases, 'native_unit_name': native_name})
     result = {'version': 1, 'enrolled': True, 'requirements': requirements, 'unit_inventory': sorted([*groups, *([native_name] if native_name else [])]),
         'godot_unit_inventory': sorted(groups),
@@ -351,7 +399,7 @@ def validate_partial(proof, entry, source, tools, environment, canonical_hash):
 
 def allowed_output(name, config, root):
     import godot_game
-    return any(name == path or name.startswith(path.rstrip('/') + '/') for path in godot_game.artifact_paths(root, config))
+    return any(name == path or name.startswith(path.rstrip('/') + '/') for path in godot_game.verification_scope(root, config)['artifacts'])
 
 
 def export_packet(root, proof):
@@ -441,6 +489,9 @@ def import_build(root, config, source_directory, proof):
         if archive not in files:
             raise ValueError('Godot image transfer requires its actually accepted image archive')
         subprocess.run(['docker', 'image', 'load', '--input', str(relative(root, archive, exists=True))], check=True, timeout=600)
+        import image_fixtures
+        image_fixtures.load(root,config,dict(os.environ)|{'SOURCE_COMMIT':proof['source_commit']},images,
+            lambda argv,cwd,env,timeout:subprocess.run(argv,cwd=cwd,env=env,check=True,timeout=timeout))
         for name, expected in images.items():
             value = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', name[6:]], text=True, timeout=60).strip()
             if value != expected:
@@ -488,7 +539,9 @@ def host_matrix(root, config, environment):
     for proof in matrix.get('proofs', []):
         entry = declaration_entry(root, config, proof.get('entry', {}).get('id'))
         validate_partial(proof, entry, matrix['source_commit'], matrix['cookbook_commit'], environment, configuration_hash(root))
-    if {proof['entry']['id'] for proof in matrix.get('proofs', [])} != {row['id'] for row in declaration['requirements'] if row['kind'] != 'host'}:
+    required = [row for row in declaration['requirements'] if row['kind'] != 'host']
+    if (len(matrix.get('proofs', [])) != len(required) or
+            {proof['entry']['id'] for proof in matrix.get('proofs', [])} != {row['id'] for row in required}):
         raise ValueError('Godot host join omitted partial worker coverage')
     return matrix
 
@@ -533,6 +586,27 @@ def require_units(root, config, environment):
     return declaration['unit_inventory']
 
 
+
+def require_group(root, config, environment, suite):
+    """A whole group passes only after its local checks and exact delegated union."""
+    matrix=host_matrix(root,config,environment)
+    if suite not in matrix['host_groups']:
+        raise ValueError('host join may accept only an implemented whole test group')
+    expected={case_id(suite,entry) for entry in config.get('tests',{}).get(suite,[])}
+    host=next(row for row in matrix['requirements'] if row['kind']=='host')
+    local=expected & set(host['cases'])
+    delegated=[]
+    for proof in matrix['proofs']:
+        entry=proof['entry']
+        if (entry['kind']=='unit' and suite=='unit') or (entry['kind']=='test' and entry['suite']==suite):
+            if proof.get('executed_cases')!=entry['cases']:
+                raise ValueError('delegated group evidence differs from its written assertion scope')
+            delegated.extend(proof['executed_cases'])
+    if len(delegated)!=len(set(delegated)) or local & set(delegated) or local | set(delegated)!=expected:
+        raise ValueError('whole group requires the exact disjoint local and delegated assertion union')
+    if suite=='unit':require_units(root,config,environment)
+    return {'group':suite,'local_cases':sorted(local),'delegated_cases':sorted(delegated),'status':'passed'}
+
 def finalize_host(host, matrix):
     if (not isinstance(matrix, dict) or host.get('status') != 'passed' or host.get('build_verified') is not True
             or host.get('tests_verified') is not True or set(host.get('test_groups', [])) != set(matrix['host_groups'])
@@ -542,8 +616,8 @@ def finalize_host(host, matrix):
     return {**host, 'coverage': 'complete-host-and-godot-matrix', 'godot_matrix': matrix}
 
 
-def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256):
-    declaration = plan(None, config)
+def validate_acceptance(matrix, config, jobs, source, tools, environment, configuration_sha256, *, root=None):
+    declaration = plan(root, config, environment)
     if (not isinstance(matrix, dict) or matrix.get('version') != 1 or not declaration.get('enrolled')
             or matrix.get('source_commit') != source or matrix.get('cookbook_commit') != tools
             or matrix.get('requirements') != declaration['requirements'] or matrix.get('host_groups') != declaration['host_groups']
@@ -578,9 +652,13 @@ def worker_tools(root, config, environment):
     if entry['kind'] == 'build':
         return game.required_tools(root, config, 'full')
     tools = {'python'}
+    if entry.get('setup')=='browser' or (entry['kind']=='host' and config.get('components',{}).get('playwright')):
+        tools.add('node')
     if entry['kind'] == 'host':
         tools.update(game.required_tools(root, config, 'security'))
         tools.update(game.required_tools(root, config, 'fast'))
+        if any(value.get('test_packages') for value in config.get('components',{}).get('go',[])):
+            tools.add('go')
     packages = game.packages(config) if entry['kind'] == 'host' else [value for value in game.packages(config) if value['directory'] in entry.get('packages', [])]
     for package in packages:
         tools.add('bun' if package.get('manager', 'npm') == 'bun' else 'node')
@@ -607,9 +685,13 @@ def setup_worker(root, config, environment, entry):
         return
     packages = game.packages(config) if role == 'host' else [value for value in game.packages(config) if value['directory'] in entry.get('packages', [])]
     tools = {'python'}
+    if entry.get('setup')=='browser' or (role=='host' and config.get('components',{}).get('playwright')):
+        tools.add('node')
     if role == 'host':
         tools.update(game.required_tools(root, config, 'security'))
         tools.update(game.required_tools(root, config, 'fast'))
+        if any(value.get('test_packages') for value in config.get('components',{}).get('go',[])):
+            tools.add('go')
     for value in packages:
         tools.add('bun' if value.get('manager', 'npm') == 'bun' else 'node')
     native_entries = [value for suite in config.get('tests', {}) for value in selected_entries(root, config, environment, suite)] if role == 'host' else [
@@ -623,23 +705,33 @@ def setup_worker(root, config, environment, entry):
     if not tools <= pins.keys():
         raise ValueError('Godot worker SDK capabilities require exact caller pins')
     game.run(['mise', 'install', *sorted(tools)], root, environment)
+    game.komizo_sdk.setup(root,config,environment)
     sdk = lambda argv, directory, env: game.run(['mise', 'exec', '--', *argv], directory, env)
     node_component.install(root, packages, environment, sdk)
+    if role=='host' and config.get('components',{}).get('playwright'):
+        import playwright_sdk
+        playwright_sdk.setup(root,config,environment,game.run)
     if config.get('components', {}).get('python'):
         sdk(['python3', str(TOOLS / 'cookbook/python_component.py'), 'setup'], root, environment)
+    if role == 'host' and config.get('components',{}).get('image_security'):
+        import godot_security
+        godot_security.setup(root,config,environment,game.run)
     if role == 'host':
         import rust_component
-        components = [value for value in config.get('components', {}).get('rust', []) if value.get('test', {}).get('enabled', True)]
+        components = [value for value in game.cargo_records(config, environment) if value.get('test', {}).get('enabled', True)]
         if components:
             rust_component.setup(root, components, environment, sdk)
+        if any(value.get('test_packages') for value in config.get('components',{}).get('go',[])):
+            import go_component
+            go_component.setup(root,config,environment,game.run)
     if entry.get('setup') == 'browser' and config.get('components', {}).get('browser'):
         import godot_browser
         godot_browser.setup(root, config, environment, capability=entry['kind']=='capability')
     elif entry.get('setup') == 'browser':
+        import playwright_sdk
+        playwright_sdk.install(root,config,environment,game.run,[package['directory'] for package in packages],['chromium'])
         for package in packages:
             directory = relative(root, package['directory'], exists=True)
-            executable = relative(directory, 'node_modules/.bin/playwright', exists=True)
-            game.run([str(executable), 'install', '--with-deps', 'chromium'], directory, environment, timeout=600)
             browser = subprocess.check_output(['mise', 'exec', '--', 'node', '--input-type=module', '-e',
                 'import {chromium} from "playwright"; console.log(chromium.executablePath())'],
                 cwd=directory, env=environment, text=True, timeout=30).strip()

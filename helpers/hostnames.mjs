@@ -3,8 +3,15 @@ import fs from 'node:fs';
 
 // The deployment manifest owns this data; the cookbook supplies only encoding.
 const manifest = Bun.YAML.parse(fs.readFileSync('deploy/komizo.yml', 'utf8'));
+assert.ok(manifest && typeof manifest === 'object' && !Array.isArray(manifest));
+assert.deepEqual(Object.keys(manifest).sort(), ['compose', 'hostnames']);
 assert.equal(manifest.compose, 'compose.yml');
+assert.ok(Array.isArray(manifest.hostnames) && manifest.hostnames.length <= 128);
 const hosts = manifest.hostnames.map(host => {
+  assert.ok(host && typeof host === 'object' && !Array.isArray(host));
+  assert.ok(Object.keys(host).every(key => ['name', 'container', 'tls'].includes(key)));
+  assert.equal(typeof host.name, 'string');
+  assert.equal(typeof host.container, 'string');
   assert.match(host.name, /^(\*\.)?[a-z0-9][a-z0-9.-]+$/);
   assert.match(host.container, /^[a-z0-9][a-z0-9_-]*$/);
   assert.ok(!host.tls || ['auto', 'on-demand'].includes(host.tls));

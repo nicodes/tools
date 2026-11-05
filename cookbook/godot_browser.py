@@ -10,6 +10,7 @@ import tempfile
 import tomllib
 
 from configuration import relative
+import images
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -17,7 +18,7 @@ TOOLS = Path(__file__).resolve().parents[1]
 def declaration(root, config):
     value = config.get('components', {}).get('browser')
     fields = {'package','hostname','reports','runner','cache_runner','startup_runner','tls_proxy','cli_tool','browsers'}
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict) or set(value)-{'journeys','forward_environment'} != fields:
         raise ValueError('browser fixture requires exact native source and host data')
     if not re.fullmatch(r'[a-z0-9.-]+', value['hostname']):
         raise ValueError('browser fixture requires its literal application hostname')
@@ -25,6 +26,30 @@ def declaration(root, config):
         path = relative(root, value[key], exists=True)
         if (not path.is_file() or path.suffix != '.mjs' or not any(part in {'test','tests'} for part in path.relative_to(root).parts)):
             raise ValueError('browser assertions and fixture programs belong to owned tests')
+    forwarded=value.get('forward_environment',[])
+    if (not isinstance(forwarded,list) or len(forwarded)>32 or len(set(forwarded))!=len(forwarded)
+            or any(not isinstance(name,str) or not re.fullmatch('[A-Z][A-Z0-9_]*',name)
+                   or name in {'GH_TOKEN','GITHUB_TOKEN','TOOLS_VERIFICATION_SESSION'}
+                   or name.startswith(('GITHUB_','MISE_','COOKBOOK_','REQUEST_')) for name in forwarded)):
+        raise ValueError('browser fixture forwarding requires bounded literal native parameter names')
+    journeys=value.get('journeys',[])
+    if not isinstance(journeys,list) or len(journeys)>8:
+        raise ValueError('browser image journeys require bounded native declarations')
+    names=set();paths=set()
+    shipping=set(images.components(images.definition(root,config))) if journeys else set()
+    if journeys:
+        import image_fixtures
+        fixtures=image_fixtures.declaration(root,config)
+        shipping.update(fixtures['names'] if fixtures else [])
+    for journey in journeys:
+        if (not isinstance(journey,dict) or set(journey)!={'name','path','image'}
+                or not re.fullmatch('[a-z][a-z0-9-]{0,63}',journey.get('name',''))
+                or journey['name'] in names or journey['path'] in paths or journey['image'] not in shipping):
+            raise ValueError('browser journeys require distinct native programs and declared shipping or accepted fixture image components')
+        path=relative(root,journey['path'],exists=True)
+        if (not path.is_file() or path.suffix!='.mjs' or not any(part in {'tests','test'} for part in path.relative_to(root).parts)):
+            raise ValueError('browser image journey must identify its real owned assertion program')
+        names.add(journey['name']);paths.add(journey['path'])
     package = relative(root, value['package'], exists=True)
     if not (package/'package.json').is_file() or not any(record['directory']==value['package'] for record in config.get('node',{}).get('packages',[])):
         raise ValueError('browser fixture requires one declared locked native package')
@@ -46,7 +71,7 @@ def declaration(root, config):
     return value,pin,checksum,runtime
 
 
-def setup(root, config, environment, *, capability=False):
+def setup(root, config, environment, *, capability=False, public_browsers=None):
     value,pin,checksum,runtime = declaration(root,config)
     destination=relative(root,'.artifacts/browser-sdk/gd-playwright-cli');receipt=relative(root,'.artifacts/browser-sdk/gd-playwright-cli.json')
     source={'repository':value['cli_tool'][7:],'version':pin['version'],'asset':pin['asset_pattern'],'sha256':checksum}
@@ -75,8 +100,11 @@ def setup(root, config, environment, *, capability=False):
     cache=relative(root,'.artifacts/playwright');cache.mkdir(parents=True,exist_ok=True)
     values={'PLAYWRIGHT_BROWSERS_PATH':str(cache),'GDPW_BIN':str(destination),'BROWSER_CACHE':str(cache)}
     if capability:
+        selected=public_browsers or ['chromium']
+        if selected not in [['chromium'],['chromium','firefox','webkit']]:
+            raise ValueError('public browser SDK setup must retain its literal declared engines')
         values['BROWSER_RUNTIME_IMAGE']=''
-        subprocess.run([str(playwright),'install','--with-deps','chromium'],cwd=package,env={**environment,**values},check=True,timeout=600)
+        subprocess.run([str(playwright),'install','--with-deps',*selected],cwd=package,env={**environment,**values},check=True,timeout=600)
     else:
         values['BROWSER_RUNTIME_IMAGE']=runtime
         subprocess.run(['docker','pull',runtime],cwd=root,env=environment,check=True,timeout=300)
@@ -97,15 +125,25 @@ def journeys(root, config, environment, entry=None):
     if environment.get('BROWSER_RUNTIME_IMAGE',runtime)!=runtime:
         raise ValueError('browser runtime differs from the caller SDK pin')
     selected=entry['path'] if entry else value['runner']
-    if selected not in {value['runner'],value['cache_runner'],value['startup_runner']}:
+    approved={value['runner'],value['cache_runner'],value['startup_runner'],*[item['path'] for item in value.get('journeys',[])]}
+    if selected not in approved:
         raise ValueError('browser worker must run one declared owned assertion program')
     values={**environment,'GODOT_BROWSER_HOSTNAME':value['hostname'],'GODOT_BROWSER_REPORTS':value['reports'],
         'GODOT_BROWSER_RUNNER':selected,'GODOT_BROWSER_CACHE_RUNNER':value['cache_runner'],
         'GODOT_BROWSER_STARTUP_RUNNER':value['startup_runner'],'GODOT_BROWSER_TLS_PROXY':value['tls_proxy'],
-        'BROWSER_RUNTIME_IMAGE':runtime,'BROWSER_CACHE':str(root/'.artifacts/playwright'),'GDPW_BIN':str(executable)}
+        'BROWSER_RUNTIME_IMAGE':runtime,'BROWSER_CACHE':str(root/'.artifacts/playwright'),'GDPW_BIN':str(executable),
+        'GODOT_BROWSER_FORWARD_ENVIRONMENT':' '.join(value.get('forward_environment',[]))}
     if entry is not None:
-        if selected!=value['runner']:
-            raise ValueError('canonical browser coverage must execute the declared full journey')
-        values.update(BROWSER=' '.join(value['browsers']),BROWSER_TEST_MODE='canonical',BROWSER_ROUTE_CYCLES='0',BROWSER_SOAK_SECONDS='0',BROWSER_STARTUP='0')
+        journeys=value.get('journeys') or [{'name':'canonical','path':value['runner'],'image':'gate'}]
+        matched=[journey for journey in journeys if journey['path']==selected]
+        if len(matched)!=1:
+            raise ValueError('canonical browser coverage must execute one declared image journey')
+        if value.get('journeys'):
+            definition=images.definition(root,config)
+            source=environment.get('SOURCE_COMMIT','')
+            if not re.fullmatch('[a-f0-9]{40}',source):raise ValueError('browser image journey requires its exact built source')
+            values['GATE_IMAGE']=definition['image_base']+'-'+matched[0]['image']+':'+source
+        values.pop('BROWSER_EXECUTABLE',None)
+        values.update(BROWSER=' '.join(value['browsers']),BROWSER_TEST_MODE='',BROWSER_ROUTE_CYCLES='0',BROWSER_SOAK_SECONDS='0',BROWSER_STARTUP='0')
     subprocess.run(['bash',str(TOOLS/'helpers/godot-browser.sh')],cwd=root,env=values,check=True,
                    timeout=entry.get('timeout',1800) if entry else 1800)
