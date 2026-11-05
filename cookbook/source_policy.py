@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from configuration import relative
@@ -67,6 +68,9 @@ def inputs(root):
 def setup(root, config, environment, run=subprocess.run, *, required=False):
     if declaration(root, config) is None and not required:
         return
+    pins = tomllib.loads(relative(root, 'mise.toml', exists=True).read_text()).get('tools', {})
+    if pins.get('python') != '.'.join(map(str, sys.version_info[:3])):
+        raise ValueError('source-policy setup requires the exact caller-pinned Python SDK')
     directory, python, identity = inputs(root)
     receipt = directory / '.cookbook-source-policy.json'
     receipt.unlink(missing_ok=True)

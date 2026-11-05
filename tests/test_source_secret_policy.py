@@ -16,6 +16,7 @@ class SecretSourcePolicy(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix='secret policy ')
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+        (self.root / 'mise.toml').write_text('[tools]\npython="' + '.'.join(map(str, sys.version_info[:3])) + '"\n')
         (self.root / 'deploy').mkdir()
         (self.root / 'deploy/compose.yml').write_text('services: {}\n')
         (self.root / 'delivery.yml').write_text('jobs: {}\n')
