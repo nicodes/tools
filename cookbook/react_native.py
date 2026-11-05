@@ -17,6 +17,7 @@ import images
 import node_component
 import postgres_fixture
 import expo_exports
+import rust_staging
 import source_policy
 import application_fixtures
 import application_development
@@ -132,7 +133,8 @@ def required_tools(root, config, stage):
 def verification_scope(root, config):
     definition = images.definition(root, config)
     inputs = {key: list(value) for key, value in definition['inputs'].items()}
-    inputs['artifacts'] += config.get('artifacts', {}).get('fixture_paths', []) + expo_exports.artifact_paths(root, config)
+    inputs['artifacts'] += (config.get('artifacts', {}).get('fixture_paths', []) + expo_exports.artifact_paths(root, config)
+                            + rust_staging.artifact_paths(rust_components(config)))
     return helper('verification').scope(**inputs)
 
 
@@ -319,22 +321,7 @@ def build_rust(root, config, environment):
     """Compile and stage declared native binaries; usable by an owned local service."""
     records = cargo_records(config, environment)
     if records:
-        cargo().build(root, records, environment, run)
-        for original, record in zip(rust_components(config), records, strict=True):
-            if record.get('build', {}).get('enabled', True) is False:
-                continue
-            options = record | record.get('build', {})
-            profile = options.get('profile', 'release')
-            target = Path(environment.get('CARGO_TARGET_DIR', str(root / Path(record['manifest']).parent / 'target')))
-            if record.get('target_directory'):
-                target = relative(root, record['target_directory'])
-            if record.get('target'):
-                target /= record['target']
-            target /= 'release' if profile == 'release' else 'debug'
-            destination = relative(root, original.get('output_directory', '.artifacts'))
-            destination.mkdir(parents=True, exist_ok=True)
-            for name in options.get('binaries', []):
-                shutil.copy2(target / name, destination / name)
+        rust_staging.compile_and_stage(root, rust_components(config), records, environment, run)
 
 def validate_outputs(root, config, environment):
     images.validate_release(root, config, environment)
