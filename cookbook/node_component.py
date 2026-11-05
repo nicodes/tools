@@ -105,7 +105,11 @@ def lint(root, packages, environment, run):
         package, directory = validate(value, root)
         if package.get('expo'):
             executable = ['bun', 'x', '--no-install'] if package.get('manager', 'npm') == 'bun' else ['npm', 'exec', '--no', '--']
-            run([*executable, 'expo', 'install', '--check'], directory, environment)
+            # Validate the installed frozen SDK's bundled table, independent of
+            # changing hosted recommendations. The CLI still rejects mismatches.
+            compatibility = environment | {'EXPO_OFFLINE': '1'}
+            compatibility.pop('EXPO_NO_DEPENDENCY_VALIDATION', None)
+            run([*executable, 'expo', 'install', '--check'], directory, compatibility)
             count += 1
         for key in ['typecheck', 'lint', 'format_check']:
             if package.get(key):

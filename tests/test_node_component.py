@@ -43,6 +43,33 @@ class NodeComponents(unittest.TestCase):
         self.assertEqual([args for args, _, _ in self.calls], [
             ['npm', 'run', 'typecheck'], ['npm', 'run', 'lint'], ['npm', 'run', 'test']])
 
+    def test_expo_checks_the_installed_sdk_table_without_disabling_validation_or_other_package_checks(self):
+        environment = {'EXPO_OFFLINE': '0', 'EXPO_NO_DEPENDENCY_VALIDATION': '1', 'NATIVE_INPUT': 'preserved'}
+        for manager, prefix in [('npm', ['npm', 'exec', '--no', '--']), ('bun', ['bun', 'x', '--no-install'])]:
+            self.calls.clear()
+            node.lint(self.root, [self.package | {'manager': manager, 'expo': True}], environment, self.capture)
+            command, directory, selected = self.calls[0]
+            self.assertEqual(command, [*prefix, 'expo', 'install', '--check'])
+            self.assertEqual(directory, self.app)
+            self.assertEqual(selected, {'EXPO_OFFLINE': '1', 'NATIVE_INPUT': 'preserved'})
+            self.assertNotIn('EXPO_NO_DEPENDENCY_VALIDATION', selected)
+            self.assertEqual([call[0] for call in self.calls[1:]], [[manager, 'run', 'typecheck'], [manager, 'run', 'lint']])
+            self.assertTrue(all(call[2] is environment for call in self.calls[1:]))
+            self.assertEqual(environment, {'EXPO_OFFLINE': '0', 'EXPO_NO_DEPENDENCY_VALIDATION': '1', 'NATIVE_INPUT': 'preserved'})
+
+    def test_expo_installed_sdk_mismatch_stops_source_acceptance(self):
+        for manager in ['npm', 'bun']:
+            calls = []
+            def incompatible(command, directory, environment):
+                calls.append(command)
+                self.assertEqual(environment.get('EXPO_OFFLINE'), '1')
+                self.assertNotIn('EXPO_NO_DEPENDENCY_VALIDATION', environment)
+                raise subprocess.CalledProcessError(1, command, stderr='Incompatible installed SDK dependency')
+            with self.subTest(manager=manager), self.assertRaises(subprocess.CalledProcessError):
+                node.lint(self.root, [self.package | {'manager': manager, 'expo': True}], {}, incompatible)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][-3:], ['expo', 'install', '--check'])
+
     def test_native_scripts_cannot_be_missing_empty_or_command_strings(self):
         for script in ['missing', 'test; echo unexpected', '']:
             with self.subTest(script=script), self.assertRaises(ValueError):
