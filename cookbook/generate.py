@@ -56,6 +56,14 @@ jobs:
         description: PR number to fully validate and merge when current
         type: string
         required: true
+      expected-head:
+        description: Exact head selected by a dependency policy decision; paired with expected-base
+        type: string
+        default: ''
+      expected-base:
+        description: Exact main selected by a dependency policy decision; paired with expected-head
+        type: string
+        default: ''
 permissions: {}
 concurrency:
   group: cookbook-merge-${{ github.repository }}
@@ -71,6 +79,8 @@ jobs:
     with:
       tools-ref: PIN
       pull-request: ${{ inputs.pull-request }}
+      expected-head: ${{ inputs.expected-head }}
+      expected-base: ${{ inputs.expected-base }}
 '''.replace('PIN', revision)}
     if model['recipe'] != 'godot-addon':
         files['.github/workflows/ci.yml'] += '      recipe: ' + model['recipe'] + '\n'

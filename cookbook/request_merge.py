@@ -70,11 +70,19 @@ def status(repository, head, state, description):
         'target_url': f'https://github.com/{repository}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'})
 
 
-def snapshot(repository, number):
+def expected_candidate(receipt, head='', base=''):
+    if head or base:
+        if (not re.fullmatch('[a-f0-9]{40}', head) or not re.fullmatch('[a-f0-9]{40}', base)
+                or receipt['head'] != head or receipt['base'] != base):
+            raise ValueError('requested head or base moved since the dependency policy decision')
+
+
+def snapshot(repository, number, expected_head='', expected_base=''):
     pull = api(f'repos/{repository}/pulls/{number}')
     revision = candidate.exact_sha(pull.get('merge_commit_sha'))
     commit = api(f'repos/{repository}/git/commits/{revision}')
     receipt = candidate.snapshot(repository, pull, commit)
+    expected_candidate(receipt, expected_head, expected_base)
     makefile = source_file(repository, revision, 'Makefile')
     source = source_file(repository, revision, 'cookbook.toml')
     declaration = tomllib.loads(source)
@@ -183,13 +191,15 @@ def main():
     parser.add_argument('--receipt', required=True, type=Path)
     parser.add_argument('--proof', type=Path)
     parser.add_argument('--validation-result', default='')
+    parser.add_argument('--expected-head', default='')
+    parser.add_argument('--expected-base', default='')
     args = parser.parse_args()
     try:
         if not candidate.REPOSITORY.fullmatch(args.repository) or not 0 < args.pull_request < 10**10:
             raise ValueError('invalid request identity')
         dispatch_context(args.repository)
         if args.operation == 'snapshot':
-            value = snapshot(args.repository, args.pull_request)
+            value = snapshot(args.repository, args.pull_request, args.expected_head, args.expected_base)
             args.receipt.parent.mkdir(parents=True, exist_ok=True)
             args.receipt.write_text(json.dumps(value, indent=2) + '\n')
             if os.environ.get('GITHUB_OUTPUT'):
