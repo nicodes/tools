@@ -29,10 +29,10 @@ class NativeExportControls(unittest.TestCase):
         self.assertEqual(expo_exports.artifact_paths(self.root, self.config), ['app/dist-e2e', '.artifacts/native'])
         environment = {'BUILD_VARIANT': 'production', 'GITHUB_RUN_ID': 'current-context'}
         expo_exports.build(self.root, self.config, environment, self.execute, native_runner=self.execute)
-        self.assertEqual(self.calls[0][2]['BUILD_VARIANT'], 'local')
-        self.assertEqual(self.calls[1][2]['BUILD_VARIANT'], 'production')
+        self.assertEqual(self.calls[0][2]['BUILD_VARIANT'], 'production')
+        self.assertEqual(self.calls[1][2]['BUILD_VARIANT'], 'local')
         self.assertEqual(environment['BUILD_VARIANT'], 'production')
-        self.assertEqual(self.calls[1][0][5:9], ['--platform', 'ios', '--platform', 'android'])
+        self.assertEqual([self.calls[0][0][index + 1] for index, argument in enumerate(self.calls[0][0]) if argument == '--platform'], ['ios', 'android'])
         self.assertTrue(json.loads((self.root / '.artifacts/native/variant-manifest.json').read_text())['bundle.js'])
 
     def test_unknown_or_escaping_output_plan_fails_before_any_compiler_execution(self):
@@ -43,8 +43,8 @@ class NativeExportControls(unittest.TestCase):
 
     def test_zero_exit_compiler_without_real_bundle_is_rejected(self):
         def empty(command, cwd, environment, timeout=None):
-            output = self.root / 'app/dist-e2e'
-            output.mkdir()
+            output = Path(command[-1])
+            output.mkdir(parents=True)
             (output / 'index.html').write_text('missing the executable bundle')
         with self.assertRaisesRegex(ValueError, 'no JavaScript'):
             expo_exports.build(self.root, self.config, {}, empty)

@@ -99,7 +99,9 @@ def compile_native(command, directory, environment, timeout):
 
 
 def build(root, config, environment, run, *, native_runner=compile_native):
-    for kind, directory, output, entry in records(root, config):
+    # Complete production mobile outputs before compiling any local-authority Web variant.
+    plan = sorted(records(root, config), key=lambda record: record[0] == 'web')
+    for kind, directory, output, entry in plan:
         if kind == 'web':
             run([sys.executable, str(TOOLS / 'helpers/export-web.py'), '--app', str(directory),
                  '--output', output.name, '--timeout', str(entry.get('timeout', 900))],
@@ -108,6 +110,8 @@ def build(root, config, environment, run, *, native_runner=compile_native):
             if output.exists():
                 shutil.rmtree(output)
             command = ['bun', 'x', '--no-install', 'expo', 'export']
+            if not environment.get('FLEET_WEB_CACHE'):
+                command.append('--clear')
             for platform in entry['platforms']:
                 command += ['--platform', platform]
             native_runner([*command, '--output-dir', str(output)], directory, environment, entry.get('timeout', 900))
