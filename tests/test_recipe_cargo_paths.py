@@ -21,8 +21,15 @@ class CargoRecipePaths(unittest.TestCase):
                 path=root/manifest;path.parent.mkdir(parents=True,exist_ok=True)
                 path.write_text('[package]\nname="fixture"\nversion="0.0.1"\n')
                 path.with_name('Cargo.lock').write_text('version=4\n')
-            config={'components':{'rust':[{'manifest':name} for name in manifests]},
-                    'package':{'output':'.artifacts/build/fixture'}}
+            config={'version':1, 'recipe':'rust-cli',
+                    'components':{'rust':[{'name':'cli' if index==0 else 'fixture',
+                                           'manifest':name, 'profile':'release'}
+                                          for index,name in enumerate(manifests)]},
+                    'package':{'binary':'fixture', 'version_arguments':['--version'],
+                               'version_template':'{binary} {version} ({commit})',
+                               'native_targets':[{'platform':'Linux', 'arch':'x86_64',
+                                   'runner':'ubuntu-24.04', 'target':'x86_64-unknown-linux-musl',
+                                   'extension':'tar.gz'}]}}
             environment={'CARGO_TARGET_DIR':str(root/'.artifacts/rust-target'), 'CARGO_HOME':str(root/'.cargo'),
                          'VERSION':'dev', 'COMMIT':'a'*40}
             result=compiler_cache.plan(root,config,{},environment,'a'*40,'Windows','X64')

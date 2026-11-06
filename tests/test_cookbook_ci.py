@@ -77,7 +77,9 @@ class ValidationEvidence(unittest.TestCase):
         publication.validate_proof(self.root, self.config, accepted, self.source)
         with patch.dict(os.environ, {'GITHUB_RUN_ID': '999'}), self.assertRaisesRegex(ValueError, 'another workflow'):
             publication.validate_proof(self.root, self.config, accepted, self.source)
-        (self.root / 'dist/addon.zip').write_bytes(b'replaced after testing')
+        archive = self.root / self.config['package']['archive']
+        self.assertTrue(archive.is_file(), 'the control must mutate the accepted archive')
+        archive.write_bytes(b'replaced after testing')
         with self.assertRaisesRegex(ValueError, 'accepted build scope'):
             publication.validate_proof(self.root, self.config, accepted, self.source)
 
