@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: bed44ece55f420a51c184cc0f9fdadbed0cefc8a6873631e8b0909b9bbfdee27 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: c4548b50f3739d86a91e0f8f4b2067d345a72b1be927ef5aae8c7437e824f86e -->
 
 # tools
 
@@ -189,6 +189,24 @@ Shared compiler caching selects only declared Cargo targets and registry/git dep
 ## Recipe capabilities and source ownership
 
 The maintained adapters are `rust-cli`, `react-native`, `godot-game` and `godot-addon`. A CLI can include a declared browser UI; an application can include a declared API or database. These remain capabilities of the selected recipe. `cookbook.toml` selects native components, owned assertion programs, fixtures, outputs and CI topology; it is bounded data rather than an additional shell task graph. `mise.toml` supplies SDK pins.
+
+Consecutive native checks can share execution settings in one literal case group:
+
+```toml
+[[tests.unit]]
+runner = "python"
+cwd = "."
+timeout = 180
+cases = [
+  {name = "serialization", path = "tests/serialization.py"},
+  {name = "validation", path = "tests/validation.py"},
+  {name = "compatibility", path = "tests/compatibility.py"},
+]
+```
+
+Groups expand in place into the same ordered native entries. Shared settings are `runner`, `cwd`, `timeout`, `policy` and `python_environment`; cases retain their literal names, paths and arguments. Cases cannot override shared settings or contain nested groups. Existing individual declarations remain supported, and all ownership, assertion and deadline checks apply after expansion.
+
+Declare overrides when a capability needs them. CI defaults to `ubuntu-24.04` and 30 minutes; a Godot auxiliary gate inherits its parent runner while retaining its explicit deadline. Godot imports run during setup, or during build when declared extensions or preparation require build inputs. Static delivery automatically includes its mandatory configuration and release manifest in accepted artifacts. The raw recipe file remains part of configuration and cache identity.
 
 Build immediately stages declared native executable variants before another feature variant can overwrite a shared compiler output. Nonshipping image variants use a separate source- and image-ID-bound fixture packet outside the closed shipping release directory. Browser journeys consume accepted image variants; fixtures are prepared during setup or build. Product programs own loader mutations, data semantics, renderer behavior and assertions.
 

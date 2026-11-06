@@ -140,7 +140,7 @@ def plan(root, config, environment=None):
     if type(values.get('reset_import_cache', False)) is not bool:
         raise ValueError('Godot imported current-image cache reset must be an explicit boolean')
     runner = config.get('ci', {}).get('runner', 'ubuntu-24.04')
-    if runner not in RUNNERS:
+    if not isinstance(runner, str) or runner not in RUNNERS:
         raise ValueError('Godot runners must use the reviewed native Linux platforms')
     workers = values.get('unit_workers', 4)
     if workers != 4:
@@ -185,11 +185,13 @@ def plan(root, config, environment=None):
     production = []
     for record in gate_records:
         allowed = {'name', 'runner', 'timeout_minutes', 'suite', 'tests', 'kind', 'entry', 'setup', 'packages', 'artifacts', 'browsers', 'xvfb', 'probe', 'virtual_display'}
-        if not isinstance(record, dict) or set(record) - allowed or not {'name', 'runner', 'timeout_minutes'} <= set(record):
+        if not isinstance(record, dict) or set(record) - allowed or not {'name', 'timeout_minutes'} <= set(record):
             raise ValueError('invalid native auxiliary gate')
         name, kind = record['name'], record.get('kind', 'test')
+        gate_runner = record.get('runner', runner)
         if (not isinstance(name, str) or not re.fullmatch(r'[a-z][a-z0-9-]{1,63}', name)
-                or name in names or record['runner'] not in RUNNERS or kind not in {'test', 'capability', 'production'}):
+                or name in names or not isinstance(gate_runner, str) or gate_runner not in RUNNERS
+                or kind not in {'test', 'capability', 'production'}):
             raise ValueError('auxiliary gates require distinct names, native runners and coverage roles')
         names.add(name)
         public_fields=set(record)&{'browsers','xvfb','probe'}
@@ -252,7 +254,7 @@ def plan(root, config, environment=None):
         if not set(packages) <= known_packages:
             raise ValueError('native gate packages must select declared locked Node components')
         value = {'id': 'gate-' + name, 'name': name, 'kind': kind, 'job': 'Godot gate (' + name + ')',
-            'runner': record['runner'], 'timeout_minutes': budget(record['timeout_minutes']),
+            'runner': gate_runner, 'timeout_minutes': budget(record['timeout_minutes']),
             'suite': suite, 'cases': sorted(cases), 'setup': setup, 'packages': packages, 'artifacts': inputs}
         if kind != 'test':
             value['entry'] = entry

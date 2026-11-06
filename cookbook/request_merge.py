@@ -11,7 +11,7 @@ import re
 import tomllib
 import urllib.error
 import urllib.request
-from configuration import ci_settings
+from configuration import ci_settings, expand_tests
 import orchestration
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -86,6 +86,8 @@ def snapshot(repository, number, expected_head='', expected_base=''):
     makefile = source_file(repository, revision, 'Makefile')
     source = source_file(repository, revision, 'cookbook.toml')
     declaration = tomllib.loads(source)
+    if 'tests' in declaration:
+        declaration['tests'] = expand_tests(declaration['tests'])
     tools, groups = recipe_pin(makefile, declaration)
     accepted = api(f'repos/nicodes/tools/compare/{tools}...main')
     if accepted.get('status') not in {'ahead', 'identical'}:

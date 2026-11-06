@@ -14,7 +14,7 @@ import tomllib
 def generated_report(root, path, config):
     """Admit a narrow generated report location, never a tracked source tree."""
     reports = len(path.parts) >= 2 and re.fullmatch('[A-Za-z][A-Za-z0-9_-]*-reports', path.parts[0])
-    project = config.get('components', {}).get('godot', {}).get('project')
+    project = config.get('components', {}).get('godot', {}).get('project', 'app')
     build = False
     if isinstance(project, str) and (project == '.' or re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*', project)):
         project_path = Path(project)

@@ -54,7 +54,10 @@ def verification_scope(root, config):
         inputs = {'artifacts': values.get('paths', []), 'images': values.get('images', []),
             'environment': values.get('environment', []), 'revision_environment': values.get('revision_environment', [])}
     inputs = {key: list(value) for key, value in inputs.items()}
-    inputs['artifacts'] += (export_import_boundaries(root, config) + values.get('release_metadata', []) + rust_staging.artifact_paths(rust_components(config))
+    metadata = values.get('release_metadata', [])
+    if godot_static.declaration(root, config) is not None:
+        metadata = metadata + [name for name in [godot_static.CONFIG_ARTIFACT, godot_static.MANIFEST_ARTIFACT] if name not in metadata]
+    inputs['artifacts'] += (export_import_boundaries(root, config) + metadata + rust_staging.artifact_paths(rust_components(config))
         + go_component.artifact_paths(root,config) + image_fixtures.artifact_paths(root,config))
     inputs['images'] += image_fixtures.references(root,config)
     return verification.scope(**inputs)
@@ -153,6 +156,15 @@ def project(root, config):
     return directory, values
 
 
+def native_import_stage(settings):
+    """Import after declared build inputs exist, retaining explicit legacy phases."""
+    default = 'build' if settings.get('extensions') or settings.get('prepare') else 'setup'
+    stage = settings.get('import_stage', default)
+    if not isinstance(stage, str) or stage not in {'setup', 'build'}:
+        raise ValueError('native imports belong to explicit setup or build stages')
+    return stage
+
+
 def validate_config(root, config):
     directory, values = project(root, config)
     allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
@@ -169,8 +181,7 @@ def validate_config(root, config):
         raise ValueError('Godot test concurrency must be bounded')
     if type(values.get('import_timeout', 180)) is not int or not 1 <= values.get('import_timeout', 180) <= 600:
         raise ValueError('Godot imports require a bounded reviewed deadline')
-    if values.get('import_stage', 'setup') not in {'setup', 'build'}:
-        raise ValueError('native imports belong to explicit setup or build stages')
+    native_import_stage(values)
     seen = set()
     for export in values.get('exports', []):
         if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility', 'project', 'timeout', 'import_timeout', 'import_arguments', 'privileged_directories', 'source_files'}:
@@ -465,7 +476,7 @@ def setup(root, config, env):
     if (directory / 'gdam.json').exists():
         helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
             bindings=godot_addon_bindings.installed(root, config, env))
-    if settings.get('import_stage', 'setup') == 'setup':
+    if native_import_stage(settings) == 'setup':
         import_native(root, config, env)
 
 
@@ -646,7 +657,7 @@ def compile_outputs(root, config, env):
     os.environ.update(env)
     godot_package.extensions(root, config, env)
     godot_package.author(root, config, env, run, 'prepare')
-    if settings.get('import_stage', 'setup') == 'build':
+    if native_import_stage(settings) == 'build':
         import_native(root, config, env)
     exports = settings.get('exports', [])
     if not exports:
