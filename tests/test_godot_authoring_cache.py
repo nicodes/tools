@@ -246,6 +246,25 @@ class NativeEditorCacheWitness(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertNotIn('ERROR:', result.stdout + result.stderr)
                 return result
+            def prepare_stale_index(project):
+                # The synthetic counterfactual needs a stale index even within one clock second.
+                cache = project / '.godot/editor/filesystem_cache10'
+                rows = cache.read_bytes().splitlines(keepends=True)
+                selected, = [index for index, row in enumerate(rows) if row.startswith(b'fixture.png::')]
+                fields = rows[selected].split(b'::')
+                self.assertEqual(len(fields), 9)
+                self.assertEqual(fields[1], b'CompressedTexture2D')
+                self.assertTrue(fields[3].isdigit() and fields[4].isdigit())
+                self.assertEqual(fields[5], b'1')
+                sidecar_second = (project / 'fixture.png.import').stat().st_mtime_ns // 1_000_000_000
+                self.assertGreater(sidecar_second, 0)
+                fields[4] = str(sidecar_second - 1).encode()
+                rows[selected] = b'::'.join(fields)
+                cache.write_bytes(b''.join(rows))
+            def execute_with_stale_index(project):
+                result = execute(project)
+                prepare_stale_index(project)
+                return result
             execute(base)
             sidecar = base / 'fixture.png.import'
             complete = sidecar.read_bytes()
@@ -255,6 +274,7 @@ class NativeEditorCacheWitness(unittest.TestCase):
             self.assertTrue(authoring.default_insertions_only(authored, complete))
             sidecar.write_bytes(authored)
             self.assertTrue((base / '.godot/editor/filesystem_cache10').is_file())
+            prepare_stale_index(base)
             def imported(project):
                 return {p.relative_to(project).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
                         for p in (project / '.godot/imported').rglob('*') if p.is_file()}
@@ -263,9 +283,9 @@ class NativeEditorCacheWitness(unittest.TestCase):
                 shutil.copytree(base, project)
                 if counterfactual:
                     with patch.object(authoring, 'editor_filesystem_cache', return_value=None):
-                        authoring.preserve_imports(project, lambda: execute(project))
+                        authoring.preserve_imports(project, lambda: execute_with_stale_index(project))
                 else:
-                    authoring.preserve_imports(project, lambda: execute(project))
+                    authoring.preserve_imports(project, lambda: execute_with_stale_index(project))
                 self.assertEqual((project / 'fixture.png.import').read_bytes(), authored)
                 self.assertEqual((project / '.godot/editor/filesystem_cache10').exists(), counterfactual)
                 before = imported(project)
