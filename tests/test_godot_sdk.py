@@ -101,9 +101,10 @@ class SdkControls(unittest.TestCase):
         self.pins['RUST_NIGHTLY'] = 'nightly'; self.write_pins()
         with self.assertRaisesRegex(ValueError, 'exact caller Mise pin'):
             godot_sdk.inputs(self.root, self.config)
-        self.config['components']['godot']['rust_web'] = {'directory': 'app/toolchain'}
-        with self.assertRaisesRegex(ValueError, 'dedicated generated'):
-            godot_sdk.inputs(self.root, self.config)
+        for directory in ['app/toolchain', '.artifacts/toolchains/rust-web']:
+            self.config['components']['godot']['rust_web'] = {'directory': directory}
+            with self.subTest(directory=directory), self.assertRaisesRegex(ValueError, 'canonical directory'):
+                godot_sdk.inputs(self.root, self.config)
 
 
 if __name__ == '__main__':

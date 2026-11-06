@@ -57,7 +57,7 @@ class NativeLintSelectionTests(unittest.TestCase):
             if Path(command[0]) == self.native:
                 subprocess.run(command, cwd=cwd, env=environment, check=True)
         with patch.object(godot_game, 'run', side_effect=execute):
-            godot_game.lint(self.root, {'components': {'godot': {'project': 'app'}}}, self.env)
+            godot_game.lint(self.root, {'components': {'godot': {}}}, self.env)
         self.assertEqual(self.marker.read_text(), 'native:'+str(self.root/'app')+':-warn\n')
         self.assertIn([str(self.native), '-warn'], commands)
 

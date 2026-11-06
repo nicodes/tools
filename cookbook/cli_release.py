@@ -200,7 +200,7 @@ def run_assertions(root, config, tag, source, phase):
     native = rust_cli.helper('native_cli')
     values = {'source': source, 'tag': tag, 'dist': str(root / 'dist'),
               'evidence': str(root / '.artifacts/cli-publication-evidence'),
-              'binary': str(root / config['package']['output'])}
+              'binary': str(root / rust_cli.package_data(root, config)['output'])}
     entries = [{**entry, 'args': [native.render(value, values) for value in entry.get('args', [])]}
                for entry in policy(config)['acceptance'][phase]]
     run_entries(root, {**config, 'tests': {'release': entries}}, dict(os.environ), 'release')

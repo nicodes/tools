@@ -1,4 +1,6 @@
 import importlib.util
+import hashlib
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -55,6 +57,24 @@ class StrictProjectImport(unittest.TestCase):
         (self.root / '.gdignore').touch()
         self.invoke()
         self.assertEqual(len(self.calls), 4)
+
+    def test_generated_uid_is_bound_after_import_and_remains_warm_until_its_bytes_change(self):
+        script = self.root / 'core/autoloads/generated.gd'
+        script.parent.mkdir(parents=True)
+        script.write_bytes(b'extends Node\n')
+        uid = script.with_suffix('.gd.uid')
+        def generate(command, timeout):
+            uid.write_bytes(b'uid://generated\n')
+            return self.engine(command, timeout)
+        self.invoke(generate)
+        receipt = json.loads((self.root / '.godot/cookbook-import.json').read_text())
+        self.assertEqual(receipt['inputs']['files']['core/autoloads/generated.gd.uid'], hashlib.sha256(uid.read_bytes()).hexdigest())
+        self.assertEqual(len(self.calls), 2)
+        self.invoke(generate)
+        self.assertEqual(len(self.calls), 3)
+        uid.write_bytes(b'uid://different\n')
+        self.invoke(generate)
+        self.assertEqual(len(self.calls), 5)
 
 
 if __name__ == '__main__':

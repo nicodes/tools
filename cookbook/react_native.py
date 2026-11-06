@@ -13,6 +13,7 @@ import sys
 import tomllib
 
 from configuration import load, relative
+from recipe_contract import app_directory
 import images
 import node_component
 import postgres_fixture
@@ -275,7 +276,7 @@ def build(root, config, environment):
     node_component.build(root, packages(config), environment, run)
     node_component.link(root, config, environment, run)
     phase(root, config, environment, 'pre_export')
-    directory = relative(root, app.get('directory', 'app'), exists=True)
+    directory = relative(root, app_directory(config), exists=True)
     run([sys.executable, str(TOOLS / 'helpers/export-web.py'), '--app', str(directory)], root, environment)
     exported = relative(root, str(directory.relative_to(root) / 'dist'), exists=True)
     html_count = len(list(exported.rglob('*.html')))
@@ -335,10 +336,9 @@ def validate_outputs(root, config, environment):
     images.validate_release(root, config, environment)
     value = images.definition(root, config)
     app = config.get('components', {}).get('app', {})
-    if app.get('verify_image', True):
-        images.static_image(value['image_base'] + '-gate:' + environment['APP_VERSION'],
-                            relative(root, app.get('image_source', 'public'), exists=True),
-                            app.get('installed_root', '/srv/public'))
+    images.static_image(value['image_base'] + '-gate:' + environment['APP_VERSION'],
+                        relative(root, app.get('image_source', 'public'), exists=True),
+                        app.get('installed_root', '/srv/public'))
     for name, contract in config.get('components', {}).get('rust_images', {}).items():
         if name not in images.components(value):
             raise ValueError('Rust runtime contract names an undeclared image')

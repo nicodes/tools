@@ -22,7 +22,7 @@ class NativeMatrix(unittest.TestCase):
         self.root = Path(temporary.name)
         (self.root / 'tests').mkdir()
         (self.root / 'tests/boundary.py').write_text('assert True\n')
-        (self.root / 'Cargo.toml').write_text('[package]\nname="fixture"\nversion="0.0.1"\n')
+        (self.root / 'Cargo.toml').write_text('[package]\nname="example"\nversion="0.0.1"\n')
         (self.root / 'cookbook.toml').write_text('version=1\nrecipe="rust-cli"\n')
         for argv in [['init', '-q'], ['add', '.'], ['-c', 'user.name=Native Matrix', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture']]:
             subprocess.run(['git', '-C', str(self.root), *argv], check=True)
@@ -41,9 +41,9 @@ class NativeMatrix(unittest.TestCase):
             {'platform': 'Windows', 'arch': 'arm64', 'runner': 'windows-11-arm', 'target': 'aarch64-pc-windows-msvc', 'extension': 'zip', 'checks': []},
         ]
         self.config = {'recipe': 'rust-cli', 'components': {'rust': [{'name': 'cli', 'manifest': 'Cargo.toml'}]},
-            'package': {'binary': 'example', 'output': '.artifacts/build/example', 'files': [], 'native_targets': self.targets},
-            'tests': {'integration': [{'runner': 'python', 'path': 'tests/boundary.py'}]},
-            'artifacts': {'paths': ['dist', '.artifacts/build', '.artifacts/native-package']}}
+            'package': {'binary': 'example', 'files': [], 'native_targets': self.targets,
+                        'version_arguments': ['--version'], 'version_template': '{binary} {version} ({commit})'},
+            'tests': {'integration': [{'runner': 'python', 'path': 'tests/boundary.py'}]}}
 
     def declaration(self):
         return native.plan(self.root, self.config)

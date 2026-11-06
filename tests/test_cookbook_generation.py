@@ -71,7 +71,7 @@ class CookbookGeneration(unittest.TestCase):
         executable = shutil.which('actionlint')
         self.assertIsNotNone(executable, 'the caller test requires the pinned actionlint SDK')
         path = self.root / 'cookbook.toml'
-        path.write_text(path.read_text() + '\n[publication]\ntag_prefix="gd-v"\n')
+        path.write_text(path.read_text() + '\n[package]\narchive="dist/@owner_addon.zip"\n[publication]\ntag_prefix="gd-v"\n')
         files = generator.workflow_files(self.root, 'a' * 40)
         for name, content in files.items():
             path = self.root / name

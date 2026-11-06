@@ -24,7 +24,7 @@ import godot_game
 class NativeAddonBindings(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(); self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name); self.project = self.root / 'project'; self.project.mkdir()
+        self.root = Path(self.temporary.name); self.project = self.root / 'app'; self.project.mkdir()
         self.bindings = {'tool': 'github:aviorstudio/gdam', 'pin': {'version': 'v0.2.0',
             'asset_pattern': 'gdam_Linux_x86_64.tar.gz', 'bin': 'gdam'}, 'binary': Path(os.environ['GDAM_BIN']).resolve()}
         self.archives = {}; provenance = {}; releases = {}
@@ -109,7 +109,7 @@ class NativeAddonBindings(unittest.TestCase):
     def test_missing_bridge_refuses_before_engine_or_native_assertions_without_regeneration(self):
         self.prepare(); (self.project / 'project.godot').write_text('[application]\nconfig/name="Fixture"\n')
         bridge = self.project / 'addons/@example_consumer/.gdam/deps.gd'; bridge.unlink()
-        config = {'components': {'godot': {'project': 'project'}},
+        config = {'components': {'godot': {}},
             'tests': {'unit': [{'runner': 'python', 'path': 'tests/assertion.py'}]}}
         with patch.object(godot_addon_bindings, 'installed', return_value=self.bindings), patch.object(godot_game, 'native_godot') as engine:
             with self.assertRaises(ValueError): godot_game.import_native(self.root, config, {})
@@ -124,7 +124,7 @@ class BindingCapabilitySelection(unittest.TestCase):
     def test_source_lint_does_not_require_or_generate_native_dependency_bindings(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); (root / 'app').mkdir(); (root / 'app/project.godot').touch()
-            config = {'components': {'godot': {'project': 'app'}},
+            config = {'components': {'godot': {}},
                 'tests': {'lint': [{'runner': 'python', 'path': 'tests/source.py'}]}}
             with patch.object(godot_game, 'verify_addons') as verify, patch.object(godot_game, 'run_entries') as run:
                 godot_game.native_tests(root, config, {}, 'lint')

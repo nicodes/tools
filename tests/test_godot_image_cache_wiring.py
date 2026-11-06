@@ -1,4 +1,4 @@
-"""Only the opt-in importer may reset a fully admitted current-source image set."""
+"""Every image import uses the same fully admitted current-source image set."""
 from contextlib import chdir
 import hashlib
 import json
@@ -35,15 +35,15 @@ class ImageCacheWiring(unittest.TestCase):
         target = self.incoming / 'payload' / self.path; target.parent.mkdir(parents=True)
         target.write_bytes(b'accepted transfer; helper authenticates actual tar semantics')
         self.hash = hashlib.sha256(target.read_bytes()).hexdigest()
-        self.config = {'recipe': 'godot-game', 'components': {'godot': {'project': 'app'}},
-            'ci': {'godot': {'unit_shards': 1, 'reset_import_cache': True}},
+        self.config = {'recipe': 'godot-game', 'components': {'godot': {}},
+            'ci': {'godot': {'unit_shards': 1}},
             'tests': {'unit': [{'name': 'test-one', 'runner': 'godot-check', 'path': 'app/assertion.gd'}]},
             'artifacts': {'paths': ['.artifacts/release'], 'images': [self.reference]}}
         self.proof = {'source_commit': self.source, 'cookbook_commit': 'b' * 40,
             'configuration_sha256': godot_ci.configuration_hash(self.root), 'executables': {self.path: False},
             'build': {'identity': '2' * 64, 'artifacts': {self.path: self.hash, 'image:' + self.reference: self.identity}}}
 
-    def test_admitted_optin_uses_closed_scope_and_original_total_cap_before_receipt(self):
+    def test_admitted_images_use_closed_scope_and_original_total_cap_before_receipt(self):
         with (chdir(self.root), patch.object(ci, 'identity') as admit,
                 patch.object(image_import_cache, 'reload') as reload,
                 patch.object(godot_ci, 'configuration_hash', return_value=self.proof['configuration_sha256']),
@@ -57,15 +57,16 @@ class ImageCacheWiring(unittest.TestCase):
         legacy_load.assert_not_called()
         self.assertEqual(json.loads((self.root / '.artifacts/verification/build.json').read_text()), self.proof['build'])
 
-    def test_default_import_preserves_existing_loader_and_never_resets_cache(self):
-        del self.config['ci']['godot']['reset_import_cache']
-        with (chdir(self.root), patch.object(image_import_cache, 'reload') as reset,
-                patch.object(godot_ci.subprocess, 'run') as load,
-                patch.object(godot_ci.subprocess, 'check_output', return_value=self.identity)):
+    def test_file_only_import_requires_no_docker_state_or_image_admission(self):
+        del self.proof['build']['artifacts']['image:' + self.reference]
+        del self.config['artifacts']['images']
+        with (chdir(self.root), patch.object(image_import_cache, 'reload') as reload,
+                patch.object(ci, 'identity') as admit, patch.object(godot_ci.subprocess, 'run') as load):
             godot_ci.import_build(self.root, self.config, self.incoming, self.proof)
-        reset.assert_not_called()
-        self.assertEqual(load.call_args.args[0][:4], ['docker', 'image', 'load', '--input'])
-        self.assertEqual(load.call_args.kwargs['timeout'], 600)
+        reload.assert_not_called()
+        admit.assert_not_called()
+        load.assert_not_called()
+        self.assertEqual(json.loads((self.root / '.artifacts/verification/build.json').read_text()), self.proof['build'])
 
     def test_shipping_and_prepared_nonshipping_archive_share_the_same_closed_reload(self):
         directory = '.artifacts/fixture-images'
@@ -84,8 +85,13 @@ class ImageCacheWiring(unittest.TestCase):
             self.proof['build']['artifacts'][name] = hashlib.sha256((payload / name).read_bytes()).hexdigest()
             self.proof['executables'][name] = False
         self.proof['build']['artifacts']['image:' + reference] = identity
-        definition = {'image_base': 'example.invalid/fixture',
-            'inputs': {'images': ['example.invalid/fixture-image:{revision}']}}
+        definition = {'version': 1, 'project': 'fixture', 'image_base': 'example.invalid/fixture',
+            'inputs': {'artifacts': ['.artifacts/release'], 'images': ['example.invalid/fixture-image:{revision}'],
+                'environment': [], 'revision_environment': []}, 'tests': ['native']}
+        path = self.root / 'deploy/release.json'; path.parent.mkdir()
+        path.write_text(json.dumps(definition))
+        subprocess.run(['git', '-C', str(self.root), 'add', 'deploy/release.json'], check=True)
+        self.proof['configuration_sha256'] = godot_ci.configuration_hash(self.root)
         with (chdir(self.root), patch.object(ci, 'identity'),
                 patch.object(image_fixtures.images, 'definition', return_value=definition),
                 patch.object(image_import_cache, 'reload') as reload):
@@ -96,11 +102,12 @@ class ImageCacheWiring(unittest.TestCase):
         self.assertEqual(reload.call_args.kwargs, {'timeout': 600})
 
     def test_scope_source_configuration_or_transferred_bytes_refuse_before_reset_or_copy(self):
-        for mutation in ['source', 'config', 'scope', 'bytes']:
+        for mutation in ['source', 'config', 'scope', 'omitted-images', 'bytes']:
             with self.subTest(mutation=mutation):
                 proof = json.loads(json.dumps(self.proof))
                 if mutation == 'config': proof['configuration_sha256'] = 'f' * 64
                 if mutation == 'scope': proof['build']['artifacts']['image:example.invalid/foreign:' + self.source] = self.identity
+                if mutation == 'omitted-images': del proof['build']['artifacts']['image:' + self.reference]
                 if mutation == 'bytes': (self.incoming / 'payload' / self.path).write_bytes(b'changed transfer')
                 with (chdir(self.root),
                         patch.object(ci, 'identity', side_effect=ValueError('bad source') if mutation == 'source' else None),
@@ -109,14 +116,14 @@ class ImageCacheWiring(unittest.TestCase):
                 reset.assert_not_called()
                 self.assertFalse((self.root / '.artifacts').exists())
 
-    def test_cache_failure_cannot_write_accepted_build_receipt_and_selector_is_boolean(self):
+    def test_cache_failure_cannot_write_accepted_build_receipt_and_retired_selector_is_refused(self):
         with chdir(self.root), patch.object(ci, 'identity'), patch.object(image_import_cache, 'reload', side_effect=ValueError('cache refusal')):
             with self.assertRaisesRegex(ValueError, 'cache refusal'):
                 godot_ci.import_build(self.root, self.config, self.incoming, self.proof)
         self.assertFalse((self.root / '.artifacts/verification/build.json').exists())
-        for value in ['true', 1, {}, []]:
+        for value in [True, False, 'true', 1, {}, []]:
             self.config['ci']['godot']['reset_import_cache'] = value
-            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'explicit boolean'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'unsupported Godot CI'):
                 godot_ci.plan(self.root, self.config)
 
 

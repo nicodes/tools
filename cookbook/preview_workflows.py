@@ -6,7 +6,7 @@ import sys
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from configuration import load, relative, ci_settings
+from configuration import load, relative, ci_settings, validate_data, release_definition
 import images
 
 SHA = re.compile('[a-f0-9]{40}')
@@ -93,7 +93,7 @@ def declaration(root, config):
             'definition':config['preview']['definition'], 'recipe':config['recipe'], 'backend':backend,
             'validation_runner':ci['runner'], 'validation_timeout_minutes':ci['timeout_minutes'],
             'image_base':definition['image_base'], 'shipping_components':images.components(definition),
-            'test_groups':definition['tests'], 'artifact_definition':config['artifacts']['definition'],
+            'test_groups':definition['tests'], 'artifact_definition':release_definition(config),
             'release_metadata':config['artifacts'].get('release_metadata', [])}
 
 
@@ -158,6 +158,7 @@ def workflow_files(root, revision, config=None):
 
 
 def auth_contract(root, config):
+    config = validate_data(config)
     if not config.get('preview'):
         return {'present':False}
     data=declaration(root,config)
@@ -175,6 +176,6 @@ if __name__=='__main__':
         raise SystemExit('usage: preview_workflows.py auth')
     try:
         root=Path.cwd().resolve()
-        print(json.dumps(auth_contract(root,tomllib.loads((root/'cookbook.toml').read_text()))))
+        print(json.dumps(auth_contract(root,load(root))))
     except (OSError,ValueError,KeyError,TypeError) as error:
         raise SystemExit(str(error)) from None

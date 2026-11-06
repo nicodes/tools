@@ -8,6 +8,21 @@ from configuration import relative
 import node_component
 
 
+def records(values):
+    if not isinstance(values, list) or len(values) > 1:
+        raise ValueError('Rust CLI supports one optional app UI')
+    result = []
+    for declaration in values:
+        if not isinstance(declaration, dict) or set(declaration) - {'required_files'}:
+            raise ValueError('UI source and output use the canonical app and .artifacts/ui paths')
+        required = declaration.get('required_files', ['index.html'])
+        if (not isinstance(required, list) or not required or any(not isinstance(name, str) for name in required)
+                or len(set(required)) != len(required) or 'index.html' not in required):
+            raise ValueError('UI validation requires index.html and distinct native output identities')
+        result.append({'package': 'app', 'output': '.artifacts/ui', 'required_files': required})
+    return result
+
+
 def snapshot(directory, required):
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError('build the UI before validating embedded assets')
@@ -27,9 +42,7 @@ def snapshot(directory, required):
 
 
 def validate_build(root, declarations, packages, environment, run):
-    for declaration in declarations:
-        if not isinstance(declaration, dict) or set(declaration) - {'package', 'output', 'required_files'}:
-            raise ValueError('unsupported UI build declaration')
+    for declaration in records(declarations):
         package_path = relative(root, declaration.get('package'), exists=True)
         matches = [node_component.validate(value, root) for value in packages]
         matches = [(package, directory) for package, directory in matches if directory == package_path]

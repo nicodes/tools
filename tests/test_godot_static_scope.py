@@ -40,9 +40,9 @@ class StaticArtifactScope(unittest.TestCase):
         subprocess.run(['git', '-C', str(self.root), '-c', 'user.name=Fixture', '-c',
             'user.email=fixture@example.test', 'commit', '-qm', 'static source fixture'], check=True)
         self.config = {'recipe': 'godot-game',
-            'components': {'godot': {'project': 'app', 'exports': [
+            'components': {'images': [{'name': 'gate'}], 'godot': {'exports': [
                 {'preset': 'Web', 'output': 'app/build/web/index.html'}]}},
-            'artifacts': {'definition': 'deploy/release.json'},
+            'artifacts': {},
             'delivery': {'definition': 'deploy/delivery.json'}}
         self.outputs = {'public/release-manifest.json': '{"release_id":"fixture"}\n',
             'app/build/.gdignore': '', static.CONFIG_ARTIFACT: '{"blueprint":"fixture"}\n',

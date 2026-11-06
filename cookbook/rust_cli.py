@@ -19,6 +19,7 @@ import node_component
 import ui_component
 import native_components
 import rust_tests
+import recipe_contract
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -38,7 +39,47 @@ def components(config):
     values = config.get('components', {}).get('rust')
     if not isinstance(values, list) or not values:
         raise ValueError('Rust recipes require real native Cargo components')
+    primary = [value for value in values if value.get('name') == 'cli']
+    if (len(primary) != 1 or primary[0].get('manifest', 'Cargo.toml') != 'Cargo.toml'
+            or primary[0].get('profile', 'release') != 'release'
+            or primary[0].get('build', {}).get('profile', 'release') != 'release'
+            or 'release' in primary[0] or 'release' in primary[0].get('build', {})
+            or primary[0].get('build', {}).get('enabled') is False):
+        raise ValueError('Rust CLI requires one release cli component at Cargo.toml')
     return values
+
+
+def artifact_settings(config):
+    values = config.get('artifacts', {})
+    if not isinstance(values, dict) or set(values) - {'evidence_paths'}:
+        raise ValueError('Rust artifact paths and identity inputs are derived by the recipe')
+    return values
+
+
+def binding_name(kind, name):
+    if not isinstance(name, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', name):
+        raise ValueError('native binary bindings require literal source names')
+    return 'COOKBOOK_' + kind + '_' + name.replace('-', '_').upper() + '_BINARY'
+
+
+def identity_bindings(config):
+    """Retain actual compiler identity aliases without caller-selected authority."""
+    result = {}
+    for component in native_components.records(config):
+        for name, token in component.get('environment', {}).items():
+            if (name in {'COMMIT', 'VERSION', 'DATE', 'RUST_TARGET', 'TOOLS_ROOT', 'GH_TOKEN',
+                         'TOOLS_VERIFICATION_SESSION', 'PATH', 'CARGO_TARGET_DIR', 'RUNNER_TEMP'}
+                    or name.startswith(('GITHUB_', 'COOKBOOK_'))):
+                raise ValueError('native identity bindings cannot replace recipe or execution authority')
+            if name == 'SOURCE_COMMIT' and token != '{commit}':
+                raise ValueError('SOURCE_COMMIT must identify the checked-out source')
+            if name in result and result[name] != token:
+                raise ValueError('native identity bindings cannot conflict across components')
+            result[name] = token
+    for component in components(config):
+        if component.get('environment'):
+            raise ValueError('Rust CLI compiler identity inputs belong to typed native bindings')
+    return result
 
 
 def required_tools(root, config, stage):
@@ -77,6 +118,8 @@ def required_tools(root, config, stage):
 
 
 def environment(root, config):
+    artifact_settings(config)
+    package = package_data(root, config)
     source = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
     if os.environ.get('COMMIT', source) != source:
         raise ValueError('requested build commit differs from the checked-out source')
@@ -90,18 +133,32 @@ def environment(root, config):
         value['RUSTFLAGS'] = value.get('RUSTFLAGS', '') + ' -C target-feature=+crt-static'
     for name in ['CC_x86_64_unknown_linux_musl', 'CC_aarch64_unknown_linux_musl']:
         value.setdefault(name, 'musl-gcc')
-    for name, path in config.get('artifacts', {}).get('binary_environment', {}).items():
-        if not re.fullmatch('[A-Z][A-Z0-9_]*', name):
-            raise ValueError('invalid native binary environment selector')
-        if '{' in path:
-            record = selected_target(package_data(root, config), value)
-            path = helper('native_cli').render(path, {'platform': record['platform'], 'arch': record['arch']})
-        value[name] = str(binary_path(root, path))
+    value.setdefault('CARGO_TARGET_DIR', str(root / '.artifacts/rust-target'))
+    bound = {}
+    def bind(name, path):
+        path = str(path)
+        if name in bound or (name in value and value[name] != path):
+            raise ValueError('native binary binding conflicts with another source or caller environment')
+        bound[name] = path
+        value[name] = path
+    bind('COOKBOOK_CLI_BINARY', binary_path(root, package['output']))
+    if config.get('components', {}).get('native'):
+        record = selected_target(package, value)
+        for declaration in native_components.records(config):
+            bind(binding_name('NATIVE', declaration['name']),
+                 native_components.output(root, declaration, native_components.platform(record)))
     for fixture in config.get('components', {}).get('fixtures', []):
+        if 'environment' in fixture:
+            raise ValueError('native fixture binary bindings are derived from their binary names')
         record = helper('native_cli').native_target({'native_targets': fixture['native_targets']})
         binary = fixture['binary'] + ('.exe' if record['platform'] == 'Windows' else '')
-        value[fixture['environment']] = str(root / '.artifacts/fixtures' / fixture['binary'] /
-                                            (record['platform'] + '-' + record['arch']) / binary)
+        bind(binding_name('FIXTURE', fixture['binary']), root / '.artifacts/fixtures' / fixture['binary'] /
+             (record['platform'] + '-' + record['arch']) / binary)
+    tokens = {'{commit}': source, '{version}': value['VERSION'], '{date}': value['DATE']}
+    for name, token in identity_bindings(config).items():
+        if name in value and value[name] != tokens[token]:
+            raise ValueError('native identity input differs from its declared build identity')
+        value[name] = tokens[token]
     python_paths = [str(relative(root, package['target'])) for package in config.get('components', {}).get('python', [])]
     if python_paths:
         value['PYTHONPATH'] = os.pathsep.join([*python_paths, *([value['PYTHONPATH']] if value.get('PYTHONPATH') else [])])
@@ -118,22 +175,51 @@ def binary_path(root, name):
 
 
 def verification_scope(root, config):
-    artifacts = config.get('artifacts', {})
-    paths = artifacts.get('paths', [])
+    artifact_settings(config)
+    paths = ['dist', '.artifacts/build', '.artifacts/native-package']
+    declarations = config.get('components', {}).get('ui', [])
+    if declarations:
+        ui_component.records(declarations)
+        paths.append('.artifacts/ui')
+    paths += fixture_artifacts(root, config)
     if config.get('components', {}).get('native'):
         environment_values = environment(root, config)
         record = selected_target(package_data(root, config), environment_values)
         selected = native_components.selection(config, environment_values)
         native_paths = native_components.artifacts(root, config, record, environment_values)
         paths = [*paths, *native_paths] if any(value['role'] == 'cli' for value in selected) else native_paths
-    if not paths:
-        raise ValueError('Rust build verification requires explicit product outputs')
     for name in paths:
         relative(root, name)
+    bindings = identity_bindings(config)
     return helper('verification').scope(artifacts=paths,
-        environment=[*artifacts.get('environment', ['VERSION', 'COMMIT', 'DATE', 'RUST_TARGET']),
+        environment=['VERSION', 'COMMIT', 'DATE', 'RUST_TARGET', *bindings,
                      *(['COOKBOOK_NATIVE_COMPONENTS', 'COOKBOOK_NATIVE_BUILD_CHECKS'] if config.get('components', {}).get('native') else [])],
-        revision_environment=artifacts.get('revision_environment', ['COMMIT']))
+        revision_environment=['COMMIT', *[name for name, token in bindings.items() if token == '{commit}']])
+
+
+def fixture_artifacts(root, config):
+    """Derive explicitly targeted Cargo fixture libraries from native manifests."""
+    paths = []
+    for component in components(config):
+        target = component.get('target')
+        if not target or component.get('build', {}).get('enabled') is False:
+            continue
+        rust_component.validate(component, root)
+        manifest = tomllib.loads(relative(root, component.get('manifest', 'Cargo.toml'), exists=True).read_text())
+        library = manifest.get('lib', {})
+        if target.startswith('wasm32-') and 'cdylib' in library.get('crate-type', []):
+            name = library.get('name', manifest.get('package', {}).get('name', '').replace('-', '_'))
+            if not isinstance(name, str) or not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', name):
+                raise ValueError('Cargo fixture library must name its native output')
+            directory = Path(component.get('target_directory', os.environ.get('CARGO_TARGET_DIR', '.artifacts/rust-target')))
+            if directory.is_absolute():
+                try:
+                    directory = directory.relative_to(root)
+                except ValueError:
+                    raise ValueError('Cargo fixture outputs must stay inside the checkout') from None
+            profile = component.get('build', {}).get('profile', component.get('profile', 'release'))
+            paths.append((directory / target / ('debug' if profile in {'debug', 'dev'} else 'release') / (name + '.wasm')).as_posix())
+    return paths
 
 
 def artifact_paths(root, config):
@@ -141,7 +227,7 @@ def artifact_paths(root, config):
 
 
 def evidence_paths(root, config):
-    return config.get('artifacts', {}).get('evidence_paths', [])
+    return artifact_settings(config).get('evidence_paths', [])
 
 
 def current_build(root, config):
@@ -154,16 +240,23 @@ def current_build(root, config):
 
 def package_data(root, config):
     package = config.get('package', {})
-    required = {'binary', 'output', 'version_arguments', 'native_targets'}
-    if not required <= package.keys():
+    allowed = {'binary', 'version_arguments', 'native_targets', 'version_template', 'version_fields', 'files',
+               'file_sources', 'extra_files', 'release_metadata', 'info_arguments', 'info_fields', 'info_exact'}
+    required = {'binary', 'version_arguments', 'native_targets'}
+    if not isinstance(package, dict) or set(package) - allowed or not required <= package.keys():
         raise ValueError('native CLI package data must declare executable, identity and complete target matrix')
+    recipe_contract.validate_paths(config)
+    components(config)
+    manifest = tomllib.loads(relative(root, 'Cargo.toml', exists=True).read_text())
+    if manifest.get('package', {}).get('name') != package['binary']:
+        raise ValueError('native CLI binary must match the root Cargo package identity')
     if not package.get('version_template') and not package.get('version_fields'):
         raise ValueError('native package must declare plain or machine version/source identity')
     native = helper('native_cli')
     names = [native.archive_name(package, item) for item in package['native_targets']]
     if not names or len(names) != len(set(names)):
         raise ValueError('native target matrix must be nonempty and unique')
-    relative(root, package['output'])
+    package = {**package, 'output': '.artifacts/build/' + package['binary'], 'profile': 'release', 'component': 'cli'}
     for name in package.get('files', []):
         relative(root, package.get('file_sources', {}).get(name, name), exists=True)
     return package
@@ -223,7 +316,7 @@ def assemble(root, config, environment):
             shutil.copyfile(receipt, staging / receipt.name)
     else:
         record = selected_target(package, environment)
-        matches = [value for value in components(config) if value.get('name') == package.get('component')] if package.get('component') else components(config)[:1]
+        matches = [value for value in components(config) if value.get('name') == 'cli']
         if len(matches) != 1:
             raise ValueError('native package must select exactly one Cargo component')
         component = matches[0]
@@ -289,7 +382,7 @@ def product_tests(root, config, environment, suite, selected=None):
     if entries and suite in {'unit', 'integration', 'e2e'}:
         for fixture in config.get('components', {}).get('fixtures', []):
             helper('native_cli').immutable_fixture(root, fixture)
-    arguments = {'{binary}': str(binary_path(root, config['package']['output'])), '{version}': environment['VERSION'],
+    arguments = {'{binary}': str(binary_path(root, package_data(root, config)['output'])), '{version}': environment['VERSION'],
                  '{root}': str(root), '{commit}': environment['COMMIT']}
     if config.get('components', {}).get('native'):
         record = selected_target(package_data(root, config), environment)
@@ -410,7 +503,7 @@ def main():
                     raise ValueError('declare the required SDK in mise.toml: ' + name)
                 run(['mise', 'where', name], root, env)
         # Evidence hashes metadata values, never their serialized secret values.
-        os.environ.update({key: env[key] for key in ['COMMIT', 'VERSION', 'DATE']})
+        os.environ.update({key: env[key] for key in ['COMMIT', 'VERSION', 'DATE', 'RUST_TARGET', *identity_bindings(config)] if key in env})
         selected = os.environ.get('COOKBOOK_TEST_PATHS')
         if selected:
             aggregate = root / '.artifacts/verification/test.json'

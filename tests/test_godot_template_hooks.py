@@ -14,7 +14,7 @@ class TemplateHookControls(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);self.root=Path(temporary.name)
         app=self.root/'app';app.mkdir();(app/'project.godot').write_text('config_version=5\n')
-        self.config={'components':{'godot':{'project':'app','exports':[{'preset':'Web','output':'app/build/web/index.html'}],
+        self.config={'components':{'godot':{'exports':[{'preset':'Web','output':'app/build/web/index.html'}],
             'templates':{'profile':'app/engine/profile.json','directory':'app/.export-templates'}}},'artifacts':{'paths':['app/build/web']}}
 
     def test_bad_or_absent_custom_sdk_stops_the_real_export_without_network_repair(self):
@@ -45,7 +45,7 @@ class TemplateHookControls(unittest.TestCase):
         record = {'name': 'gate-fixture', 'dockerfile': 'tests/fixtures/Dockerfile',
                   'pull': False, 'native': [{'runner': 'python', 'path': 'tests/fixtures/prepare.py'}]}
         (fixture.parent / 'Dockerfile').write_text('FROM scratch\n')
-        config = {'components': {'godot': {'project': 'app', 'exports': [
+        config = {'components': {'godot': {'exports': [
             {'preset': 'Web', 'output': 'app/build/web/index.html'}]}, 'images': [record]}}
         effects = []
         def execute(argv, cwd, environment, *args, **kwargs):

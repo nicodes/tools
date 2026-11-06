@@ -55,7 +55,7 @@ def fixture(root):
     (root/'mise.toml').write_text(
         '[tools]\npython="3.13.11"\nactionlint="1.7.8"\n"github:aviorstudio/gdlint"="v1.0.0"\nnode="24.3.0"\n'
         '[env]\n'+''.join(key+'="'+value+'"\n' for key, value in pins().items()))
-    return {'components': {'godot': {'project': 'app', 'origin': 'godot-builds'}}, 'tests': {}}
+    return {'components': {'godot': {}}, 'tests': {}}
 
 
 def worker(root, kind, execute=None, setup=None):
@@ -102,7 +102,7 @@ class HostTemplateSetupControls(unittest.TestCase):
         self.assertEqual(command, [sys.executable, str(ROOT/'helpers/godot-setup.py'),
             '--version', VERSION, '--expected-version', EXPECTED_VERSION,
             '--binary-checksum', BINARY_PIN, '--root', str(self.root/'.artifacts/godot'),
-            '--origin', 'godot-builds'])
+            '--origin', 'godot'])
 
     def test_browser_capability_never_selects_engine_or_templates(self):
         calls, imports = worker(self.root, 'capability', setup='browser')

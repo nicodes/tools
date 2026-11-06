@@ -1,4 +1,4 @@
-"""Reload a closed, accepted image set without resetting unrelated Docker state."""
+"""Reuse or repair a closed, accepted image set from authenticated store state."""
 import gzip
 import hashlib
 import json
@@ -194,12 +194,12 @@ def archive_images(path, expected, deadline):
 
 
 def reload(root, source, archives, expected, environment, timeout=600):
-    """Admit every archive and cache reference before nonforce scoped reset/load.
+    """Admit every archive and cache reference before deriving reuse/load/repair.
 
     The caller owns source/configuration/build-proof admission and supplies the
     complete declared image set. This helper independently closes the archive
     tag/config/layer set, protects aliases and containers, and retains one total
-    deadline across validation, cache inspection, reset, load and verification.
+    deadline across validation, cache inspection, repair, load and verification.
     """
     if type(timeout) is not int or not 1 <= timeout <= 600:
         raise ValueError('accepted image reload requires its original bounded deadline')
@@ -267,6 +267,51 @@ def reload(root, source, archives, expected, environment, timeout=600):
         if execute(['docker', 'container', 'ls', '--all', '--quiet', '--filter', 'ancestor=' + identity]).strip():
             raise ValueError('accepted cache image is used by an existing container')
 
+    def inspect(reference):
+        values = json.loads(execute(['docker', 'image', 'inspect', reference]), object_pairs_hook=unique_object)
+        if (not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict)
+                or not isinstance(values[0].get('Id'), str) or not DIGEST.fullmatch(values[0]['Id'])
+                or not isinstance(values[0].get('RootFS'), dict)
+                or not isinstance(values[0]['RootFS'].get('Layers'), list)
+                or len(values[0]['RootFS']['Layers']) > 128
+                or any(not isinstance(layer, str) or not DIGEST.fullmatch(layer)
+                       for layer in values[0]['RootFS']['Layers'])):
+            raise ValueError('Docker image inspection has no immutable config ID and RootFS')
+        return {'id': values[0]['Id'], 'rootfs': values[0]['RootFS']['Layers']}
+
+    def missing_overlay_link(error):
+        # Native overlay2 corruption is observable even when `image ls` still
+        # reports the accepted ID. Bind that specific error to the actual daemon
+        # store; connection, permission and other inspection failures are fatal.
+        message = error.stderr if isinstance(error.stderr, str) else ''
+        match = re.fullmatch(r'Error response from daemon: readlink ([^\r\n]+): no such file or directory', message.strip())
+        if match is None:
+            return False
+        info = json.loads(execute(['docker', 'info', '--format', '{{json .}}']), object_pairs_hook=unique_object)
+        directory = info.get('DockerRootDir') if isinstance(info, dict) else None
+        if (not isinstance(info, dict) or info.get('Driver') != 'overlay2' or not isinstance(directory, str)
+                or not PurePosixPath(directory).is_absolute() or '..' in PurePosixPath(directory).parts):
+            return False
+        path = PurePosixPath(match[1])
+        return (path.parent == PurePosixPath(directory) / 'overlay2' / 'l'
+                and re.fullmatch(r'[A-Za-z0-9_-]{1,128}', path.name) is not None)
+
+    repair = any(identity != expected[reference] for reference, identity in present.items())
+    for reference, identity in present.items():
+        if identity != expected[reference]:
+            continue
+        try:
+            observed = inspect(reference)
+        except subprocess.CalledProcessError as error:
+            if not missing_overlay_link(error):
+                raise
+            repair = True
+            continue
+        if observed['id'] != identity:
+            raise ValueError('source tag changed during image cache admission')
+        if observed != admitted[reference]:
+            repair = True
+
     def unchanged(path):
         relative(root, path.relative_to(root).as_posix(), exists=True)
         info = path.stat()
@@ -276,17 +321,15 @@ def reload(root, source, archives, expected, environment, timeout=600):
 
     for path in paths:
         unchanged(path)
-    if present:
+    if repair and present:
         ordered = sorted(present, key=lambda ref: (-len(admitted[ref]['rootfs']), ref))
         execute(['docker', 'image', 'rm', '--no-prune', '--', *ordered])
-    for path in paths:
-        unchanged(path)
-        execute(['docker', 'image', 'load', '--input', str(path)], cap=600)
+    if repair or set(present) != set(expected):
+        for path in paths:
+            unchanged(path)
+            execute(['docker', 'image', 'load', '--input', str(path)], cap=600)
     for reference, wanted in admitted.items():
-        rows = json.loads(execute(['docker', 'image', 'inspect', reference]), object_pairs_hook=unique_object)
-        if (not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict)
-                or rows[0].get('Id') != wanted['id'] or not isinstance(rows[0].get('RootFS'), dict)
-                or rows[0]['RootFS'].get('Layers') != wanted['rootfs']):
-            raise ValueError('reloaded image differs from its accepted config ID or RootFS')
+        if inspect(reference) != wanted:
+            raise ValueError('imported image differs from its accepted config ID or RootFS')
     remaining(deadline)
     return admitted

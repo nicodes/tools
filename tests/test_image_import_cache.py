@@ -39,6 +39,9 @@ class ImageImportCacheControls(unittest.TestCase):
         self.elapsed_per_call = 0
         self.inspected = {ref: {'Id': identity, 'RootFS': {'Layers': json.loads(self.configs[ref])['rootfs']['diff_ids']}}
                           for ref, identity in self.expected.items()}
+        self.after_load = json.loads(json.dumps(self.inspected))
+        self.inspect_errors = {}
+        self.store = {'Driver': 'overlay2', 'DockerRootDir': '/private/docker-data'}
 
     @staticmethod
     def row(reference, identity, digest='<none>'):
@@ -103,7 +106,15 @@ class ImageImportCacheControls(unittest.TestCase):
         elif command[1:3] == ['container', 'ls']:
             output = self.containers.get(command[-1][len('ancestor='):], '')
         elif command[1:3] == ['image', 'inspect']:
+            if command[-1] in self.inspect_errors:
+                raise subprocess.CalledProcessError(1, command, output='[]\n', stderr=self.inspect_errors[command[-1]])
             output = json.dumps([self.inspected[command[-1]]])
+        elif command[1:3] == ['info', '--format']:
+            output = json.dumps(self.store)
+        elif command[1:3] == ['image', 'load']:
+            self.inspected = json.loads(json.dumps(self.after_load))
+            self.inspect_errors.clear()
+            output = ''
         else:
             output = ''
         return subprocess.CompletedProcess(command, 0, stdout=output)
@@ -124,7 +135,8 @@ class ImageImportCacheControls(unittest.TestCase):
             self.reload(**changes)
         self.assertEqual(self.calls, [])
 
-    def test_closed_archive_set_resets_only_present_refs_deepest_first_and_reloads_original_bytes(self):
+    def test_closed_archive_set_repairs_only_present_refs_deepest_first_and_reloads_original_bytes(self):
+        self.inspected[self.refs[0]]['RootFS']['Layers'] = []
         admitted = self.reload()
         self.assertEqual(admitted, {ref: {'id': value['Id'], 'rootfs': value['RootFS']['Layers']} for ref, value in self.inspected.items()})
         mutations = self.mutations()
@@ -137,14 +149,50 @@ class ImageImportCacheControls(unittest.TestCase):
         self.assertFalse(any(value in command for command, _ in self.calls for value in ['--force', '-f', 'prune', 'build', 'create', 'start']))
         self.assertTrue(all(options['cwd'] == self.root and options['env'] == {'PATH': '/synthetic/docker-only'} for _, options in self.calls))
 
-    def test_absent_cache_is_loaded_without_remove_and_partial_cache_removes_only_present_ref(self):
-        for rows, removed in [([], []), ([self.listing[0]], self.refs[:1])]:
+    def test_healthy_exact_cache_is_reverified_without_removal_or_load(self):
+        self.assertEqual(set(self.reload()), set(self.expected))
+        self.assertEqual(self.mutations(), [])
+        inspections = [command[-1] for command, _ in self.calls if command[1:3] == ['image', 'inspect']]
+        self.assertEqual(inspections, self.refs + self.refs)
+
+    def test_absent_or_healthy_partial_cache_loads_without_any_removal(self):
+        for rows in [[], [self.listing[0]]]:
             with self.subTest(rows=rows):
                 self.calls.clear()
                 self.listing = rows
                 self.reload()
-                removals = [command for command in self.mutations() if command[2] == 'rm']
-                self.assertEqual(removals, [['docker', 'image', 'rm', '--no-prune', '--', *removed]] if removed else [])
+                self.assertEqual(self.mutations(), [['docker', 'image', 'load', '--input', str(self.root / row['path'])] for row in self.archives])
+
+    def test_actual_store_overlay_link_failure_derives_scoped_repair(self):
+        self.inspect_errors[self.refs[-1]] = ('Error response from daemon: readlink '
+            '/private/docker-data/overlay2/l/ACTUAL_LOWER_LINK: no such file or directory\n')
+        self.assertEqual(set(self.reload()), set(self.expected))
+        removal, = [command for command in self.mutations() if command[2] == 'rm']
+        self.assertEqual(removal, ['docker', 'image', 'rm', '--no-prune', '--', *reversed(self.refs)])
+        self.assertIn(['docker', 'info', '--format', '{{json .}}'], [command for command, _ in self.calls])
+
+    def test_unknown_inspect_errors_and_unbound_store_paths_refuse_without_mutation(self):
+        for message in ['Cannot connect to the Docker daemon', 'Error response from daemon: permission denied',
+                'Error response from daemon: readlink /foreign/overlay2/l/FOREIGN: no such file or directory',
+                'Error response from daemon: readlink /private/docker-data/overlay2/l/../../other: no such file or directory']:
+            with self.subTest(message=message):
+                self.calls.clear()
+                self.inspect_errors[self.refs[-1]] = message
+                with self.assertRaises(subprocess.CalledProcessError): self.reload()
+                self.assertEqual(self.mutations(), [])
+        self.store['Driver'] = 'different-driver'
+        self.inspect_errors[self.refs[-1]] = ('Error response from daemon: readlink '
+            '/private/docker-data/overlay2/l/ACTUAL_LOWER_LINK: no such file or directory')
+        with self.assertRaises(subprocess.CalledProcessError): self.reload()
+        self.assertEqual(self.mutations(), [])
+
+    def test_changed_tag_or_malformed_inspection_refuses_without_mutation(self):
+        for value in [{'Id': 'sha256:' + 'e' * 64, 'RootFS': {'Layers': []}},
+                {'Id': self.expected[self.refs[0]], 'RootFS': {'Layers': 'not-layers'}}]:
+            with self.subTest(value=value):
+                self.calls.clear(); self.inspected[self.refs[0]] = value
+                with self.assertRaises(ValueError): self.reload()
+                self.assertEqual(self.mutations(), [])
 
     def test_blob_named_gzip_layers_use_config_diff_ids_and_preserve_archive(self):
         archive = self.archive('oci.tar.gz', self.refs, blob=True, compressed=True, oci=True)
@@ -313,19 +361,21 @@ class ImageImportCacheControls(unittest.TestCase):
         self.assertFalse(self.mutations())
 
     def test_strict_reloaded_config_id_and_rootfs_must_both_match(self):
+        self.listing = []
         for key in ['Id', 'RootFS']:
             with self.subTest(key=key):
-                old = self.inspected[self.refs[0]][key]
-                self.inspected[self.refs[0]][key] = 'sha256:' + 'e' * 64 if key == 'Id' else {'Layers': []}
-                with self.assertRaisesRegex(ValueError, 'reloaded image differs'):
+                old = self.after_load[self.refs[0]][key]
+                self.after_load[self.refs[0]][key] = 'sha256:' + 'e' * 64 if key == 'Id' else {'Layers': []}
+                with self.assertRaisesRegex(ValueError, 'imported image differs'):
                     self.reload()
-                self.inspected[self.refs[0]][key] = old
+                self.after_load[self.refs[0]][key] = old
 
     def test_all_commands_share_one_deadline_and_expired_admission_has_no_docker_calls(self):
         self.elapsed_per_call = 90
+        self.listing = []
         with self.assertRaisesRegex(ValueError, 'deadline exceeded'):
             self.reload()
-        self.assertEqual([options['timeout'] for _, options in self.calls], [60, 60, 60, 60, 60, 150, 60])
+        self.assertEqual([options['timeout'] for _, options in self.calls], [60, 60, 60, 60, 240, 150, 60])
         self.assertEqual(len([command for command, _ in self.calls if command[1:3] == ['image', 'load']]), 2)
         self.clock = 0
         self.calls.clear()

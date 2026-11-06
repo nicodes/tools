@@ -8,6 +8,7 @@ import tempfile
 import tomllib
 
 from configuration import relative, load
+from recipe_contract import app_directory
 import json
 from pathlib import Path
 import re
@@ -144,7 +145,7 @@ def declaration(root, config):
     profile = relative(root, values['profile'], exists=True)
     checked_regular(profile, 64 * 1024)
     directory = relative(root, values['directory'])
-    project = relative(root, config['components']['godot'].get('project', 'app'), exists=True)
+    project = relative(root, app_directory(config), exists=True)
     if directory == project or not directory.is_relative_to(project):
         raise ValueError('custom template cache must remain in the ignored native project')
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('env', {})

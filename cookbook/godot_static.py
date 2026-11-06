@@ -11,6 +11,7 @@ import tempfile
 import tomllib
 
 from configuration import relative
+from recipe_contract import release_definition
 
 TOOLS=Path(__file__).resolve().parents[1]
 CONFIG_ARTIFACT='.artifacts/release/static-config.json'
@@ -58,7 +59,7 @@ def declaration(root,config):
                 or any(not isinstance(name,str) or not re.fullmatch('[a-z][a-z0-9_-]{0,63}',name) for name in names.values())
                 or type(static.get('production_current_source',True)) is not bool):
             raise ValueError('static public verification must preserve its native dispatch and source policy')
-    definition=json.loads(read(relative(root,config['artifacts']['definition'],exists=True)))
+    definition=json.loads(read(relative(root,release_definition(config),exists=True)))
     repository=definition.get('image_base','').removeprefix('ghcr.io/')
     if not re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repository):raise ValueError('static images require their exact native repository family')
     if definition['image_base']!='ghcr.io/'+repository or definition.get('project')!=data.get('project'):

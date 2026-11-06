@@ -135,10 +135,8 @@ def plan(root, config, environment=None):
     if values is None:
         return {'version': 1, 'enrolled': False, 'requirements': [], 'units': {'include': []}, 'gates': {'include': []}}
     if (not isinstance(values, dict) or set(values) - {'unit_shards', 'unit_workers', 'build_timeout_minutes',
-            'unit_timeout_minutes', 'host_timeout_minutes', 'unit_artifacts', 'gates', 'host_unit_name', 'reset_import_cache'}):
+            'unit_timeout_minutes', 'host_timeout_minutes', 'unit_artifacts', 'gates', 'host_unit_name'}):
         raise ValueError('unsupported Godot CI topology declaration')
-    if type(values.get('reset_import_cache', False)) is not bool:
-        raise ValueError('Godot imported current-image cache reset must be an explicit boolean')
     runner = config.get('ci', {}).get('runner', 'ubuntu-24.04')
     if not isinstance(runner, str) or runner not in RUNNERS:
         raise ValueError('Godot runners must use the reviewed native Linux platforms')
@@ -489,24 +487,21 @@ def download(root, source, environment, entries):
 
 def import_build(root, config, source_directory, proof):
     import ci
+    import godot_game
     if Path.cwd().resolve() != root.resolve():
         raise ValueError('Godot build import requires the current exact checkout')
     files = {name: value for name, value in proof['build']['artifacts'].items() if not name.startswith('image:')}
     images = {name: value for name, value in proof['build']['artifacts'].items() if name.startswith('image:')}
-    reset = config.get('ci', {}).get('godot', {}).get('reset_import_cache', False)
-    if type(reset) is not bool:
-        raise ValueError('Godot imported current-image cache reset must be an explicit boolean')
-    if reset:
-        import godot_game
+    declared = ci.verification().resolve_images(godot_game.verification_scope(root, config), proof['source_commit'])
+    if images or declared:
         ci.identity(root, proof['source_commit'], proof['cookbook_commit'])
         if proof.get('configuration_sha256') != configuration_hash(root):
-            raise ValueError('image cache reset requires its admitted exact source configuration')
-        declared = ci.verification().resolve_images(godot_game.verification_scope(root, config), proof['source_commit'])
-        if not images or {name[6:] for name in images} != set(declared):
-            raise ValueError('image cache reset requires the complete declared current-source image scope')
+            raise ValueError('image import requires its admitted exact source configuration')
+        if {name[6:] for name in images} != set(declared):
+            raise ValueError('image import requires the complete declared current-source image scope')
         for name, expected in files.items():
             if not allowed_output(name, config, root) or digest(relative(Path(source_directory) / 'payload', name, exists=True)) != expected:
-                raise ValueError('image cache reset requires all admitted build bytes before effects')
+                raise ValueError('image import requires all admitted build bytes before effects')
     for name in files:
         if not allowed_output(name, config, root):
             raise ValueError('Godot output is outside the exact declared build scope')
@@ -521,28 +516,19 @@ def import_build(root, config, source_directory, proof):
         if archive not in files:
             raise ValueError('Godot image transfer requires its actually accepted image archive')
         import image_fixtures
-        if reset:
-            import image_import_cache
-            archives = [{'path': archive, 'sha256': files[archive]}]
-            fixture = image_fixtures.declaration(root, config)
-            if fixture:
-                identities = image_fixtures.verify(root, config, dict(os.environ, SOURCE_COMMIT=proof['source_commit']))
-                if any(images.get('image:' + ref) != identity for ref, identity in identities.items()):
-                    raise ValueError('fixture image differs from the admitted current-source build identity')
-                name = (fixture['directory'] / 'images.tar.gz').relative_to(root).as_posix()
-                if name not in files:
-                    raise ValueError('image cache reset requires the admitted fixture archive')
-                archives.append({'path': name, 'sha256': files[name]})
-            image_import_cache.reload(root, proof['source_commit'], archives,
-                {name[6:]: value for name, value in images.items()}, dict(os.environ), timeout=600)
-        else:
-            subprocess.run(['docker', 'image', 'load', '--input', str(relative(root, archive, exists=True))], check=True, timeout=600)
-            image_fixtures.load(root,config,dict(os.environ)|{'SOURCE_COMMIT':proof['source_commit']},images,
-                lambda argv,cwd,env,timeout:subprocess.run(argv,cwd=cwd,env=env,check=True,timeout=timeout))
-            for name, expected in images.items():
-                value = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', name[6:]], text=True, timeout=60).strip()
-                if value != expected:
-                    raise ValueError('loaded image differs from the immutable accepted build identity')
+        import image_import_cache
+        archives = [{'path': archive, 'sha256': files[archive]}]
+        fixture = image_fixtures.declaration(root, config)
+        if fixture:
+            identities = image_fixtures.verify(root, config, dict(os.environ, SOURCE_COMMIT=proof['source_commit']))
+            if any(images.get('image:' + ref) != identity for ref, identity in identities.items()):
+                raise ValueError('fixture image differs from the admitted current-source build identity')
+            name = (fixture['directory'] / 'images.tar.gz').relative_to(root).as_posix()
+            if name not in files:
+                raise ValueError('image import requires the admitted fixture archive')
+            archives.append({'path': name, 'sha256': files[name]})
+        image_import_cache.reload(root, proof['source_commit'], archives,
+            {name[6:]: value for name, value in images.items()}, dict(os.environ), timeout=600)
     ci.verification().write(Path('.artifacts/verification/build.json'), proof['build'])
 
 
@@ -819,7 +805,7 @@ def setup_worker(root, config, environment, entry):
     (root / '.artifacts/.gdignore').touch()
     engine = [sys.executable, str(TOOLS / 'helpers/godot-setup.py'), '--version', godot['GODOT_VERSION'],
               '--expected-version', godot['GODOT_EXPECTED_VERSION'], '--binary-checksum', godot['GODOT_BINARY_CHECKSUM'],
-              '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')]
+              '--root', str(root / '.artifacts/godot'), '--origin', game.GODOT_RELEASE_ORIGIN]
     if role == 'host':
         engine += ['--templates-checksum', godot['GODOT_TEMPLATES_CHECKSUM'], '--templates']
     game.run(engine, root, environment)

@@ -11,6 +11,7 @@ import tomllib
 import urllib.request
 
 from configuration import relative
+from recipe_contract import RUST_WEB_DIRECTORY
 
 PIN_PATTERNS = {
     'RUST_NIGHTLY': r'nightly-\d{4}-\d{2}-\d{2}',
@@ -25,11 +26,9 @@ def inputs(root, config):
     value = config.get('components', {}).get('godot', {}).get('rust_web')
     if value is None:
         return None
-    if not isinstance(value, dict) or set(value) - {'directory'}:
-        raise ValueError('Godot extension SDKs accept a local SDK directory, with pins in Mise only')
-    directory = relative(root, value.get('directory', '.artifacts/toolchains/rust-web'))
-    if directory.relative_to(root).parts[:1] != ('.artifacts',) or len(directory.relative_to(root).parts) < 3:
-        raise ValueError('Godot extension SDKs require a dedicated generated artifact directory')
+    if not isinstance(value, dict) or value:
+        raise ValueError('Godot extension SDKs use their canonical directory, with pins in Mise only')
+    directory = relative(root, RUST_WEB_DIRECTORY)
     pins = tomllib.loads((root / 'mise.toml').read_text()).get('env', {})
     selected = {}
     for key, expression in PIN_PATTERNS.items():

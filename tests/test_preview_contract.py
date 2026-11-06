@@ -72,10 +72,10 @@ class PreviewDeclaration(unittest.TestCase):
         temporary=tempfile.TemporaryDirectory(prefix='preview source ')
         self.addCleanup(temporary.cleanup);self.root=Path(temporary.name)
         (self.root/'deploy').mkdir();(self.root/'.github/workflows').mkdir(parents=True)
-        self.config={'recipe':'react-native','ci':{'runner':'ubuntu-24.04','timeout_minutes':90,'preview_environment':'Preview'},
+        self.config={'version':1,'recipe':'react-native','ci':{'runner':'ubuntu-24.04','timeout_minutes':90,'preview_environment':'Preview'},
             'components':{'app':{'preview_environment':{'EXPO_PUBLIC_API_URL':'/api'},
                 'preview_variables':{'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':'COOKBOOK_PREVIEW_CLERK_KEY'}}},
-            'artifacts':{'definition':'deploy/release.json'},'preview':{'definition':'deploy/preview.json'}}
+            'artifacts':{},'preview':{'definition':'deploy/preview.json'}}
         self.data={'version':1,'project':'demo','komizo_ref':'c'*40,'components':['gate','api'],
             'runner':'ubuntu-24.04','up_timeout_minutes':35,'down_timeout_minutes':10,'publish_timeout_minutes':10,
             'origin_variables':{'ALLOWED_ORIGINS':['app','api'],'CLERK_AUTHORIZED_PARTIES':['app']},

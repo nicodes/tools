@@ -132,6 +132,18 @@ def main():
             archives = [{'path': name, 'sha256': hashlib.sha256((source_root / name).read_bytes()).hexdigest()} for name in saved]
             docker('image', 'load', '--input', str(sentinel_path), timeout=60)
             unrelated = docker('container', 'create', '--network', 'none', sentinel, '/never-started').stdout.strip()
+            commands = []
+            native_run = subprocess.run
+            def observed(command, *args, **kwargs):
+                commands.append(command)
+                return native_run(command, *args, **kwargs)
+            with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
+                reused = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
+            assert reused == images
+            assert not [command for command in commands if command[:3] in [['docker', 'image', 'rm'], ['docker', 'image', 'load']]]
+            assert inspect(sentinel)['Id'] == sentinel_image['id']
+            assert json.loads(docker('container', 'inspect', unrelated).stdout)[0]['State']['Status'] == 'created'
+            print('NATIVE_IMAGE_CACHE_REUSE_CONTROL_OK: exact healthy IDs/RootFS reused without removal or load; unrelated image/container retained', flush=True)
             target = docker('container', 'create', '--network', 'none', refs[1], '/never-started').stdout.strip()
             refuse_without_cache_effect('a real created target container bypassed reset admission')
             assert json.loads(docker('container', 'inspect', target).stdout)[0]['State']['Status'] == 'created'
