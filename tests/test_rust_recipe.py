@@ -55,7 +55,6 @@ manifest="Cargo.toml"
 binaries=["example"]
 [package]
 binary="example"
-output=".artifacts/build/example"
 files=["README.md"]
 version_arguments=["--version"]
 version_template="{binary} {version} ({commit})"
@@ -65,8 +64,6 @@ arch="x86_64"
 extension="tar.gz"
 target="x86_64-unknown-linux-gnu"
 checks=["tests/boundary.py"]
-[artifacts]
-paths=["dist", ".artifacts/build", ".artifacts/native-package"]
 [[tests.integration]]
 runner="python"
 path="tests/boundary.py"

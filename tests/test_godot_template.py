@@ -33,7 +33,7 @@ class CustomEngineTemplate(unittest.TestCase):
         self.pin = {'repository': 'owner/game', 'tag': 'template-4.7.2.1', 'archive': self.archive.name,
             'receipt': self.receipt.name, 'archive_sha256': receipt['archive_sha256'],
             'receipt_sha256': hashlib.sha256(self.receipt.read_bytes()).hexdigest(), 'profile_sha256': receipt['profile_sha256']}
-        self.config = {'components': {'godot': {'project': 'app', 'templates': {'profile': 'app/engine/profile.json', 'directory': 'app/.export-templates'}}}}
+        self.config = {'components': {'godot': {'templates': {'profile': 'app/engine/profile.json', 'directory': 'app/.export-templates'}}}}
         self.cache = self.root / 'app/.export-templates'
         self.write_pins()
 

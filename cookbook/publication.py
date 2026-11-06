@@ -14,6 +14,7 @@ import tempfile
 import zipfile
 
 from configuration import ci_settings, load, relative
+from godot_addon import package_data
 
 TOOLS = Path(__file__).resolve().parents[1]
 SHA = re.compile(r'[a-f0-9]{40}\Z')
@@ -33,7 +34,7 @@ def git(root, *args):
 
 def policy(root, config):
     values = config.get('publication', {})
-    allowed = {'mode', 'tag_prefix', 'initial', 'plugin', 'registry_auth', 'retry', 'resume',
+    allowed = {'mode', 'tag_prefix', 'initial', 'registry_auth', 'retry', 'resume',
                'provenance', 'validation_timeout', 'publish_timeout', 'recovery_timeout', 'environment', 'digests', 'assets', 'evidence_assets'}
     if not isinstance(values, dict) or not values or set(values) - allowed:
         raise ValueError('unknown addon publication setting')
@@ -56,13 +57,14 @@ def policy(root, config):
         relative(root, values['provenance'], exists=True)
     if 'digests' in values and not re.fullmatch(r'[A-Za-z0-9_.-]+\.txt', values['digests']):
         raise ValueError('legacy digest metadata requires one safe text basename')
-    roles = values.get('assets', ['archive', 'checksum', *(['registry_archive'] if config.get('package', {}).get('registry_archive') else [])])
+    package = package_data(config)
+    roles = values.get('assets', ['archive', 'checksum', *(['registry_archive'] if package.get('registry_archive') else [])])
     if (not isinstance(roles, list) or not roles or any(not isinstance(name, str) for name in roles) or len(set(roles)) != len(roles)
             or not set(roles) <= {'archive', 'checksum', 'registry_archive', 'registry_checksum', 'manifest'}
             or 'archive' not in roles):
         raise ValueError('publication assets must select a closed set of native artifact roles')
     values['assets'] = roles
-    if config.get('package', {}).get('registry_archive') and 'registry_archive' not in roles:
+    if package.get('registry_archive') and 'registry_archive' not in roles:
         raise ValueError('registry publication must include its declared flat archive asset')
     evidence = values.get('evidence_assets', [])
     if (not isinstance(evidence, list) or len(evidence) > 32 or any(not isinstance(name, str) for name in evidence)
@@ -79,7 +81,8 @@ def policy(root, config):
 def plugin_version(root, config, text=None):
     parser = configparser.ConfigParser(interpolation=None)
     if text is None:
-        text = relative(root, policy(root, config).get('plugin', 'addon/plugin.cfg'), exists=True).read_text()
+        policy(root, config)
+        text = relative(root, 'addon/plugin.cfg', exists=True).read_text()
     parser.read_string(text)
     match = re.fullmatch(r'"(\d+\.\d+\.\d+)"', parser.get('plugin', 'version', fallback=''))
     if not match:
@@ -119,7 +122,7 @@ def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag=
         if subprocess.run(['git', '-C', str(root), 'merge-base', '--is-ancestor', target, source], timeout=30).returncode:
             raise ValueError('immutable retry target is not an ancestor of permitted main')
         version = retry_tag[len(values['tag_prefix']):] if retry_tag.startswith(values['tag_prefix']) else ''
-        old_plugin = plugin_version(root, config, git(root, 'show', target + ':' + values.get('plugin', 'addon/plugin.cfg')))
+        old_plugin = plugin_version(root, config, git(root, 'show', target + ':addon/plugin.cfg'))
         if old_plugin != version or plugin != version:
             raise ValueError('retry tag and current/immutable plugin versions must agree')
         selected, expected, operation = retry_tag, retry_sha256, 'retry'
@@ -148,7 +151,8 @@ def identity(root, config, bump='patch', environment=None, *, tag='', retry_tag=
             if not values['resume'] or tags[selected] != source:
                 raise ValueError('release tag already exists or differs from this exact source')
             operation = 'resume'
-    asset = relative(root, config['package'].get('registry_archive', config['package']['archive'])).name
+    package = package_data(config)
+    asset = relative(root, package.get('registry_archive', package['archive'])).name
     if not re.fullmatch(r'[A-Za-z0-9@][A-Za-z0-9@._-]*\.zip', asset):
         raise ValueError('registry publication requires one exact safe ZIP basename')
     return {'version': version, 'tag': selected, 'asset': asset, 'operation': operation,
@@ -215,15 +219,8 @@ def validate_proof(root, config, accepted, source, environment=None):
 
 
 def verify_package(root, config):
-    if config['package'].get('format') == 'manifest':
-        from manifest_addon import verify
-        return verify(root, config)
-    package = helper('addon-package')
-    source = relative(root, config['package']['source'], exists=True)
-    manifest = relative(root, config['package']['manifest'], exists=True)
-    archive = relative(root, config['package']['archive'], exists=True)
-    package.verify(archive, manifest, source=source, script_uids=config['package'].get('script_uids', False))
-    return package.verify_checksum(archive)
+    from manifest_addon import verify
+    return verify(root, config)
 
 
 def accepted_evidence(root, config, accepted):
@@ -242,10 +239,11 @@ def accepted_evidence(root, config, accepted):
 def assets(root, config, destination, accepted=None):
     values = policy(root, config)
     verify_package(root, config)
-    archive = relative(root, config['package']['archive'], exists=True)
+    package_data_values = package_data(config)
+    archive = relative(root, package_data_values['archive'], exists=True)
     paths = {'archive': archive, 'checksum': archive.with_suffix(archive.suffix + '.sha256')}
-    if config['package'].get('registry_archive'):
-        registry = relative(root, config['package']['registry_archive'], exists=True)
+    if package_data_values.get('registry_archive'):
+        registry = relative(root, package_data_values['registry_archive'], exists=True)
         paths.update(registry_archive=registry, registry_checksum=registry.with_suffix(registry.suffix + '.sha256'),
                      manifest=archive.parent / 'PACKAGE_MANIFEST.json')
     if not set(values['assets']) <= paths.keys():
@@ -268,7 +266,7 @@ def assets(root, config, destination, accepted=None):
         expected[path.name] = digest
     if values.get('digests'):
         digest = hashlib.sha256()
-        names = helper('addon-package').manifest_files(relative(root, config['package']['manifest'], exists=True))
+        names = helper('addon-package').manifest_files(relative(root, package_data_values['manifest'], exists=True))
         with zipfile.ZipFile(archive) as package:
             for name in names:
                 digest.update(name.encode() + b'\0')

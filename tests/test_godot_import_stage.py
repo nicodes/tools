@@ -25,7 +25,7 @@ class NativeImportStage(unittest.TestCase):
         self.binary = b'\x7fELF\x02' + b'\0' * 13 + b'\x3e\0'
 
     def config(self, *, extensions=False, prepare=False, **settings):
-        values = {'project': 'app', 'exports': [{'preset': 'Web', 'output': 'app/build/web/index.html'}], **settings}
+        values = {'exports': [{'preset': 'Web', 'output': 'app/build/web/index.html'}], **settings}
         if extensions:
             values['extensions'] = [{'source': '.artifacts/native/libfixture.so',
                 'destination': 'app/extensions/libfixture.so', 'format': 'elf'}]
@@ -103,20 +103,13 @@ class NativeImportStage(unittest.TestCase):
         self.assertEqual(setup, [('import', False, False)])
         self.assertEqual(events, [('import', False, False), ('compile',), ('export',)])
 
-    def test_explicit_legacy_setup_is_preserved_for_projects_with_build_inputs(self):
-        setup, events = self.exercise(self.config(extensions=True, prepare=True, import_stage='setup'))
-        self.assertEqual(setup, [('import', False, False)])
-        self.assertEqual(events, [('import', False, False), ('compile',), ('prepare', 37), ('export',)])
-
-    def test_explicit_legacy_build_is_preserved_for_ordinary_projects(self):
-        setup, events = self.exercise(self.config(import_stage='build'))
-        self.assertEqual(setup, [])
-        self.assertEqual(events, [('compile',), ('import', False, False), ('export',)])
-
-    def test_invalid_explicit_phases_are_refused_during_recipe_validation(self):
-        for phase in [None, True, 1, '', 'test', [], {}]:
-            with self.subTest(phase=phase), self.assertRaisesRegex(ValueError, 'setup or build'):
-                game.validate_config(self.root, self.config(import_stage=phase))
+    def test_phase_override_is_refused_even_when_it_names_a_formerly_valid_stage(self):
+        for phase in ['setup', 'build', None, True, 1, '', 'test', [], {}]:
+            with self.subTest(phase=phase):
+                with self.assertRaisesRegex(ValueError, 'unsupported Godot component'):
+                    game.validate_config(self.root, self.config(import_stage=phase))
+                with self.assertRaisesRegex(ValueError, 'derived'):
+                    game.native_import_stage({'import_stage': phase})
 
 
 if __name__ == '__main__':

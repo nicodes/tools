@@ -19,7 +19,7 @@ class EmbeddedUI(unittest.TestCase):
         self.output = self.root / '.artifacts/ui'
         self.output.mkdir(parents=True)
         (self.output / 'index.html').write_text('native output')
-        self.declaration = [{'package': 'app', 'output': '.artifacts/ui'}]
+        self.declaration = [{}]
         self.packages = [{'directory': 'app', 'build': 'build'}]
         self.commands = []
 
@@ -56,6 +56,13 @@ class EmbeddedUI(unittest.TestCase):
         self.packages = []
         with self.assertRaisesRegex(ValueError, 'declared native'):
             self.validate()
+        self.assertEqual(self.commands, [])
+
+    def test_source_output_and_required_index_cannot_be_replaced(self):
+        for declaration in [{'package': 'other'}, {'output': '.artifacts/other'},
+                            {'required_files': ['other.html']}, {'required_files': ['index.html', 'index.html']}]:
+            with self.subTest(declaration=declaration), self.assertRaises(ValueError):
+                ui_component.validate_build(self.root, [declaration], self.packages, {}, self.fake_run)
         self.assertEqual(self.commands, [])
 
 

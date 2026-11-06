@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 
 from configuration import relative
+from recipe_contract import compose_path, release_definition
 import buildkit
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -31,7 +32,7 @@ def helper(name):
 
 
 def definition(root, config):
-    path = relative(root, config.get('artifacts', {}).get('definition', 'deploy/release.json'), exists=True)
+    path = relative(root, release_definition(config), exists=True)
     return helper('verification').release_definition(path)
 
 
@@ -60,7 +61,7 @@ def references(value, revision):
 @contextlib.contextmanager
 def compose_command(root, config):
     settings = config.get('components', {}).get('compose', {})
-    source = relative(root, settings.get('path', 'deploy/compose.yml'), exists=True)
+    source = relative(root, compose_path(config), exists=True)
     placeholders = settings.get('environment_files', [])
     if not isinstance(placeholders, list):
         raise ValueError('Compose validation placeholders must be native environment filenames')

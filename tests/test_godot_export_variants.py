@@ -93,7 +93,7 @@ class ExportVariants(unittest.TestCase):
             helper.variant_options(self.project,['debug'],source_files={'config/runtime.json':self.config},source_root=self.root)
 
     def test_recipe_separates_exports_with_different_privilege_and_configuration(self):
-        config={'components':{'godot':{'project':'app','exports':[
+        config={'components':{'godot':{'exports':[
             {'preset':'Web','output':'app/build/release/index.html','kind':'release'},
             {'preset':'Web','output':'app/build/debug/index.html','kind':'debug',
                 'privileged_directories':['test_support','local_auth'],

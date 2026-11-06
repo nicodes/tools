@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 import sdk_environment
 
 from configuration import godot_pins, load, relative
+from recipe_contract import app_directory, release_definition
 from native_tests import run_entries
 import rust_component
 import rust_staging
@@ -30,6 +31,7 @@ import komizo_sdk
 import godot_addon_bindings
 
 TOOLS = Path(__file__).resolve().parents[1]
+GODOT_RELEASE_ORIGIN = 'godot'
 
 
 def helper(name):
@@ -44,12 +46,12 @@ def helper(name):
 
 def verification_scope(root, config):
     values = config.get('artifacts', {})
-    if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'definition', 'release_metadata', 'evidence_paths', 'evidence_retention_days'}:
+    if set(values) - {'paths', 'images', 'environment', 'revision_environment', 'release_metadata', 'evidence_paths', 'evidence_retention_days'}:
         raise ValueError('unknown Godot build artifact selector')
     if 'evidence_retention_days' in values:helper('native-diagnostics').declaration(root,config)
     verification = helper('verification')
-    if values.get('definition'):
-        inputs = verification.release_definition(relative(root, values['definition'], exists=True))['inputs']
+    if config.get('components', {}).get('images'):
+        inputs = verification.release_definition(relative(root, release_definition(config), exists=True))['inputs']
     else:
         inputs = {'artifacts': values.get('paths', []), 'images': values.get('images', []),
             'environment': values.get('environment', []), 'revision_environment': values.get('revision_environment', [])}
@@ -71,7 +73,9 @@ def export_import_boundaries(root, config):
     settings = config.get('components', {}).get('godot', {})
     result = set()
     for export in settings.get('exports', []):
-        project_root = relative(root, export.get('project', settings.get('project', 'app')))
+        if 'project' in settings or 'project' in export:
+            raise ValueError('Godot projects use the canonical application directory')
+        project_root = relative(root, app_directory(config))
         output = relative(root, export['output'])
         build = project_root / 'build'
         if output.is_relative_to(build):
@@ -150,33 +154,29 @@ def evidence_paths(root, config):
 
 def project(root, config):
     values = config.get('components', {}).get('godot', {})
-    directory = relative(root, values.get('project', 'app'), exists=True)
+    if 'project' in values:
+        raise ValueError('Godot projects use the canonical application directory')
+    directory = relative(root, app_directory(config), exists=True)
     if not (directory / 'project.godot').is_file():
         raise ValueError('Godot application component must own project.godot')
     return directory, values
 
 
 def native_import_stage(settings):
-    """Import after declared build inputs exist, retaining explicit legacy phases."""
-    default = 'build' if settings.get('extensions') or settings.get('prepare') else 'setup'
-    stage = settings.get('import_stage', default)
-    if not isinstance(stage, str) or stage not in {'setup', 'build'}:
-        raise ValueError('native imports belong to explicit setup or build stages')
-    return stage
+    """Import after the component's declared build inputs exist."""
+    if 'import_stage' in settings:
+        raise ValueError('native import stages are derived from their build inputs')
+    return 'build' if settings.get('extensions') or settings.get('prepare') else 'setup'
 
 
 def validate_config(root, config):
     directory, values = project(root, config)
-    allowed = {'project', 'origin', 'exports', 'test_jobs', 'import_timeout', 'import_arguments',
-               'import_ignored_patterns', 'addon_taint_markers', 'preserve_import_defaults', 'lint_arguments', 'forbidden_diagnostics', 'art_sources',
-               'prepare', 'postprocess', 'packs', 'web_releases', 'templates', 'import_stage', 'rust_web', 'extensions', 'addon_bindings'}
+    allowed = {'exports', 'test_jobs', 'import_timeout', 'import_arguments',
+               'addon_taint_markers', 'forbidden_diagnostics', 'art_sources',
+               'prepare', 'postprocess', 'packs', 'web_releases', 'templates', 'rust_web', 'extensions', 'addon_bindings'}
     if set(values) - allowed:
         raise ValueError('unsupported Godot component setting')
     godot_addon_bindings.declaration(root, config)
-    if values.get('origin', 'godot') not in {'godot', 'godot-builds'}:
-        raise ValueError('unsupported Godot release archive origin')
-    if values.get('lint_arguments', ['-warn']) not in [[], ['-warn']]:
-        raise ValueError('Godot source lint must not mutate product code')
     if type(values.get('test_jobs', 4)) is not int or not 1 <= values.get('test_jobs', 4) <= 16:
         raise ValueError('Godot test concurrency must be bounded')
     if type(values.get('import_timeout', 180)) is not int or not 1 <= values.get('import_timeout', 180) <= 600:
@@ -184,15 +184,11 @@ def validate_config(root, config):
     native_import_stage(values)
     seen = set()
     for export in values.get('exports', []):
-        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility', 'project', 'timeout', 'import_timeout', 'import_arguments', 'privileged_directories', 'source_files'}:
+        if not isinstance(export, dict) or set(export) - {'preset', 'output', 'kind', 'platform', 'runtime_compatibility', 'timeout', 'import_timeout', 'import_arguments', 'privileged_directories', 'source_files'}:
             raise ValueError('unsupported native Godot export setting')
         if export.get('kind', 'release') not in {'release', 'debug'} or export.get('platform', 'web') not in {'web', 'linux', 'windows', 'macos'}:
             raise ValueError('unsupported Godot export kind or platform')
-        native_project = relative(root, export.get('project', values.get('project', 'app')), exists=True)
-        if not (native_project / 'project.godot').is_file():
-            raise ValueError('native exports require an owned Godot project')
-        if native_project != directory and not native_project.is_relative_to(root / 'tests'):
-            raise ValueError('additional native Godot export projects belong to owned test fixtures')
+        native_project = directory
         helper('godot-export').variant_options(native_project,[export.get('kind','release')],
             export.get('privileged_directories',[]),export.get('source_files',{}),root,read_sources=False)
         helper('godot-export').native_options(export.get('import_arguments', values.get('import_arguments', [])),
@@ -270,8 +266,7 @@ def validate_config(root, config):
 
 
 def packages(config):
-    return [({'directory': value, 'manager': 'npm'} if isinstance(value, str) else value)
-            for value in config.get('node', {}).get('packages', [])]
+    return config.get('node', {}).get('packages', [])
 
 
 def package_linters(config):
@@ -467,7 +462,7 @@ def setup(root, config, env):
     run([sys.executable, str(TOOLS / 'helpers/godot-setup.py'), '--version', pins['GODOT_VERSION'],
          '--expected-version', pins['GODOT_EXPECTED_VERSION'], '--binary-checksum', pins['GODOT_BINARY_CHECKSUM'],
          '--templates-checksum', pins['GODOT_TEMPLATES_CHECKSUM'], '--templates',
-         '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, env)
+         '--root', str(root / '.artifacts/godot'), '--origin', GODOT_RELEASE_ORIGIN], root, env)
     if settings.get('templates') is not None:
         import godot_template
         godot_template.setup(root,config,env)
@@ -489,7 +484,7 @@ def import_native(root, config, env):
     helper('godot-project').import_project(directory, env['GODOT_BIN'],
         lambda argv, timeout: strict.main(argv, timeout=timeout, environment=env),
         timeout=settings.get('import_timeout', 180), arguments=settings.get('import_arguments', []),
-        ignored_patterns=settings.get('import_ignored_patterns', []), preserve_defaults=settings.get('preserve_import_defaults', False))
+        preserve_defaults=True)
 
 
 def current_build(root, config, verify):
@@ -575,7 +570,7 @@ def lint(root, config, env):
     if (root / '.github/workflows').is_dir():
         run(['actionlint'], root, env)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, env)
-    run([pinned_gdlint(root, env), *settings.get('lint_arguments', ['-warn'])], directory, env)
+    run([pinned_gdlint(root, env), '-warn'], directory, env)
     node_component.lint(root, packages(config), env, run)
     components = config.get('components', {})
     if components.get('rust'):
@@ -669,7 +664,9 @@ def compile_outputs(root, config, env):
     # input files. No product tests or dependency installation occur here.
     groups = {}
     for export in exports:
-        native_project = relative(root, export.get('project', settings.get('project', 'app')), exists=True)
+        if 'project' in export:
+            raise ValueError('Godot projects use the canonical application directory')
+        native_project = directory
         arguments = tuple(export.get('import_arguments', settings.get('import_arguments', [])))
         key = (native_project, arguments, export.get('timeout', 600), export.get('import_timeout', settings.get('import_timeout', 180)),
             tuple(export.get('privileged_directories',[])),tuple(sorted(export.get('source_files',{}).items())))

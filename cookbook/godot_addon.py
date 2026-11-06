@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tomllib
@@ -15,6 +16,7 @@ import sdk_environment
 from configuration import godot_pins, load, relative
 from native_tests import run_entries
 import node_component
+import recipe_contract
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -47,33 +49,42 @@ def run(argv, root, env, timeout=None):
     subprocess.run(argv, cwd=root, env=env, check=True, timeout=timeout)
 
 
+def package_data(config):
+    values = config.get('package', {})
+    if not isinstance(values, dict) or set(values) - {'archive', 'script_uids', 'embedded_manifest'} or 'archive' not in values:
+        raise ValueError('addon package paths are derived from its canonical public archive identity')
+    recipe_contract.validate_paths(config)
+    archive = values['archive']
+    if not isinstance(archive, str) or not re.fullmatch(r'dist/@[A-Za-z0-9][A-Za-z0-9_.-]*_[A-Za-z0-9][A-Za-z0-9_.-]*\.zip', archive):
+        raise ValueError('addon archive must use dist/@owner_package.zip')
+    for name in ['script_uids', 'embedded_manifest']:
+        if name in values and type(values[name]) is not bool:
+            raise ValueError('addon package capabilities must be explicit boolean data')
+    result = {**values, 'source': 'addon', 'manifest': 'package.files'}
+    if values.get('embedded_manifest'):
+        stem = Path(archive).stem
+        result.update(prefix='addons/' + stem + '/', registry_archive='dist/' + stem + '.gdam.zip',
+                      version_source='package.json', allowlist='package-allowlist.json',
+                      generated_directories=['.gdam'] if config.get('components', {}).get('addon_dependencies') else [])
+    return result
+
+
 def package_inputs(root, config):
-    values = config['package']
-    if set(values) - {'source', 'manifest', 'archive', 'script_uids', 'format'} or not {'source', 'manifest', 'archive'} <= set(values):
-        raise ValueError('addon packaging requires source, closed manifest and archive paths')
-    if type(values.get('script_uids', False)) is not bool:
-        raise ValueError('script UID policy must be explicit boolean data')
+    values = package_data(config)
     return (relative(root, values['source'], exists=True),
             relative(root, values['manifest'], exists=True),
             relative(root, values['archive']))
 
 
 def package_module(config):
-    if config.get('package', {}).get('format', 'closed') == 'manifest':
-        import manifest_addon
-        return manifest_addon
-    if config.get('package', {}).get('format', 'closed') != 'closed':
-        raise ValueError('unsupported addon package format')
-    return None
+    package_data(config)
+    import manifest_addon
+    return manifest_addon
 
 
 def verification_scope(root, config):
     module = package_module(config)
-    if module:
-        paths = module.artifact_paths(root, config)
-    else:
-        _source, _manifest, archive = package_inputs(root, config)
-        paths = [archive.relative_to(root).as_posix(), archive.relative_to(root).as_posix()+'.sha256']
+    paths = module.artifact_paths(root, config)
     import addon_fixtures
     paths += addon_fixtures.artifact_paths(root, config)
     return helper('verification').scope(artifacts=paths)
@@ -108,8 +119,7 @@ def post_test_evidence(root, config, env, commit):
 
 
 def packages(config):
-    return [({'directory': item, 'manager': 'npm', 'audit': True} if isinstance(item, str) else item)
-            for item in config.get('node', {}).get('packages', [])]
+    return config.get('node', {}).get('packages', [])
 
 
 def required_tools(root, config, stage='full'):
@@ -172,11 +182,7 @@ def lint(root, config, env):
     for name in config.get('lint', {}).get('required_paths', []):
         relative(root, name, exists=True)
     module = package_module(config)
-    if module:
-        module.inputs(root, config)
-    else:
-        source, manifest, _ = package_inputs(root, config)
-        helper('addon-package').source_files(source, manifest, config['package'].get('script_uids', False))
+    module.inputs(root, config)
     tracked = subprocess.check_output(['git', 'ls-files', '-z', '--', '*.py', '*.sh'], cwd=root).split(b'\0')
     for encoded in tracked:
         if not encoded:
@@ -245,21 +251,11 @@ def main():
             if args.operation == '_build':
                 node_component.build(root, packages(config), env, run)
             module = package_module(config)
-            if module:
-                (module.build if args.operation == '_build' else module.verify)(root, config)
-            else:
-                source, manifest, archive = package_inputs(root, config)
-                package = helper('addon-package')
-                if args.operation == '_build':
-                    digest = package.build(source, manifest, archive, config['package'].get('script_uids', False))
-                    archive.with_suffix(archive.suffix + '.sha256').write_text(digest + '  ' + archive.name + '\n')
-                else:
-                    digest = package.verify(archive, manifest, source=source, script_uids=config['package'].get('script_uids', False))
-                    package.verify_checksum(archive)
-                print(digest + '  ' + config['package']['archive'])
+            digest = (module.build if args.operation == '_build' else module.verify)(root, config)
+            print(digest + '  ' + config['package']['archive'])
             if args.operation == '_build':
                 import addon_fixtures
-                addon_fixtures.build_exports(root, config, env)
+                addon_fixtures.build_exports(root, {**config, 'package': package_data(config)}, env)
         elif args.operation == 'clean':
             paths = config.get('clean', {}).get('paths', [])
             if not paths:

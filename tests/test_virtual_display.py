@@ -50,7 +50,7 @@ class VirtualDisplayControls(unittest.TestCase):
             config = {'tests': {'security': [self.gate()['entry']]}}
             with self.assertRaises(subprocess.CalledProcessError): native_tests.run_entries(root, config, environment, 'security')
             (root / 'app').mkdir(); (root / 'app/project.godot').touch()
-            selected = self.config(); selected['components'] = {'godot': {'project': 'app'}}
+            selected = self.config(); selected['components'] = {'godot': {}}
             worker = dict(environment, COOKBOOK_GODOT_ENTRY='gate-headed-capability')
             with patch.object(godot_game.komizo_sdk, 'check'):
                 godot_game.native_tests(root, selected, worker, 'security')

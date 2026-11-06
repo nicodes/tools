@@ -1,10 +1,10 @@
-"""Build closed addon and registry archives with embedded per-file provenance."""
+"""Build closed addon archives with optional embedded per-file provenance."""
 import argparse
 import configparser
 import hashlib
 import importlib.util
 import json
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import stat
 import subprocess
@@ -12,6 +12,7 @@ import tempfile
 import zipfile
 
 from configuration import load, relative
+from godot_addon import package_data
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -24,24 +25,22 @@ def package_helper():
 
 
 def inputs(root, config):
-    values = config['package']
-    required = {'source', 'manifest', 'archive', 'format', 'prefix', 'registry_archive', 'version_source', 'allowlist'}
-    if set(values) - (required | {'generated_directories', 'script_uids'}) or not required <= set(values) or values['format'] != 'manifest':
-        raise ValueError('manifest addon packaging requires explicit native package inputs')
+    values = package_data(config)
     source = relative(root, values['source'], exists=True)
     names = package_helper().manifest_files(relative(root, values['manifest'], exists=True))
+    archive = relative(root, values['archive'])
+    if not values.get('embedded_manifest'):
+        actual = package_helper().source_files(source, relative(root, values['manifest'], exists=True),
+                                                values.get('script_uids', False))
+        if archive.resolve().is_relative_to(source.resolve()):
+            raise ValueError('addon package output must be outside source')
+        return actual, '', None, archive, None
     prefix = values['prefix']
-    if (not isinstance(prefix, str) or not prefix.endswith('/') or PurePosixPath(prefix).as_posix() + '/' != prefix
-            or PurePosixPath(prefix).is_absolute() or '..' in PurePosixPath(prefix).parts or '\\' in prefix or ':' in prefix):
-        raise ValueError('unsafe addon archive prefix')
     allowed = json.loads(relative(root, values['allowlist'], exists=True).read_text())
     if (sorted(allowed.get('files', [])) != names or allowed.get('addon_files') != len(names)
             or allowed.get('zip_entries') != len(names) + 1):
         raise ValueError('addon allowlist counts differ from the closed file manifest')
-    generated = values.get('generated_directories', [])
-    if (not isinstance(generated, list) or any(not isinstance(name, str) or name != '.gdam' for name in generated)
-            or len(set(generated)) != len(generated)):
-        raise ValueError('only the native generated dependency directory may be excluded')
+    generated = values['generated_directories']
     actual = {}
     for path in source.rglob('*'):
         rel = path.relative_to(source)
@@ -73,7 +72,6 @@ def inputs(root, config):
                 if not re.fullmatch(r'uid://[a-z0-9]+', uid) or uid in seen:
                     raise ValueError('shipped GDScript requires distinct UID sidecars')
                 seen.add(uid)
-    archive = relative(root, values['archive'])
     registry = relative(root, values['registry_archive'])
     if archive == registry or archive.parent != registry.parent or archive.resolve().is_relative_to(source.resolve()):
         raise ValueError('addon archive outputs must be distinct siblings outside source')
@@ -81,12 +79,13 @@ def inputs(root, config):
 
 
 def artifact_paths(root, config):
-    values = config['package']
+    values = package_data(config)
     archive = relative(root, values['archive'])
-    registry = relative(root, values['registry_archive'])
-    return [path.relative_to(root).as_posix() for path in
-            [archive, archive.with_suffix(archive.suffix + '.sha256'), registry,
-             registry.with_suffix(registry.suffix + '.sha256'), archive.parent / 'PACKAGE_MANIFEST.json']]
+    paths = [archive, archive.with_suffix(archive.suffix + '.sha256')]
+    if values.get('embedded_manifest'):
+        registry = relative(root, values['registry_archive'])
+        paths += [registry, registry.with_suffix(registry.suffix + '.sha256'), archive.parent / 'PACKAGE_MANIFEST.json']
+    return [path.relative_to(root).as_posix() for path in paths]
 
 
 def write_zip(path, entries):
@@ -110,15 +109,17 @@ def build(root, config):
     archive.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='manifest-addon-', dir=archive.parent) as directory:
         candidate = Path(directory) / archive.name
-        write_zip(candidate, [*records, ('PACKAGE_MANIFEST.json', encoded, 0o644)])
+        write_zip(candidate, [*records, *([('PACKAGE_MANIFEST.json', encoded, 0o644)] if registry else [])])
         candidate.replace(archive)
-        candidate = Path(directory) / registry.name
-        write_zip(candidate, [(name[len(prefix):], data, mode) for name, data, mode in records])
-        candidate.replace(registry)
-    for path in [archive, registry]:
+        if registry:
+            candidate = Path(directory) / registry.name
+            write_zip(candidate, [(name[len(prefix):], data, mode) for name, data, mode in records])
+            candidate.replace(registry)
+    for path in [archive, *([registry] if registry else [])]:
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         path.with_suffix(path.suffix + '.sha256').write_text(digest + '  ' + path.name + '\n')
-    (archive.parent / 'PACKAGE_MANIFEST.json').write_bytes(encoded)
+    if registry:
+        (archive.parent / 'PACKAGE_MANIFEST.json').write_bytes(encoded)
     return verify(root, config)
 
 
@@ -128,7 +129,7 @@ def verify(root, config):
                         for name, path in sorted(files.items())]
     expected_manifest = {'plugin_version': version, 'closed': True, 'zip_entries': len(files) + 1, 'files': expected_records}
     helper = package_helper()
-    for path, prefixed in [(archive, True), (registry, False)]:
+    for path, prefixed in [(archive, bool(registry)), *([(registry, False)] if registry else [])]:
         helper.verify_checksum(path)
         with zipfile.ZipFile(path) as package:
             expected_names = [prefix + name if prefixed else name for name in sorted(files)]

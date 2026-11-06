@@ -33,9 +33,7 @@ class AddonRecipe(unittest.TestCase):
         (self.root / 'cookbook.toml').write_text('''version=1
 recipe="godot-addon"
 [package]
-source="addon"
-manifest="package.files"
-archive="dist/addon.zip"
+archive="dist/@owner_addon.zip"
 [clean]
 paths=["dist"]
 [[tests.unit]]
@@ -68,18 +66,18 @@ path="tests/test_behavior.py"
     def test_test_aggregates_fresh_group_receipts_without_mutating_build(self):
         self.succeeded('build')
         build = (self.root / '.artifacts/verification/build.json').read_bytes()
-        archive = (self.root / 'dist/addon.zip').read_bytes()
+        archive = (self.root / 'dist/@owner_addon.zip').read_bytes()
         self.succeeded('test')
         receipt = json.loads((self.root / '.artifacts/verification/test.json').read_text())
         self.assertEqual(set(receipt['test_receipts']), {'lint', 'unit', 'integration', 'security'})
         self.assertEqual((self.root / '.artifacts/verification/build.json').read_bytes(), build)
-        self.assertEqual((self.root / 'dist/addon.zip').read_bytes(), archive)
+        self.assertEqual((self.root / 'dist/@owner_addon.zip').read_bytes(), archive)
 
     def test_mutated_artifact_and_stale_source_are_rejected(self):
         self.succeeded('build')
-        (self.root / 'dist/addon.zip').write_bytes(b'mutated')
+        (self.root / 'dist/@owner_addon.zip').write_bytes(b'mutated')
         self.assertNotEqual(self.make('test:integration').returncode, 0)
-        self.assertEqual((self.root / 'dist/addon.zip').read_bytes(), b'mutated')
+        self.assertEqual((self.root / 'dist/@owner_addon.zip').read_bytes(), b'mutated')
         self.succeeded('build')
         (self.root / 'addon/plugin.cfg').write_text('[plugin]\nversion="0.0.2"\n')
         self.assertNotEqual(self.make('test:integration').returncode, 0)

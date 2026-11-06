@@ -13,7 +13,7 @@ class DeferredAutoloadControls(unittest.TestCase):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);self.root=Path(temporary.name)
         (self.root/'app/tests').mkdir(parents=True);(self.root/'app/project.godot').write_text('config_version=5\n')
         (self.root/'app/tests/node.gd').write_text('extends Node\n')
-        self.config={'components':{'godot':{'project':'app','forbidden_diagnostics':['native guard']}}}
+        self.config={'components':{'godot':{'forbidden_diagnostics':['native guard']}}}
         self.entry={'runner':'godot-check','path':'app/tests/node.gd','timeout':180,'policy':{'deferred_autoloads':True}}
 
     def test_real_owned_script_remains_the_deferred_argument_and_preserves_deadline_and_failures(self):

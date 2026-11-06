@@ -8,6 +8,7 @@ import shutil
 import sys
 
 from configuration import relative
+from recipe_contract import app_directory
 
 TOOLS = Path(__file__).resolve().parents[1]
 
@@ -130,7 +131,7 @@ def validate(root, config, artifacts):
 
 
 def author(root, config, environment, run, phase):
-    directory = relative(root, settings(config).get('project', 'app'), exists=True)
+    directory = relative(root, app_directory(config), exists=True)
     for record in settings(config).get(phase, []):
         source, arguments, timeout = entry(root, record)
         kind = record['runner']
@@ -145,7 +146,7 @@ def author(root, config, environment, run, phase):
 
 
 def packs(root, config, environment):
-    directory = relative(root, settings(config).get('project', 'app'), exists=True)
+    directory = relative(root, app_directory(config), exists=True)
     for record in settings(config).get('packs', []):
         source = relative(root, record['program'], exists=True)
         output = relative(root, record['output'])

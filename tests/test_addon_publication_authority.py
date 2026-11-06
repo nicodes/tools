@@ -23,7 +23,7 @@ class PublicationAuthority(unittest.TestCase):
         (self.root / 'addon').mkdir()
         (self.root / 'addon/plugin.cfg').write_text('[plugin]\nversion="0.0.1"\n')
         (self.root / 'package.files').write_text('plugin.cfg\n')
-        (self.root / 'cookbook.toml').write_text('version=1\nrecipe="godot-addon"\n[package]\nsource="addon"\nmanifest="package.files"\narchive="dist/addon.zip"\n[publication]\ntag_prefix="v"\n')
+        (self.root / 'cookbook.toml').write_text('version=1\nrecipe="godot-addon"\n[package]\narchive="dist/@owner_addon.zip"\n[publication]\ntag_prefix="v"\n')
         subprocess.run(['git', 'add', '.'], cwd=self.root, check=True)
         subprocess.run(['git', '-c', 'user.name=Authority Controls', '-c', 'user.email=controls@example.invalid', 'commit', '-qm', 'fixture'], cwd=self.root, check=True)
         self.source = publication.git(self.root, 'rev-parse', 'HEAD')
@@ -31,13 +31,13 @@ class PublicationAuthority(unittest.TestCase):
                             'GITHUB_EVENT_NAME': 'workflow_dispatch', 'GITHUB_REPOSITORY': 'owner/addon',
                             'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1',
                             'GITHUB_WORKFLOW_REF': 'owner/addon/.github/workflows/release.yml@refs/heads/main'}
-        self.config = {'recipe': 'godot-addon', 'package': {'source': 'addon', 'manifest': 'package.files', 'archive': 'dist/addon.zip'}, 'publication': {'tag_prefix': 'v'}}
+        self.config = {'recipe': 'godot-addon', 'package': {'archive': 'dist/@owner_addon.zip'}, 'publication': {'tag_prefix': 'v'}}
 
     def package(self):
-        archive = self.root / 'dist/addon.zip'
+        archive = self.root / 'dist/@owner_addon.zip'
         helper = publication.helper('addon-package')
         digest = helper.build(self.root / 'addon', self.root / 'package.files', archive)
-        archive.with_suffix('.zip.sha256').write_text(digest + '  addon.zip\n')
+        archive.with_suffix('.zip.sha256').write_text(digest + '  ' + archive.name + '\n')
         return archive
 
     def proof(self):
@@ -113,7 +113,7 @@ class PublicationAuthority(unittest.TestCase):
                        {'tracked_source_clean': False}, {'build_verified': False}]:
             with self.subTest(change=change), self.assertRaises(ValueError):
                 publication.validate_proof(self.root, self.config, proof | change, self.source, self.environment)
-        (self.root / 'dist/addon.zip').write_bytes(b'changed downloaded archive')
+        (self.root / 'dist/@owner_addon.zip').write_bytes(b'changed downloaded archive')
         with self.assertRaisesRegex(ValueError, 'outputs differ'):
             publication.validate_proof(self.root, self.config, proof, self.source, self.environment)
 
@@ -143,11 +143,11 @@ class PublicationAuthority(unittest.TestCase):
 
     def test_evidence_cannot_shadow_an_accepted_archive_basename(self):
         proof = self.proof()
-        path = self.root / 'dist/nested/addon.zip'
+        path = self.root / 'dist/nested/@owner_addon.zip'
         path.parent.mkdir()
         path.write_bytes(b'different evidence with the archive name')
-        proof['evidence'] = {'dist/nested/addon.zip': hashlib.sha256(path.read_bytes()).hexdigest()}
-        self.config['publication']['evidence_assets'] = ['dist/nested/addon.zip']
+        proof['evidence'] = {'dist/nested/@owner_addon.zip': hashlib.sha256(path.read_bytes()).hexdigest()}
+        self.config['publication']['evidence_assets'] = ['dist/nested/@owner_addon.zip']
         with self.assertRaisesRegex(ValueError, 'distinct canonical basenames'):
             publication.assets(self.root, self.config, self.root / 'staged', proof)
         self.assertFalse((self.root / 'staged').exists())
@@ -197,7 +197,7 @@ class PublicationAuthority(unittest.TestCase):
         release.publish.assert_not_called()
         release.download_existing.assert_called_once()
         expected = release.download_existing.call_args.args[-1]
-        self.assertEqual(expected, {'addon.zip': proof['artifacts']['dist/addon.zip']})
+        self.assertEqual(expected, {'@owner_addon.zip': proof['artifacts']['dist/@owner_addon.zip']})
 
     def test_declared_budget_environment_and_authentication_cannot_be_command_maps(self):
         for change in [{'registry_auth': 'custom-shell'}, {'publish_timeout': '20; true'},

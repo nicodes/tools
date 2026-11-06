@@ -7,36 +7,24 @@ import sys
 import tempfile
 
 from configuration import relative
+from recipe_schema import NODE_FIELDS as FIELDS, node_package as declaration
 
 TOOLS = Path(__file__).resolve().parents[1]
 SCRIPT = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.:-]*\Z')
-FIELDS = {'directory', 'manager', 'build', 'typecheck', 'lint', 'test', 'format', 'format_check',
-          'audit', 'audit_level', 'ignore_scripts', 'expo', 'test_arguments', 'test_paths', 'format_paths', 'glob_compatibility'}
 
 
 def validate(package, root):
-    if isinstance(package, str):
-        package = {'directory': package, 'manager': 'npm'}
-    if not isinstance(package, dict) or set(package) - FIELDS:
-        raise ValueError('unsupported native Node package data')
+    package = declaration(package)
     directory = relative(root, package.get('directory'), exists=True)
     if not directory.is_dir():
         raise ValueError('Node package directory must be a native source directory')
     manifest = json.loads((directory / 'package.json').read_text())
-    if package.get('manager', 'npm') not in {'npm', 'bun'}:
-        raise ValueError('Node packages require the declared npm or Bun manager')
     for name in ['build', 'typecheck', 'lint', 'test', 'format', 'format_check']:
         if name in package:
             value = package[name]
             script = manifest.get('scripts', {}).get(value) if isinstance(value, str) else None
             if not isinstance(value, str) or not SCRIPT.fullmatch(value) or not isinstance(script, str) or not script.strip():
                 raise ValueError('Node operation must select an existing native package script: ' + name)
-    for name in ['audit', 'expo', 'ignore_scripts', 'glob_compatibility']:
-        if name in package and type(package[name]) is not bool:
-            raise ValueError('Node capability switches must be booleans')
-    if 'audit_level' in package and (package.get('manager', 'npm') != 'npm'
-            or package['audit_level'] not in {'low', 'moderate', 'high', 'critical'}):
-        raise ValueError('npm audit severity must be an explicit supported level')
     for name in ['test_arguments', 'test_paths', 'format_paths']:
         values = package.get(name, [])
         if not isinstance(values, list) or any(not isinstance(value, str) or '\0' in value for value in values):
@@ -139,12 +127,11 @@ def audit(root, packages, environment, run):
     count = 0
     for value in packages:
         package, directory = validate(value, root)
-        if package.get('audit', True):
-            if package.get('manager', 'npm') == 'npm':
-                run(['npm', 'audit', '--audit-level=' + package.get('audit_level', 'high')], directory, environment)
-            else:
-                run([sys.executable, str(TOOLS / 'helpers/audit.py'), str(directory)], root, environment)
-            count += 1
+        if package.get('manager', 'npm') == 'npm':
+            run(['npm', 'audit', '--audit-level=high'], directory, environment)
+        else:
+            run([sys.executable, str(TOOLS / 'helpers/audit.py'), str(directory)], root, environment)
+        count += 1
     return count
 
 

@@ -25,7 +25,6 @@ class NativeGameContract(unittest.TestCase):
         (self.root / 'cookbook.toml').write_text('''version=1
 recipe="godot-game"
 [components.godot]
-project="app"
 exports=[{preset="Web",output="app/build/web/index.html"}]
 [artifacts]
 paths=["app/build/web"]

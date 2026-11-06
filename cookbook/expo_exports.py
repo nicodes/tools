@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from configuration import relative
+from recipe_contract import app_directory
 
 TOOLS = Path(__file__).resolve().parents[1]
 PROTECTED = {'APP_VERSION', 'CI', 'GH_TOKEN', 'GITHUB_TOKEN', 'KOMIZO_ACTIONS_ROOT',
@@ -27,7 +28,7 @@ def records(root, config):
         raise ValueError('Expo variants require native export records')
     if not fixtures and not native:
         return []
-    directory = relative(root, app.get('directory', 'app'), exists=True)
+    directory = relative(root, app_directory(config), exists=True)
     result, outputs = [], set()
     for entry in fixtures:
         if (not isinstance(entry, dict) or set(entry) - {'output', 'environment', 'timeout'}

@@ -150,7 +150,7 @@ def expected_receipts(entry):
 
 
 def build_payloads(root, config, entry):
-    package = config['package']
+    package = recipe.adapter(config).package_data(root, config)
     graph = config.get('components', {}).get('native')
     selected = [value for value in native_components.records(config) if value['name'] in entry['components']] if graph else []
     required = set()

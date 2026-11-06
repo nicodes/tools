@@ -89,11 +89,11 @@ class ExportControls(unittest.TestCase):
 
     def test_import_marker_does_not_exempt_artifact_payload_or_extra_file_mutations(self):
         (self.root/'addon').mkdir();(self.root/'addon/owned.gd').write_text('extends Node\n')
-        (self.root/'files.txt').write_text('owned.gd\n')
-        archive=self.root/'dist/plugin.zip'
-        checksum=addon_fixtures.package_helper().build(self.root/'addon',self.root/'files.txt',archive)
-        archive.with_suffix('.zip.sha256').write_text(checksum+'  plugin.zip\n')
-        self.config['package']={'source':'addon','manifest':'files.txt','archive':'dist/plugin.zip'}
+        (self.root/'package.files').write_text('owned.gd\n')
+        archive=self.root/'dist/@owner_plugin.zip'
+        checksum=addon_fixtures.package_helper().build(self.root/'addon',self.root/'package.files',archive)
+        archive.with_suffix('.zip.sha256').write_text(checksum+'  '+archive.name+'\n')
+        self.config.update(version=1,recipe='godot-addon',package={'archive':'dist/@owner_plugin.zip'})
         verify,current_build,declaration=self.verification_fixture()
         addon_fixtures.build_exports(self.root,self.config,{'GODOT_BIN':'godot'},execute=self.execute)
         with contextlib.chdir(self.root):

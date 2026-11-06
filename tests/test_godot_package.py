@@ -37,7 +37,7 @@ class PackageControls(unittest.TestCase):
         (self.source / 'index.html').write_text('<script src="index.js"></script>\nconst GODOT_CONFIG = {"executable":"index","fileSizes":{"index.wasm":7,"index.pck":8}};\n')
         for name, data in {'index.js': b'loader', 'index.wasm': b'engine', 'index.pck': pack}.items():
             (self.source / name).write_bytes(data)
-        self.config = {'components': {'godot': {'project': 'app',
+        self.config = {'components': {'godot': {
             'exports': [{'preset': 'Web', 'output': 'app/build/web/index.html'}],
             'web_releases': [{'source': 'app/build/web', 'output': 'public', 'versioned_only': True, 'revision_metadata': 'release.json'}]}}}
 

@@ -30,7 +30,7 @@ class BuildImportBoundary(unittest.TestCase):
             subprocess.run(['git',*args],cwd=self.root,check=True,stdout=subprocess.DEVNULL)
         self.source=subprocess.check_output(['git','rev-parse','HEAD'],cwd=self.root,text=True).strip()
         self.tree=subprocess.check_output(['git','rev-parse','HEAD^{tree}'],cwd=self.root,text=True).strip()
-        self.config={'recipe':'godot-game','components':{'godot':{'project':'app','exports':[
+        self.config={'recipe':'godot-game','components':{'godot':{'exports':[
             {'preset':'Web','output':'app/build/web/index.html'}]}},'artifacts':{'paths':['app/build/web']},
             'tests':{'unit':[{'runner':'godot-check','path':'app/assertion.gd'}]},
             'ci':{'runner':'ubuntu-24.04','godot':{'unit_shards':1}}}
