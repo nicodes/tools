@@ -815,9 +815,12 @@ def setup_worker(root, config, environment, entry):
     godot = godot_pins(root)
     (root / '.artifacts/tmp').mkdir(parents=True, exist_ok=True)
     (root / '.artifacts/.gdignore').touch()
-    game.run([sys.executable, str(TOOLS / 'helpers/godot-setup.py'), '--version', godot['GODOT_VERSION'],
+    engine = [sys.executable, str(TOOLS / 'helpers/godot-setup.py'), '--version', godot['GODOT_VERSION'],
               '--expected-version', godot['GODOT_EXPECTED_VERSION'], '--binary-checksum', godot['GODOT_BINARY_CHECKSUM'],
-              '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')], root, environment)
+              '--root', str(root / '.artifacts/godot'), '--origin', settings.get('origin', 'godot')]
+    if role == 'host':
+        engine += ['--templates-checksum', godot['GODOT_TEMPLATES_CHECKSUM'], '--templates']
+    game.run(engine, root, environment)
     if (directory / 'gdam.json').exists():
         game.helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
             bindings=game.godot_addon_bindings.installed(root, config, environment))
