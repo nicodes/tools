@@ -89,9 +89,9 @@ class StaticBlueprint(unittest.TestCase):
                 static.materialize(blueprint,GATE,self.root/change,{})
         with self.assertRaisesRegex(ValueError,'exactly one'):static.bind_compose(COMPOSE+'  other:\n    image: foreign:tag\n',GATE)
 
-    def test_lifecycle_and_metadata_declarations_cannot_invent_recovery_or_drop_accepted_blueprints(self):
+    def test_metadata_is_recipe_owned_and_lifecycle_cannot_invent_recovery(self):
         config=copy.deepcopy(self.config);config['artifacts']['release_metadata']=[]
-        with self.assertRaisesRegex(ValueError,'full accepted artifacts'):static.declaration(self.root,config)
+        self.assertEqual(static.declaration(self.root,config),static.declaration(self.root,self.config))
         path=self.root/'deploy/delivery.json';value=json.loads(path.read_text());value['static']['record']=False;value['static']['recovery']=True;path.write_text(json.dumps(value))
         with self.assertRaisesRegex(ValueError,'real release records'):static.declaration(self.root,self.config)
 

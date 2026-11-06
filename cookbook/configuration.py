@@ -1,4 +1,5 @@
 """Read bounded recipe data; product code and test assertions remain caller-owned."""
+from copy import deepcopy
 from pathlib import Path
 import re
 import tomllib
@@ -7,6 +8,10 @@ RECIPES = {'rust-cli', 'react-native', 'godot-game', 'godot-addon', 'native'}
 SUITES = {'lint', 'unit', 'integration', 'e2e', 'security'}
 RUNNERS = {'python', 'python-unittest', 'node', 'node-test', 'bun', 'bun-test',
            'bash', 'godot', 'godot-suite', 'godot-check', 'playwright', 'godot-browser'}
+TEST_FIELDS = {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern',
+               'policy', 'python_environment', 'name'}
+TEST_COMMON_FIELDS = {'runner', 'cwd', 'timeout', 'policy', 'python_environment'}
+MAX_TEST_CASES = 256
 
 
 def ci_settings(data):
@@ -49,6 +54,37 @@ def relative(root, name, *, exists=False):
     return target
 
 
+def expand_tests(tests):
+    """Expand literal case groups without changing native entries or their order."""
+    if not isinstance(tests, dict) or set(tests) - SUITES:
+        raise ValueError('unknown test suite')
+    result = {}
+    for suite, entries in tests.items():
+        if not isinstance(entries, list) or not entries:
+            raise ValueError('declared test groups must contain real checks')
+        expanded = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError('invalid native test entry')
+            if 'cases' not in entry:
+                expanded.append(entry)
+                continue
+            if set(entry) - TEST_COMMON_FIELDS - {'cases'}:
+                raise ValueError('test case groups may share only native execution settings')
+            cases = entry['cases']
+            if not isinstance(cases, list) or not 1 <= len(cases) <= MAX_TEST_CASES:
+                raise ValueError('test case groups require between one and 256 literal cases')
+            common = {key: value for key, value in entry.items() if key != 'cases'}
+            for case in cases:
+                if not isinstance(case, dict) or set(case) - TEST_FIELDS:
+                    raise ValueError('test cases require ordinary native entry fields without nesting')
+                if set(common) & set(case):
+                    raise ValueError('test cases may not override shared execution settings')
+                expanded.append({**deepcopy(common), **case})
+        result[suite] = expanded
+    return result
+
+
 def load(root):
     root = Path(root).resolve()
     path = root / 'cookbook.toml'
@@ -62,14 +98,14 @@ def load(root):
     if 'tasks' in data or 'commands' in data:
         raise ValueError('recipe data cannot define another task implementation')
     ci_settings(data)
-    tests = data.get('tests', {})
-    if set(tests) - SUITES:
-        raise ValueError('unknown test suite')
+    tests = expand_tests(data.get('tests', {}))
+    if 'tests' in data:
+        data['tests'] = tests
     for suite, entries in tests.items():
         if not isinstance(entries, list) or not entries:
             raise ValueError('declared test groups must contain real checks')
         for entry in entries:
-            if not isinstance(entry, dict) or set(entry) - {'runner', 'path', 'args', 'timeout', 'sentinel', 'cwd', 'pattern', 'policy', 'python_environment', 'name'}:
+            if not isinstance(entry, dict) or set(entry) - TEST_FIELDS:
                 raise ValueError('invalid native test entry')
             if 'name' in entry and (not isinstance(entry['name'], str)
                     or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}', entry['name'])):

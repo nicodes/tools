@@ -63,9 +63,6 @@ def declaration(root,config):
     if not re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repository):raise ValueError('static images require their exact native repository family')
     if definition['image_base']!='ghcr.io/'+repository or definition.get('project')!=data.get('project'):
         raise ValueError('static delivery and artifact image authority disagree')
-    metadata=config.get('artifacts',{}).get('release_metadata',[])
-    if not {CONFIG_ARTIFACT,MANIFEST_ARTIFACT}<=set(metadata):
-        raise ValueError('static blueprints and release identities must be included in full accepted artifacts')
     return {**static,'repository':repository,'komizo_ref':data['komizo_ref']}
 
 

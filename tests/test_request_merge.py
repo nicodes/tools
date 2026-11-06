@@ -1,8 +1,10 @@
 import importlib.util
+import hashlib
 import os
 from pathlib import Path
 import unittest
 import sys
+import tomllib
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
@@ -141,6 +143,37 @@ class RequestedMerge(unittest.TestCase):
         for makefile in ['COOKBOOK_REF := main', 'COOKBOOK_REF := ' + 'e' * 40 + '\nCOOKBOOK_REF := ' + 'e' * 40]:
             with self.assertRaises(ValueError):
                 merge.recipe_pin(makefile, declaration)
+
+    def test_snapshot_expands_case_groups_before_deriving_complete_matrix_and_hashes_raw_source(self):
+        source = '''version=1
+recipe="godot-game"
+[ci.godot]
+unit_shards=1
+[[tests.unit]]
+runner="godot-check"
+cwd="app"
+timeout=180
+cases=[{name="test-first",path="app/tests/first.gd"},{name="test-second",path="app/tests/second.gd"}]
+'''
+        flat = tomllib.loads(source)
+        flat['tests']['unit'] = [dict(runner='godot-check', cwd='app', timeout=180,
+            name='test-'+name, path='app/tests/'+name+'.gd') for name in ['first', 'second']]
+        commit = self.commit | {'sha': 'c'*40, 'parents': [{'sha': 'a'*40}, {'sha': 'b'*40}]}
+        def api(path, method='GET', data=None):
+            if '/compare/' in path:
+                return {'status': 'identical'}
+            if '/git/commits/' in path:
+                return commit
+            return self.api(path, method, data)
+        files = {'Makefile': 'COOKBOOK_REF := '+'e'*40, 'cookbook.toml': source}
+        with patch.dict(os.environ, self.environment), patch.object(merge, 'api', side_effect=api), \
+                patch.object(merge, 'source_file', side_effect=lambda repository, revision, path: files[path]):
+            receipt = merge.snapshot('owner/project', 7)
+        self.assertEqual(receipt['declaration'], flat)
+        self.assertEqual(merge.orchestration.contract(receipt['declaration']), merge.orchestration.contract(flat))
+        self.assertEqual(receipt['configuration_sha256'], hashlib.sha256(source.encode()).hexdigest())
+        self.assertEqual(receipt['test_groups'], ['lint', 'security', 'unit'])
+        self.assertEqual(sum(method == 'POST' for _, method, _ in self.calls), 1)
 
     def test_source_recipe_hash_and_partial_coverage_cannot_authorize_merge(self):
         for overrides in [{'configuration_sha256': '2' * 64}, {'recipe': 'rust-cli'},
