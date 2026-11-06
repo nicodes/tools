@@ -167,7 +167,7 @@ def build_payloads(root, config, entry):
         required.update('dist/' + name for name in package.get('extra_files', []))
         if package.get('release_metadata'):
             required.add('dist/release.json')
-    scopes = config.get('artifacts', {}).get('paths', []) if not graph or any(value['role'] == 'cli' for value in selected) else []
+    scopes = recipe.adapter(config).base_artifact_paths(root, config) if not graph or any(value['role'] == 'cli' for value in selected) else []
     return required, [*scopes, *required]
 
 

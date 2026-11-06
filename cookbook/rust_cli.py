@@ -174,7 +174,8 @@ def binary_path(root, name):
     return relative(root, name)
 
 
-def verification_scope(root, config):
+def base_artifact_paths(root, config):
+    """Canonical shipping outputs shared by build verification and native packets."""
     artifact_settings(config)
     paths = ['dist', '.artifacts/build', '.artifacts/native-package']
     declarations = config.get('components', {}).get('ui', [])
@@ -182,6 +183,13 @@ def verification_scope(root, config):
         ui_component.records(declarations)
         paths.append('.artifacts/ui')
     paths += fixture_artifacts(root, config)
+    for name in paths:
+        relative(root, name)
+    return paths
+
+
+def verification_scope(root, config):
+    paths = base_artifact_paths(root, config)
     if config.get('components', {}).get('native'):
         environment_values = environment(root, config)
         record = selected_target(package_data(root, config), environment_values)
