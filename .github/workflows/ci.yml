@@ -67,6 +67,8 @@ jobs:
       run: |
         python3 helpers/godot-setup.py --version 4.7.2 --expected-version 4.7.2.stable.official.ed1daf0bf --binary-checksum sha256:cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4 --origin godot-builds --root .artifacts/native-test-godot
         printf 'GODOT_BIN=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-test-godot/bin/godot" >> "$GITHUB_ENV"
+        python3 tests/test_godot_host_templates.py --prepare .artifacts/native-host-template-fixture .artifacts/native-test-godot/archives
+        printf 'GODOT_HOST_TEMPLATE_CACHE=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-host-template-fixture" >> "$GITHUB_ENV"
     - name: Prepare pinned native addon CLI and display for real controls
       timeout-minutes: 5
       env:
