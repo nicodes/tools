@@ -155,6 +155,35 @@ class ImageImportCacheControls(unittest.TestCase):
         inspections = [command[-1] for command, _ in self.calls if command[1:3] == ['image', 'inspect']]
         self.assertEqual(inspections, self.refs + self.refs)
 
+    def test_verified_noop_keeps_fixture_alias_digest_and_stopped_container_untouched(self):
+        self.listing.append(self.row('registry.example/other/fixture:fixture', self.expected[self.refs[0]]))
+        self.listing[1]['Digest'] = 'sha256:' + 'd' * 64
+        self.containers[self.expected[self.refs[0]]] = 'created-container-never-started\n'
+        before = json.loads(json.dumps({'listing': self.listing, 'containers': self.containers, 'inspected': self.inspected}))
+        self.assertEqual(set(self.reload()), set(self.expected))
+        self.assertEqual(self.mutations(), [])
+        self.assertEqual({'listing': self.listing, 'containers': self.containers, 'inspected': self.inspected}, before)
+        self.assertFalse(any(command[1:3] == ['container', 'ls'] for command, _ in self.calls))
+
+    def test_every_mutating_plan_still_refuses_alias_digest_and_container_before_effects(self):
+        original = json.loads(json.dumps({'listing': self.listing, 'inspected': self.inspected}))
+        for plan in ['missing', 'rootfs-repair', 'prior-id-repair']:
+            for blocker in ['alias', 'digest', 'container']:
+                with self.subTest(plan=plan, blocker=blocker):
+                    self.calls.clear(); self.containers = {}
+                    self.listing = json.loads(json.dumps(original['listing']))
+                    self.inspected = json.loads(json.dumps(original['inspected']))
+                    if plan == 'missing': self.listing.pop(2)
+                    elif plan == 'rootfs-repair': self.inspected[self.refs[0]]['RootFS']['Layers'] = []
+                    else: self.listing[0]['ID'] = 'sha256:' + 'c' * 64
+                    identity = self.listing[0]['ID']
+                    if blocker == 'alias': self.listing.append(self.row('registry.example/other/fixture:fixture', identity))
+                    elif blocker == 'digest': self.listing[0]['Digest'] = 'sha256:' + 'd' * 64
+                    else: self.containers[identity] = 'created-container-never-started\n'
+                    message = 'existing container' if blocker == 'container' else 'out-of-scope alias or digest'
+                    with self.assertRaisesRegex(ValueError, message): self.reload()
+                    self.assertEqual(self.mutations(), [])
+
     def test_absent_or_healthy_partial_cache_loads_without_any_removal(self):
         for rows in [[], [self.listing[0]]]:
             with self.subTest(rows=rows):
@@ -344,6 +373,7 @@ class ImageImportCacheControls(unittest.TestCase):
         self.assertFalse(self.mutations())
 
     def test_even_stopped_target_container_refuses_before_any_mutation(self):
+        self.listing.pop(2)  # Missing current input requires an actual load.
         self.containers[self.expected[self.refs[-1]]] = 'created-container-never-started\n'
         with self.assertRaisesRegex(ValueError, 'existing container'):
             self.reload()

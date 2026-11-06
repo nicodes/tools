@@ -145,15 +145,23 @@ def main():
             assert json.loads(docker('container', 'inspect', unrelated).stdout)[0]['State']['Status'] == 'created'
             print('NATIVE_IMAGE_CACHE_REUSE_CONTROL_OK: exact healthy IDs/RootFS reused without removal or load; unrelated image/container retained', flush=True)
             target = docker('container', 'create', '--network', 'none', refs[1], '/never-started').stdout.strip()
-            refuse_without_cache_effect('a real created target container bypassed reset admission')
-            assert json.loads(docker('container', 'inspect', target).stdout)[0]['State']['Status'] == 'created'
-            assert all(inspect(ref)['Id'] == value['id'] for ref, value in images.items())
-            docker('container', 'rm', target)
             alias = 'example.invalid/foreign-owner:fixture'
             docker('image', 'tag', refs[1], alias)
-            refuse_without_cache_effect('a real out-of-scope alias bypassed reset admission')
+            commands = []
+            native_run = subprocess.run
+            def observed(command, *args, **kwargs):
+                commands.append(command)
+                return native_run(command, *args, **kwargs)
+            with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
+                reused = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
+            assert reused == images
+            assert not [command for command in commands if command[:3] in [['docker', 'image', 'rm'], ['docker', 'image', 'load']]]
+            assert json.loads(docker('container', 'inspect', target).stdout)[0]['State']['Status'] == 'created'
             assert inspect(alias)['Id'] == expected[refs[1]]
-            assert all(inspect(ref)['Id'] == value['id'] for ref, value in images.items())
+            assert all(inspect(ref)['Id'] == value['id'] and inspect(ref)['RootFS']['Layers'] == value['rootfs']
+                       for ref, value in images.items())
+            print('NATIVE_IMAGE_CACHE_PROTECTED_NOOP_CONTROL_OK: authenticated exact images reused with fixture alias and created container; no remove/load; no container started', flush=True)
+            docker('container', 'rm', target)
             docker('image', 'rm', alias)
             # Separate builds of one source may have distinct configuration IDs.
             # Prepare that ordinary cache state without altering accepted inputs.
