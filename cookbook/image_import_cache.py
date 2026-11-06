@@ -254,19 +254,6 @@ def reload(root, source, archives, expected, environment, timeout=600):
                 raise ValueError('existing source tag has ambiguous cache image IDs')
             present[reference] = row['ID']
         rows.append((row, reference))
-    # A source tag can name another build of the same commit. Its cached ID is
-    # not accepted build evidence, but removing that tag still requires protecting
-    # every alias/digest/container of BOTH the prior and incoming image IDs.
-    targets = set(expected.values()) | set(present.values())
-    for row, reference in rows:
-        repository, tag = row['Repository'], row['Tag']
-        if row['ID'] in targets and (row['Digest'] not in {'', '<none>'}
-                or (reference not in expected and (repository, tag) != ('<none>', '<none>'))):
-            raise ValueError('accepted cache image has an out-of-scope alias or digest')
-    for identity in sorted(targets):
-        if execute(['docker', 'container', 'ls', '--all', '--quiet', '--filter', 'ancestor=' + identity]).strip():
-            raise ValueError('accepted cache image is used by an existing container')
-
     def inspect(reference):
         values = json.loads(execute(['docker', 'image', 'inspect', reference]), object_pairs_hook=unique_object)
         if (not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict)
@@ -312,6 +299,20 @@ def reload(root, source, archives, expected, environment, timeout=600):
         if observed != admitted[reference]:
             repair = True
 
+    mutating = repair or set(present) != set(expected)
+    if mutating:
+        # A verified no-op leaves borrowed aliases and containers unchanged.
+        # Any load/repair still protects BOTH prior and incoming image IDs.
+        targets = set(expected.values()) | set(present.values())
+        for row, reference in rows:
+            repository, tag = row['Repository'], row['Tag']
+            if row['ID'] in targets and (row['Digest'] not in {'', '<none>'}
+                    or (reference not in expected and (repository, tag) != ('<none>', '<none>'))):
+                raise ValueError('accepted cache image has an out-of-scope alias or digest')
+        for identity in sorted(targets):
+            if execute(['docker', 'container', 'ls', '--all', '--quiet', '--filter', 'ancestor=' + identity]).strip():
+                raise ValueError('accepted cache image is used by an existing container')
+
     def unchanged(path):
         relative(root, path.relative_to(root).as_posix(), exists=True)
         info = path.stat()
@@ -324,7 +325,7 @@ def reload(root, source, archives, expected, environment, timeout=600):
     if repair and present:
         ordered = sorted(present, key=lambda ref: (-len(admitted[ref]['rootfs']), ref))
         execute(['docker', 'image', 'rm', '--no-prune', '--', *ordered])
-    if repair or set(present) != set(expected):
+    if mutating:
         for path in paths:
             unchanged(path)
             execute(['docker', 'image', 'load', '--input', str(path)], cap=600)
