@@ -74,6 +74,20 @@ class SDKDiscovery(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 identity.prepared(self.root, supplied=self.sdk)
 
+    def test_native_text_newlines_preserve_legacy_pin_and_raw_bytes(self):
+        (self.root / 'mise.toml').write_bytes(b'[tools]\npython="3.13.11"\n')
+        for newline in ['\n', '\r\n', '\r']:
+            raw = ('COOKBOOK_REF := ' + self.revision + newline).encode()
+            (self.root / 'Makefile').write_bytes(raw)
+            with self.subTest(newline=repr(newline)):
+                self.assertEqual(identity.source_identity(self.root), {'version': 0, 'revision': self.revision})
+                self.assertEqual(identity.read_regular(self.root / 'Makefile'), raw)
+                self.assertEqual((self.root / 'Makefile').read_bytes(), raw)
+            for invalid in [raw + raw, ('COOKBOOK_REF := ' + self.revision + 'extra' + newline).encode()]:
+                (self.root / 'Makefile').write_bytes(invalid)
+                with self.assertRaises(ValueError):
+                    identity.source_identity(self.root)
+
     def test_missing_and_other_owning_git_root_refused_without_fetch(self):
         with patch.object(identity, 'git', side_effect=AssertionError('missing SDK must not call Git')):
             with self.assertRaises(ValueError):

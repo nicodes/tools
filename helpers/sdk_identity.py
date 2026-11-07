@@ -63,6 +63,11 @@ def read_source(root):
     return read_regular(Path(root) / 'mise.toml')
 
 
+def universal_text(source):
+    """Interpret native text newlines without modifying or hashing the bytes."""
+    return source.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
+
+
 def declared(source):
     if isinstance(source, bytes):
         source = source.decode('utf-8')
@@ -85,7 +90,7 @@ def source_identity(root):
     raw = read_regular(Path(root) / 'Makefile')
     if len(raw) > 65536:
         raise ValueError('legacy generated Make source exceeds its original bound')
-    legacy = raw.decode('utf-8')
+    legacy = universal_text(raw)
     pins = re.findall(r'^COOKBOOK_REF := ([a-f0-9]{40})$', legacy, re.M)
     if len(pins) != 1:
         raise ValueError('legacy source requires one immutable generated cookbook pin')

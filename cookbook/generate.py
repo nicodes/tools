@@ -252,7 +252,7 @@ def check_entrypoint(root, revision):
     for name, expected in entrypoint_files(root, revision).items():
         path = Path(root) / name
         actual = mise_entrypoint.discovery().read_regular(path)
-        if len(actual) > 65536 or actual.decode('utf-8') != expected:
+        if len(actual) > 65536 or mise_entrypoint.discovery().universal_text(actual) != expected:
             raise ValueError('generated entrypoint differs from its pinned recipe data: ' + name)
 
 

@@ -33,6 +33,22 @@ class FutureIdentity(unittest.TestCase):
             'test_groups': ['lint', 'security', 'unit'], 'capabilities': []})
         self.assertEqual(entry.matches(value, tomllib.loads(self.source), self.source.encode()), value)
 
+    def test_native_text_newlines_preserve_future_identity_and_raw_configuration_hash(self):
+        original = future(self.source)
+        digest = hashlib.sha256(self.source.encode()).hexdigest()
+        for newline in ['\n', '\r\n', '\r']:
+            raw = original.replace('\n', newline).encode()
+            before = hashlib.sha256(raw).hexdigest()
+            with self.subTest(newline=repr(newline)):
+                value = entry.decode(raw)
+                self.assertEqual(value['configuration_sha256'], digest)
+                self.assertEqual(entry.matches(value, tomllib.loads(self.source), self.source.encode()), value)
+                self.assertEqual(hashlib.sha256(raw).hexdigest(), before)
+                self.assertEqual(raw.count(digest.encode()), 1)
+                changed = raw.replace(digest.encode(), b'f' * 64)
+                with self.assertRaises(ValueError):
+                    entry.matches(entry.decode(changed), tomllib.loads(self.source), self.source.encode())
+
     def test_parser_does_not_execute_native_source_or_mise_commands(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / 'unexpected-execution'
@@ -104,6 +120,24 @@ class FutureIdentity(unittest.TestCase):
             (root / 'mise.toml').write_text('[tools]\npython="3.13.11"\n' + '#' * entry.MAX_SOURCE)
             with self.assertRaises(ValueError):
                 generate.check_entrypoint(root, 'e' * 40)
+
+    def test_native_text_newlines_preserve_canonical_Make_comparison_and_raw_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'tests').mkdir()
+            (root / 'tests/check.py').write_bytes(b'raise RuntimeError("must not execute")\n')
+            (root / 'cookbook.toml').write_bytes(self.source.encode())
+            (root / 'mise.toml').write_bytes(b'[tools]\npython="3.13.11"\n')
+            expected = generate.makefile(root, 'e' * 40)
+            for newline in ['\n', '\r\n', '\r']:
+                raw = expected.replace('\n', newline).encode()
+                (root / 'Makefile').write_bytes(raw)
+                with self.subTest(newline=repr(newline)):
+                    generate.check_entrypoint(root, 'e' * 40)
+                    self.assertEqual((root / 'Makefile').read_bytes(), raw)
+                (root / 'Makefile').write_bytes(raw + b'# changed canonical source\n')
+                with self.assertRaises(ValueError):
+                    generate.check_entrypoint(root, 'e' * 40)
 
     def test_future_identity_selecting_A_refuses_even_with_its_exact_legacy_Makefile(self):
         import ci

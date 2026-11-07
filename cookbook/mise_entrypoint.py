@@ -34,7 +34,7 @@ def text(source):
         source = source.decode('utf-8')
     if not isinstance(source, str) or len(source.encode()) > MAX_SOURCE or '\0' in source:
         raise ValueError('Mise identity requires bounded UTF-8 source')
-    return source
+    return discovery().universal_text(source.encode())
 
 
 def declared(source):
