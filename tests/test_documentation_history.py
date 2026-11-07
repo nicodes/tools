@@ -108,9 +108,20 @@ class DocumentationHistory(unittest.TestCase):
         self.assertIn('documentation must live in the private docs repository: extra.md', errors)
 
     def test_existing_tools_public_boundary_is_nonempty_and_unchanged(self):
-        data = policy.tomllib.loads((ROOT / '.github/readme-source.toml').read_text())
+        readme = (ROOT / 'README.md').read_bytes()
+        declaration = (ROOT / '.github/readme-source.toml').read_bytes()
+        data = policy.tomllib.loads(declaration.decode('utf-8'))
         self.assertTrue(data['history']['forbidden_commits'])
-        self.assertEqual(policy.check(ROOT, history_required=True), [])
+        # The standard Test checkout can be shallow. Exercise its exact real
+        # policy and README in the fixture's complete native Git history.
+        (self.root / 'README.md').write_bytes(readme)
+        target = self.root / '.github/readme-source.toml'
+        target.write_bytes(declaration)
+        self.commit('Exercise the exact Tools publication policy with complete history')
+        self.assertEqual(self.git('rev-parse', '--is-shallow-repository'), 'false')
+        self.assertEqual(policy.check(self.root, history_required=True), [])
+        self.assertEqual((self.root / 'README.md').read_bytes(), readme)
+        self.assertEqual(target.read_bytes(), declaration)
 
 
 if __name__ == '__main__':
