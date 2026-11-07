@@ -6,7 +6,7 @@ import sys
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from configuration import load, relative, ci_settings, validate_data, release_definition
+from configuration import load, relative, ci_settings, validate_data, release_definition, read_source_data
 import images
 
 SHA = re.compile('[a-f0-9]{40}')
@@ -22,7 +22,7 @@ def declaration(root, config):
     path = relative(Path(root), value['definition'], exists=True)
     if not path.is_file() or path.stat().st_size > 32768:
         raise ValueError('Preview declaration must be a bounded regular source file')
-    data = json.loads(path.read_text())
+    data = read_source_data(path, maximum=32768)
     keys = {'version', 'project', 'komizo_ref', 'components', 'runner', 'up_timeout_minutes',
             'down_timeout_minutes', 'publish_timeout_minutes', 'origin_variables',
             'environment', 'secrets', 'health_paths', 'origin_layout', 'clerk_urls'}

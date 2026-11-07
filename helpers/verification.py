@@ -2,6 +2,7 @@
 import argparse
 import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,10 @@ import sys
 import tempfile
 import time
 
+_source_spec = importlib.util.spec_from_file_location('_verification_source_config', Path(__file__).resolve().with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(source_config)
+
 if os.name == 'nt':
     import msvcrt
 else:
@@ -23,7 +28,7 @@ CONTEXT_KEYS = ('GITHUB_SERVER_URL', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID',
                 'GITHUB_RUN_ATTEMPT', 'GITHUB_JOB', 'GITHUB_SHA',
                 'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA', 'GITHUB_EVENT_NAME')
 CONFIG_FILES = ('Makefile', 'cookbook.toml', 'mise.toml', '.mise.toml', 'mise.lock', '.tool-versions',
-                'komizo.json', 'deploy/release.json')
+                'komizo.toml', 'deploy/release.toml')
 NAME = re.compile(r'[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z')
 
 
@@ -70,18 +75,11 @@ def scope(artifacts=(), images=(), environment=(), revision_environment=(), dire
             'revision_environment': sorted(set(revision_environment)), 'evidence_directory': str(directory)}
 
 
-def release_definition(file=Path('deploy/release.json')):
+def release_definition(file=Path('deploy/release.toml')):
     file=Path(file)
     if file.is_symlink() or any(parent.is_symlink() for parent in file.parents) or not file.is_file() or file.stat().st_size>1<<20:
         raise ValueError('release definition must be a bounded regular caller-owned file')
-    def unique(pairs):
-        result={}
-        for key,value in pairs:
-            if key in result:
-                raise ValueError('duplicate release definition field')
-            result[key]=value
-        return result
-    value=json.loads(file.read_text(),object_pairs_hook=unique)
+    value=source_config.read(file, maximum=1<<20)
     required={'version','project','image_base','inputs','tests'}
     if (not isinstance(value,dict) or not required<=value.keys() or set(value)-required-{'stateful_contract'} or
             type(value['version']) is not int or value['version']!=1 or not isinstance(value['project'],str) or

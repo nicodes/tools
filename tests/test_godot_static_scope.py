@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import godot_game as game
 import godot_static as static
+from source_fixture import read_source, write_source, dump_source
 
 
 class StaticArtifactScope(unittest.TestCase):
@@ -19,18 +20,18 @@ class StaticArtifactScope(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         files = {'app/project.godot': 'config_version=5\n',
-            'deploy/config.yml': 'compose: compose.yml\n',
+            'deploy/config.toml': 'compose = "compose.yml"\n',
             'deploy/compose.yml': 'services: {}\n',
             '.gitignore': '.artifacts/\napp/build/\npublic/\n'}
         release = {'version': 1, 'project': 'game', 'image_base': 'ghcr.io/fixture/game',
             'inputs': {'artifacts': ['public'], 'images': [], 'environment': [], 'revision_environment': []},
             'tests': ['native']}
         delivery = {'mode': 'godot-static', 'komizo_ref': 'a' * 40, 'project': 'game', 'static': {
-            'config': 'deploy/config.yml', 'compose': 'deploy/compose.yml',
+            'config': 'deploy/config.toml', 'compose': 'deploy/compose.yml',
             'release_manifest': 'public/release-manifest.json',
             'record': False, 'recovery': False, 'production': False}}
-        files['deploy/release.json'] = json.dumps(release)
-        files['deploy/delivery.json'] = json.dumps(delivery)
+        files['deploy/release.toml'] = dump_source(release)
+        files['deploy/delivery.toml'] = dump_source(delivery)
         for name, body in files.items():
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -43,7 +44,7 @@ class StaticArtifactScope(unittest.TestCase):
             'components': {'images': [{'name': 'gate'}], 'godot': {'exports': [
                 {'preset': 'Web', 'output': 'app/build/web/index.html'}]}},
             'artifacts': {},
-            'delivery': {'definition': 'deploy/delivery.json'}}
+            'delivery': {'definition': 'deploy/delivery.toml'}}
         self.outputs = {'public/release-manifest.json': '{"release_id":"fixture"}\n',
             'app/build/.gdignore': '', static.CONFIG_ARTIFACT: '{"blueprint":"fixture"}\n',
             static.MANIFEST_ARTIFACT: '{"source_commit":"fixture"}\n'}
@@ -102,8 +103,8 @@ class StaticArtifactScope(unittest.TestCase):
                         path.write_text(self.outputs[name])
 
     def test_nonstatic_delivery_does_not_gain_static_artifacts(self):
-        path = self.root / 'deploy/delivery.json'
-        path.write_text(json.dumps({'mode': 'application-images'}))
+        path = self.root / 'deploy/delivery.toml'
+        write_source(path, {'mode': 'application-images'})
         with chdir(self.root):
             scope = game.verification_scope(self.root, self.config)
         self.assertEqual(scope['artifacts'], ['public', 'app/build/.gdignore'])

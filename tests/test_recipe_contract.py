@@ -43,8 +43,8 @@ class StrictRecipeContract(unittest.TestCase):
             recipe(components={'app': {'verify_image': False}}),
             recipe(components={'app': {'verify_image': True}}),
             recipe(components={'compose': {'path': 'deploy/compose.yml'}}),
-            recipe(artifacts={'definition': 'deploy/release.json'}),
-            recipe('godot-game', artifacts={'definition': 'deploy/release.json'}),
+            recipe(artifacts={'definition': 'deploy/release.toml'}),
+            recipe('godot-game', artifacts={'definition': 'deploy/release.toml'}),
             recipe('rust-cli', package={'output': '.artifacts/build/tool'}),
             recipe('rust-cli', artifacts={'revision_environment': 'VERSION'}),
             recipe('godot-addon', package={'source': 'addon'}),
@@ -69,7 +69,7 @@ class StrictRecipeContract(unittest.TestCase):
     def test_effective_definition_is_a_pure_sdk_api_without_retired_key_injection(self):
         data = configuration.validate_data(recipe(components={'app': {}}))
         before = deepcopy(data)
-        self.assertEqual(configuration.release_definition(data), 'deploy/release.json')
+        self.assertEqual(configuration.release_definition(data), 'deploy/release.toml')
         self.assertEqual(data, before)
         self.assertNotIn('artifacts', data)
         with patch.object(Path, 'read_text', side_effect=AssertionError('pure decoder read a source file')):
@@ -117,7 +117,7 @@ class StrictRecipeContract(unittest.TestCase):
         self.assertEqual(configuration.validate_data(data), data)
         self.assertEqual(recipe_contract.app_directory(data), 'app')
         self.assertEqual(recipe_contract.compose_path(data), 'deploy/compose.yml')
-        self.assertEqual(recipe_contract.release_definition(data), 'deploy/release.json')
+        self.assertEqual(recipe_contract.release_definition(data), 'deploy/release.toml')
 
     def test_canonical_component_roots_reject_alternates_escapes_and_staging_outside_artifacts(self):
         bad = [recipe(node={'packages': [{'directory': 'poc/app'}]}),

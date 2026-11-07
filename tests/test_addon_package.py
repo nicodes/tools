@@ -30,6 +30,24 @@ class AddonPackage(unittest.TestCase):
         with zipfile.ZipFile(self.archive) as archive:
             self.assertEqual(archive.read('plugin.cfg'), (self.source / 'plugin.cfg').read_bytes())
 
+    def test_authored_gdam_toml_projects_only_the_closed_native_json_entry(self):
+        source = self.source / 'gdam.toml'
+        data = {'addons': {'@example/dependency': {'tag': 'v1.2.3'}}}
+        package.source_config.write(source, data)
+        self.manifest.write_text('gdam.toml\nplugin.cfg\n')
+        package.build(self.source, self.manifest, self.archive)
+        installed = self.root / 'installed'
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertEqual(archive.namelist(), ['gdam.json', 'plugin.cfg'])
+            self.assertEqual(__import__('json').loads(archive.read('gdam.json')), data)
+            archive.extractall(installed)
+        package.verify(self.archive, self.manifest, self.source, installed)
+        for invalid in [data | {'package': '@example/owned'}, {'addons': {'dependency': {'tag': 'v1'}}},
+                        {'addons': {'@example/dependency': {'tag': 'v1', 'unbound': True}}}]:
+            package.source_config.write(source, invalid)
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'exact named addon tags'):
+                package.build(self.source, self.manifest, self.archive)
+
     def test_unlisted_source_cannot_replace_existing_good_archive(self):
         package.build(self.source, self.manifest, self.archive)
         before = self.archive.read_bytes()

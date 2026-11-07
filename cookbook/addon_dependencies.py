@@ -11,7 +11,7 @@ import tomllib
 import urllib.error
 import urllib.request
 
-from configuration import relative
+from configuration import relative, runtime_configuration
 
 
 def declaration(root, config):
@@ -96,4 +96,7 @@ def setup(root, config, environment, *, fetch=download, execute=subprocess.run):
                       timeout=30, check=True, capture_output=True, text=True)
     if not re.search(r'\bgdam ' + re.escape(pin['version'].removeprefix('v')) + r'(?:\s|$)', version.stdout or ''):
         raise ValueError('registry SDK binary version differs from the caller Mise pin')
+    runtime_configuration().prepare(root, 'gdam.toml', 'gdam')
+    if (root / 'gdam.link.toml').exists():
+        runtime_configuration().prepare(root, 'gdam.link.toml', 'gdam-link')
     execute([str(destination), 'install', '--frozen-lockfile'], cwd=root, env=environment, timeout=180, check=True)

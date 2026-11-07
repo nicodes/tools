@@ -3,7 +3,7 @@ from pathlib import PurePosixPath
 
 APP_DIRECTORY = 'app'
 COMPOSE_PATH = 'deploy/compose.yml'
-RELEASE_DEFINITION = 'deploy/release.json'
+RELEASE_DEFINITION = 'deploy/release.toml'
 ADDON_DIRECTORY = 'addon'
 ADDON_MANIFEST = 'package.files'
 CLI_OUTPUT_DIRECTORY = '.artifacts/build'

@@ -2,11 +2,45 @@
 """Build and validate an addon archive against a caller-owned closed manifest."""
 import argparse
 import hashlib
+import importlib.util
+import json
 from pathlib import Path, PurePosixPath
 import stat
 import re
 import tempfile
 import zipfile
+
+
+_spec = importlib.util.spec_from_file_location('_package_source_config', Path(__file__).with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(source_config)
+
+
+def archive_name(name):
+    return 'gdam.json' if name == 'gdam.toml' else name
+
+
+def payload(path):
+    if path.name != 'gdam.toml':
+        return path.read_bytes()
+    data = source_config.read(path, maximum=1 << 20)
+    addons = data.get('addons')
+    if (set(data) != {'addons'} or not isinstance(addons, dict)
+            or any(not re.fullmatch(r'@[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+', name)
+                   or not isinstance(entry, dict) or set(entry) != {'tag'}
+                   or not isinstance(entry['tag'], str) or not entry['tag'] or entry['tag'] != entry['tag'].strip()
+                   or any(ord(character) < 32 for character in entry['tag'])
+                   for name, entry in addons.items())):
+        raise ValueError('published GDAM manifest requires only exact named addon tags')
+    return (json.dumps(data, indent=2, ensure_ascii=False) + '\n').encode()
+
+
+def records(files, prefix=''):
+    result = [(prefix + archive_name(name), payload(path), 0o644 | (path.stat().st_mode & 0o111))
+              for name, path in sorted(files.items())]
+    if len({name for name, _, _ in result}) != len(result):
+        raise ValueError('source manifest has conflicting native archive identities')
+    return sorted(result)
 
 
 def manifest_files(manifest):
@@ -34,6 +68,8 @@ def source_files(source, manifest, script_uids=False):
             actual[path.relative_to(source).as_posix()] = path
         elif not path.is_dir():
             raise ValueError('package source contains a non-regular file')
+    if 'gdam.json' in actual:
+        raise ValueError('authored addon manifests must use gdam.toml; gdam.json is generated native I/O')
     if sorted(actual) != expected:
         raise ValueError('package source differs from the closed manifest')
     if script_uids:
@@ -51,7 +87,7 @@ def source_files(source, manifest, script_uids=False):
 
 
 def tree_digest(archive, manifest):
-    expected = manifest_files(manifest)
+    expected = sorted(archive_name(name) for name in manifest_files(manifest))
     verify(archive, manifest)
     digest = hashlib.sha256()
     with zipfile.ZipFile(archive) as package:
@@ -64,11 +100,12 @@ def tree_digest(archive, manifest):
 
 
 def verify(archive, manifest, source=None, installed=None, script_uids=False):
-    expected = manifest_files(manifest)
+    expected = sorted(archive_name(name) for name in manifest_files(manifest))
     archive = Path(archive)
     if archive.is_symlink() or not archive.is_file():
         raise ValueError('package archive must be a regular file')
-    originals = source_files(source, manifest, script_uids) if source is not None else None
+    originals = ({name: data for name, data, _ in records(source_files(source, manifest, script_uids))}
+                 if source is not None else None)
     with zipfile.ZipFile(archive) as package:
         entries = package.infolist()
         if any(entry.is_dir() for entry in entries):
@@ -80,7 +117,7 @@ def verify(archive, manifest, source=None, installed=None, script_uids=False):
                 raise ValueError('archive symlink rejected')
             if not stat.S_ISREG(entry.external_attr >> 16):
                 raise ValueError('non-regular archive entry rejected')
-            if originals is not None and package.read(entry) != originals[entry.filename].read_bytes():
+            if originals is not None and package.read(entry) != originals[entry.filename]:
                 raise ValueError('archive bytes differ from the current package source')
         if package.testzip() is not None:
             raise ValueError('package checksum failed')
@@ -95,7 +132,14 @@ def verify(archive, manifest, source=None, installed=None, script_uids=False):
                         raise ValueError('shipped script UIDs must be valid and unique')
                     seen.add(uid)
         if installed is not None:
-            copies = source_files(installed, manifest, script_uids)
+            installed = Path(installed)
+            copies = {}
+            for path in installed.rglob('*'):
+                if path.is_symlink() or not path.is_dir() and not path.is_file():
+                    raise ValueError('installed addon contains linked or non-regular content')
+                if path.is_file(): copies[path.relative_to(installed).as_posix()] = path
+            if sorted(copies) != expected:
+                raise ValueError('installed addon differs from the closed manifest')
             for name in expected:
                 if copies[name].read_bytes() != package.read(name):
                     raise ValueError('installed addon bytes differ from the accepted archive')
@@ -119,19 +163,19 @@ def verify_checksum(archive, checksums=None):
 def build(source, manifest, archive, script_uids=False):
     source, archive = Path(source), Path(archive)
     expected = manifest_files(manifest)
-    source_files(source, manifest, script_uids)
+    native = records(source_files(source, manifest, script_uids))
     if archive.resolve().is_relative_to(source.resolve()):
         raise ValueError('package output must be outside the addon source')
     archive.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='addon-package-', dir=archive.parent) as temporary:
         candidate = Path(temporary) / 'package.zip'
         with zipfile.ZipFile(candidate, 'w', compression=zipfile.ZIP_DEFLATED) as package:
-            for name in expected:
+            for name, data, mode in native:
                 info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
                 info.create_system = 3
                 info.compress_type = zipfile.ZIP_DEFLATED
-                info.external_attr = (stat.S_IFREG | 0o644 | ((source / name).stat().st_mode & 0o111)) << 16
-                package.writestr(info, (source / name).read_bytes())
+                info.external_attr = (stat.S_IFREG | mode) << 16
+                package.writestr(info, data)
         digest = verify(candidate, manifest, source=source, script_uids=script_uids)
         candidate.replace(archive)
     return digest

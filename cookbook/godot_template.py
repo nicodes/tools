@@ -7,7 +7,7 @@ import stat
 import tempfile
 import tomllib
 
-from configuration import relative, load
+from configuration import relative, load, read_source_data, _source_config
 from recipe_contract import app_directory
 import json
 from pathlib import Path
@@ -32,6 +32,32 @@ def download(url, expected, maximum):
     return body
 
 
+PROFILE_FIELDS = {'version', 'godot_version', 'source_commit', 'source_sha256', 'emsdk_image',
+                  'scons_url', 'scons_sha256', 'modules', 'options'}
+OPTION_FIELDS = {'platform', 'target', 'production', 'optimize', 'lto', 'disable_3d',
+                 'threads', 'modules_enabled_by_default'}
+
+
+def profile_data(profile):
+    data = read_source_data(profile, maximum=64 * 1024)
+    if (set(data) != PROFILE_FIELDS or type(data.get('version')) is not int or data['version'] != 1
+            or not isinstance(data.get('godot_version'), str)
+            or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', data['godot_version'])
+            or not isinstance(data.get('source_commit'), str) or not re.fullmatch('[0-9a-f]{40}', data['source_commit'])
+            or any(not isinstance(data.get(name), str) or not re.fullmatch('[0-9a-f]{64}', data[name])
+                   for name in ['source_sha256', 'scons_sha256'])
+            or not isinstance(data.get('emsdk_image'), str)
+            or not re.fullmatch(r'emscripten/emsdk@sha256:[0-9a-f]{64}', data['emsdk_image'])
+            or not isinstance(data.get('scons_url'), str) or not data['scons_url'].startswith('https://')
+            or not isinstance(data.get('options'), dict) or set(data['options']) != OPTION_FIELDS
+            or any(not isinstance(value, str) or not value for value in data['options'].values())
+            or not isinstance(data.get('modules'), list) or not data['modules']
+            or any(not isinstance(value, str) or not re.fullmatch('[a-z0-9_]+', value) for value in data['modules'])
+            or len(data['modules']) != len(set(data['modules']))):
+        raise ValueError('custom template requires every reviewed build input and no unknown profile fields')
+    return data
+
+
 def template_receipt(archive, profile):
     checked_regular(archive, 64 * 1024 * 1024)
     checked_regular(profile, 64 * 1024)
@@ -50,7 +76,7 @@ def template_receipt(archive, profile):
                 raise ValueError('Template WASM magic is missing')
             components[entry.filename] = {'sha256': sha256(body), 'bytes': len(body)}
     return {'version': 1, 'profile_sha256': sha256(profile.read_bytes()),
-            'requested_build_inputs': json.loads(profile.read_text()), 'archive_sha256': sha256(archive.read_bytes()),
+            'requested_build_inputs': profile_data(profile), 'archive_sha256': sha256(archive.read_bytes()),
             'components': components, 'gameplay_acceptance': 'unverified',
             'scope': 'Archive byte inventory and requested profile; this inspection alone does not establish build provenance, gameplay or performance.'}
 
@@ -59,7 +85,7 @@ def build(profile, output, *, archive_name="godot-web-template.zip", receipt_nam
     checked_regular(profile, 64 * 1024)
     plain_asset(archive_name, ".zip")
     plain_asset(receipt_name, ".json")
-    spec = json.loads(profile.read_text())
+    spec = profile_data(profile)
     if spec['version'] != 1 or not re.fullmatch('[0-9a-f]{40}', spec['source_commit']):
         raise ValueError('Invalid pinned template source')
     if not re.fullmatch(r'emscripten/emsdk@sha256:[0-9a-f]{64}', spec['emsdk_image']):
@@ -166,7 +192,7 @@ def declaration(root, config):
             raise ValueError('custom template SDK requires exact reviewed SHA256 pins')
     if sha256(profile.read_bytes()) != selected['profile_sha256']:
         raise ValueError('custom template provenance profile differs from its exact reviewed bytes')
-    requested = json.loads(profile.read_text())
+    requested = profile_data(profile)
     if (not isinstance(requested, dict) or requested.get('version') != 1
             or requested.get('godot_version') != pins.get('GODOT_VERSION')):
         raise ValueError('custom template provenance must match the active pinned Godot SDK')
@@ -185,9 +211,10 @@ def verify_directory(directory, pin, profile):
     observed = template_receipt(archive, profile)
     if (not isinstance(receipt, dict) or receipt.get('version') != 1
             or receipt.get('archive_sha256') != pin['archive_sha256']
-            or receipt.get('profile_sha256') != pin['profile_sha256']
+            or not isinstance(receipt.get('profile_sha256'), str)
+            or not re.fullmatch('[a-f0-9]{64}', receipt['profile_sha256'])
             or observed['profile_sha256'] != pin['profile_sha256']
-            or receipt.get('build_inputs') != observed['requested_build_inputs']
+            or not _source_config().equal(receipt.get('build_inputs'), observed['requested_build_inputs'])
             or receipt.get('components') != observed['components']):
         raise ValueError('template bytes, completed build receipt and requested profile disagree')
     return archive

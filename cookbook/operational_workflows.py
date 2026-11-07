@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import re
 
-from configuration import relative,load
+from configuration import relative, load, read_source_data
 import delivery_workflows
 
 NAME=re.compile('[a-z][a-z0-9_-]{0,62}')
@@ -119,7 +119,7 @@ def declaration(root,config):
     if config.get('recipe') not in {'react-native','godot-game'}:raise ValueError('operations belong to implemented application recipes')
     path=source(root,selected['definition'],('deploy/',))
     if not path.is_file() or path.stat().st_size>65536:raise ValueError('operations declaration must be bounded regular source')
-    value=json.loads(path.read_text())
+    value=read_source_data(path, maximum=65536)
     if not isinstance(value,dict) or set(value)-{'version','project','backup','recovery','security','production','paid','restore_profiles'} or type(value.get('version')) is not int or value['version']!=1:
         raise ValueError('unsupported native operational declaration')
     delivery=delivery_workflows.declaration(root,config)

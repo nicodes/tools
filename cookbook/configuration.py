@@ -1,6 +1,8 @@
 """Read bounded recipe data; product code and test assertions remain caller-owned."""
 from pathlib import Path
+import importlib.util
 import re
+import sys
 import tomllib
 
 import recipe_schema
@@ -15,6 +17,42 @@ from recipe_schema import (RECIPES, SUITES, RUNNERS, TEST_FIELDS, TEST_COMMON_FI
 # Readers consume effective authority through the caller-pinned SDK without
 # inserting retired declaration keys into the source data.
 release_definition = recipe_schema.recipe_contract.release_definition
+
+
+def _source_config():
+    expected = Path(__file__).resolve().parents[1] / 'helpers/source_config.py'
+    module = sys.modules.get('source_config')
+    if module is None:
+        spec = importlib.util.spec_from_file_location('source_config', expected)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules['source_config'] = module
+        spec.loader.exec_module(module)
+    if (not isinstance(getattr(module, '__file__', None), str)
+            or Path(module.__file__).resolve() != expected):
+        raise ValueError('source decoder origin differs from its selected SDK')
+    return module
+
+
+def read_source_data(path, *, maximum=8 << 20):
+    return _source_config().read(path, maximum=maximum)
+
+
+def parse_source_data(raw, *, maximum=8 << 20):
+    return _source_config().loads(raw, maximum=maximum)
+
+
+def runtime_configuration():
+    expected = Path(__file__).resolve().parents[1] / 'helpers/runtime_config.py'
+    module = sys.modules.get('runtime_config')
+    if module is None:
+        spec = importlib.util.spec_from_file_location('runtime_config', expected)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules['runtime_config'] = module
+        spec.loader.exec_module(module)
+    if (not isinstance(getattr(module, '__file__', None), str)
+            or Path(module.__file__).resolve() != expected):
+        raise ValueError('native source compiler origin differs from its selected SDK')
+    return module
 
 
 def ci_settings(data):

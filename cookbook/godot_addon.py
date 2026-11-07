@@ -64,7 +64,7 @@ def package_data(config):
     if values.get('embedded_manifest'):
         stem = Path(archive).stem
         result.update(prefix='addons/' + stem + '/', registry_archive='dist/' + stem + '.gdam.zip',
-                      version_source='package.json', allowlist='package-allowlist.json',
+                      version_source='package.json', allowlist='package-allowlist.toml',
                       generated_directories=['.gdam'] if config.get('components', {}).get('addon_dependencies') else [])
     return result
 
@@ -111,7 +111,7 @@ def evidence_paths(root, config):
 def post_test_evidence(root, config, env, commit):
     provenance = config.get('publication', {}).get('provenance')
     if provenance:
-        if provenance != 'package-provenance.json':
+        if provenance != 'package-provenance.toml':
             raise ValueError('candidate provenance requires the native package provenance policy')
         run(['node', str(TOOLS / 'helpers/addon-provenance.mjs'), 'candidate', '--commit', commit,
              '--zip', str(relative(root, config['package']['archive'], exists=True)),

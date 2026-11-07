@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Materialize exact native runtime filenames from caller-owned tracked inputs."""
 import argparse
-import json
+import importlib.util
 import os
 from pathlib import Path
+
+_source_spec = importlib.util.spec_from_file_location('runtime_source_config', Path(__file__).with_name('source_config.py'))
+_source = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(_source)
 
 
 def inside(root, name):
@@ -20,7 +24,10 @@ def prepare(root, manifest):
     declaration = inside(root, manifest)
     if declaration.is_symlink() or declaration.stat().st_size > 262144:
         raise ValueError('runtime input manifest must be a bounded regular source file')
-    rows = json.loads(declaration.read_text())
+    source = _source.read(declaration)
+    if set(source) != {'sources'}:
+        raise ValueError('runtime input manifest must contain only sources')
+    rows = source['sources']
     if not isinstance(rows, list) or len(rows) > 128:
         raise ValueError('runtime input records must be bounded source data')
     plan = []

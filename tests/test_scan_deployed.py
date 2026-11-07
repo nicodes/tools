@@ -7,6 +7,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('scan_deployed', Path(__file__).resolve().parents[1]/'helpers/scan-deployed.py')
 scanner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(scanner)
+source_config = scanner.source_config
 
 
 class DeployedRevision(unittest.TestCase):
@@ -36,15 +37,15 @@ class DeployedRevision(unittest.TestCase):
         import json
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
-            file = Path(directory)/'scan.json'
+            file = Path(directory)/'scan.toml'
             config = {'repository': 'example/widget', 'image_base': 'ghcr.io/example/widget', 'components': ['worker'], 'environment': 'production'}
-            file.write_text(json.dumps(config))
+            source_config.write(file, config)
             with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'example/widget'}):
                 self.assertEqual(scanner.load_config(file), config)
             with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'example/other'}), self.assertRaises(ValueError):
                 scanner.load_config(file)
             for slug in ('a/b/c', '../widget', 'example/widget;exit', 'example/widget\n'):
-                file.write_text(json.dumps({**config, 'repository': slug}))
+                source_config.write(file, {**config, 'repository': slug})
                 with self.assertRaises(ValueError): scanner.load_config(file)
 
     def test_environment_is_explicit_and_bound_before_any_api_request(self):

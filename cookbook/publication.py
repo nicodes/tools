@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 import zipfile
 
-from configuration import ci_settings, load, relative
+from configuration import ci_settings, load, relative, read_source_data
 from godot_addon import package_data
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -316,9 +316,9 @@ def provenance_notes(root, config, plan):
     path = policy(root, config).get('provenance')
     if not path:
         return None
-    values = json.loads(relative(root, path, exists=True).read_text())
+    values = read_source_data(relative(root, path, exists=True))
     vendor = json.loads(relative(root, values['vendor'], exists=True).read_text())
-    allowlist = json.loads(relative(root, values['allowlist'], exists=True).read_text())
+    allowlist = read_source_data(relative(root, values['allowlist'], exists=True))
     archive = relative(root, config['package']['archive'], exists=True)
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     fields = [values['name'], values['description'], vendor['version'], vendor['integrity']]

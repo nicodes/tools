@@ -9,9 +9,13 @@ import re
 import subprocess
 import urllib.parse
 
+_source_spec = importlib.util.spec_from_file_location('_scan_source_config', Path(__file__).resolve().with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(source_config)
+
 
 def load_config(file):
-    config = json.loads(Path(file).read_text())
+    config = source_config.read(file, maximum=262144)
     if set(config) != {'repository', 'image_base', 'components', 'environment'}:
         raise ValueError('scan config requires repository, image_base, components and environment')
     repository = config['repository']
@@ -83,7 +87,7 @@ def deployed_revisions(repository, environment):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--config', type=Path, default=Path('deploy/scan.json'))
+    parser.add_argument('--config', type=Path, default=Path('deploy/scan.toml'))
     args = parser.parse_args()
     config = load_config(args.config)
     detected = config['repository']

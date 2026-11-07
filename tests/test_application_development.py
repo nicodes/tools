@@ -36,7 +36,7 @@ class ApplicationDevelopmentControls(unittest.TestCase):
 
     def test_godot_native_database_reset_keeps_local_ghenv_and_owned_cleanup_lease(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);(root/'ghenv.json').write_text('{"version":1}')
+            root=Path(directory);(root/'ghenv.toml').write_text('version=1\n')
             calls=[];config={'dev':{'kind':'native','project_prefix':'komizo'},'database':{'reset':{'runner':'python','path':'api/development/database.py'}}}
             with patch.object(godot_game,'pinned_ghenv',return_value='/pinned/ghenv'),patch.object(godot_game,'run',side_effect=lambda *args:calls.append(args)):
                 godot_game.database(root,config,{},'db:reset')
@@ -49,7 +49,10 @@ class ApplicationDevelopmentControls(unittest.TestCase):
 
     def test_native_supervisor_preparation_and_cleanup_use_same_namespace_and_identity(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory);(root/'ghenv.json').write_text('{"version":1}')
+            root=Path(directory);(root/'ghenv.toml').write_text('version=1\n')
+            subprocess.run(['git','init','--quiet',str(root)],check=True)
+            (root/'.gitignore').write_text('.artifacts/\n')
+            subprocess.run(['git','-C',str(root),'add','.'],check=True)
             calls=[];config={'dev':{'kind':'native','project_prefix':'komizo'}}
             with patch.object(godot_game,'pinned_ghenv',return_value='/pinned/ghenv'),patch.object(godot_game,'run',side_effect=lambda *args:calls.append(args)):
                 godot_game.development(root,config,{'DEV_MODE':'local'},'dev')

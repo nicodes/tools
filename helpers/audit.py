@@ -2,10 +2,16 @@
 """Run the online Bun audit; accept only independently verified local repairs."""
 import datetime
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
 import sys
+
+
+_spec = importlib.util.spec_from_file_location('_audit_source_config', Path(__file__).with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(source_config)
 
 
 def verify_repair(app, repair):
@@ -62,8 +68,11 @@ def main():
         raise RuntimeError('unrecognized audit response')
     if result.returncode and not report:
         raise RuntimeError('audit failed without findings; refusing a false pass')
-    repairs_file = app/'security-remediations.json'
-    repairs = json.loads(repairs_file.read_text()) if repairs_file.exists() else []
+    repairs_file = app/'security-remediations.toml'
+    declared = source_config.read(repairs_file) if repairs_file.exists() else {'remediations': []}
+    if set(declared) != {'remediations'} or not isinstance(declared['remediations'], list):
+        raise RuntimeError('security remediations require their explicit source list')
+    repairs = declared['remediations']
     resolved = {}
     expiry = {}
     for repair in repairs:

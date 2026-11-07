@@ -1,3 +1,4 @@
+from source_fixture import write_source
 import contextlib
 import copy
 import hashlib
@@ -31,7 +32,7 @@ class LockedAddons(unittest.TestCase):
         self.entry = {'tag': 'v0.0.1', 'asset_id': 17,
                       'asset_sha256': hashlib.sha256(self.archive.read_bytes()).hexdigest(),
                       'tree_sha256': addons.tree_hash(self.payload)}
-        (self.project / 'gdam.json').write_text(json.dumps({'addons': {'@owner/addon': {'tag': 'v0.0.1'}}}))
+        write_source(self.project / 'gdam.toml', {'addons': {'@owner/addon': {'tag': 'v0.0.1'}}})
         self.save()
         self.fetches = []
 
@@ -111,7 +112,7 @@ class LockedAddons(unittest.TestCase):
         parent=dict(self.entry,commit='b'*40,asset_id=18)
         entries={'@owner/addon':first,'@owner/parent':parent}
         requirements={name:value['tag'] for name,value in entries.items()}
-        (self.project/'gdam.json').write_text(json.dumps({'addons':{name:{'tag':tag} for name,tag in requirements.items()}}))
+        write_source(self.project/'gdam.toml', {'addons':{name:{'tag':tag} for name,tag in requirements.items()}})
         (self.project/'addon-provenance.json').write_text(json.dumps(entries))
         releases={name+'@'+entry['tag']:{'name':name,'tag':entry['tag'],'commit_sha':entry['commit'],
             'asset_id':entry['asset_id'],'asset_digest':'sha256:'+entry['asset_sha256'],

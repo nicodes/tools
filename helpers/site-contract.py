@@ -2,10 +2,15 @@
 """Check metadata and basic accessible markup in an actual static-site export."""
 import argparse
 import gzip
+import importlib.util
 import json
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
+
+_source_spec = importlib.util.spec_from_file_location('site_source_config', Path(__file__).with_name('source_config.py'))
+_source = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(_source)
 
 
 VOID = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr'}
@@ -172,12 +177,12 @@ def performance(root, budget):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('directory', type=Path)
-    parser.add_argument('--budget', type=Path, help='product-owned JSON byte limits for the actual export')
+    parser.add_argument('--budget', type=Path, help='product-owned TOML byte limits for the actual export')
     args = parser.parse_args()
     try:
         files, errors = check(args.directory)
         if args.budget:
-            metrics, exceeded = performance(args.directory, json.loads(args.budget.read_text(encoding='utf-8')))
+            metrics, exceeded = performance(args.directory, _source.read(args.budget))
             errors.extend(exceeded)
             print('Export performance:', json.dumps(metrics, sort_keys=True))
     except (OSError, ValueError) as error:

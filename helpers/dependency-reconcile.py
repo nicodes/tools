@@ -16,6 +16,9 @@ import zipfile
 spec = importlib.util.spec_from_file_location('dependency_policy', Path(__file__).with_name('dependency-policy.py'))
 policy_engine = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy_engine)
+source_spec = importlib.util.spec_from_file_location('_dependency_source_config', Path(__file__).with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(source_spec)
+source_spec.loader.exec_module(source_config)
 SHA = re.compile(r'[a-f0-9]{40}')
 WORKFLOW = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.ya?ml')
 MAX_BYTES = 1024 * 1024
@@ -55,7 +58,7 @@ def contents(repo, ref, path):
     raw = base64.b64decode(value['content'], validate=False)
     if len(raw) > MAX_BYTES:
         raise ValueError('policy exceeds its byte limit')
-    return json.loads(raw)
+    return source_config.loads(raw, maximum=MAX_BYTES)
 
 
 def validate_policy(value):
@@ -211,7 +214,7 @@ def inspect(repo, number, base, policy, apply=False):
     if reason:
         return {**result, 'state': 'review', 'reason': reason}
     files = pages(f'repos/{repo}/pulls/{number}/files')
-    if not files or any(f['filename'] in ('.github/dependency-policy.json', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', '.github/workflows/request-merge.yml', 'cookbook.toml', 'Makefile') for f in files):
+    if not files or any(f['filename'] in ('.github/dependency-policy.toml', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', '.github/workflows/request-merge.yml', 'cookbook.toml', 'Makefile') for f in files):
         return {**result, 'state': 'review', 'reason': 'merge policy changes require review'}
     if pull.get('mergeable_state') == 'dirty':
         return {**result, 'state': 'blocked', 'reason': 'merge conflict requires a bot rebase'}
@@ -301,7 +304,7 @@ def main():
     base = api(f'repos/{repo}/git/ref/heads/main')['object']['sha']
     if not SHA.fullmatch(base):
         raise ValueError('invalid main identity')
-    policy = validate_policy(contents(repo, base, '.github/dependency-policy.json'))
+    policy = validate_policy(contents(repo, base, '.github/dependency-policy.toml'))
     event = json.loads(Path(os.environ['GITHUB_EVENT_PATH']).read_text()) if not args.pr else {}
     numbers = [args.pr] if args.pr else candidates(repo, event, os.environ['GITHUB_EVENT_NAME'], policy)
     rows = []

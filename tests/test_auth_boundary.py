@@ -6,6 +6,7 @@ the contract best, and passed the ones that implement none of it. Both are
 pinned here so neither can come back.
 """
 import json
+from source_fixture import write_source
 import os
 from pathlib import Path
 import subprocess
@@ -118,12 +119,12 @@ class CompliantProduct(unittest.TestCase):
             result=subprocess.run(['bun',str(HELPER)],cwd=root,capture_output=True,text=True)
             self.assertNotEqual(result.returncode,0)
             self.assertIn('--policy',result.stderr)
-            (root/'auth.json').write_text(json.dumps({'provider':'none','api':False}))
+            write_source(root/'auth.toml', {'provider':'none','api':False})
             for executable in ('bun','node'):
-                result=subprocess.run([executable,str(HELPER),'--policy','auth.json'],cwd=root,capture_output=True,text=True)
+                result=subprocess.run([executable,str(HELPER),'--policy','auth.toml'],cwd=root,capture_output=True,text=True)
                 self.assertEqual(result.returncode,0,result.stderr)
-            (root/'auth.json').write_text(json.dumps({'provider':'clerk','api':True}))
-            result=subprocess.run(['bun',str(HELPER),'--policy','auth.json'],cwd=root,capture_output=True,text=True)
+            write_source(root/'auth.toml', {'provider':'clerk','api':True})
+            result=subprocess.run(['bun',str(HELPER),'--policy','auth.toml'],cwd=root,capture_output=True,text=True)
             self.assertNotEqual(result.returncode,0)
             self.assertIn('no local development path',result.stderr)
 

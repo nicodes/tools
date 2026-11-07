@@ -1,3 +1,4 @@
+from source_fixture import write_source
 """Actual pinned frozen/offline generation and closed native binding evidence."""
 import hashlib
 import importlib.util
@@ -52,9 +53,13 @@ class NativeAddonBindings(unittest.TestCase):
                 'published_at': '2026-01-01T00:00:00Z', 'prerelease': False, 'editor_plugin': False,
                 'dependencies': dependencies, 'installs': [{'path': 'addons/' + name.replace('/', '_'), 'required_by': required}]}
         requirements = {name: 'v0.0.1' for name in names}
-        (self.project / 'gdam.json').write_text(json.dumps({'addons': {name: {'tag': tag} for name, tag in requirements.items()}}))
+        write_source(self.project / 'gdam.toml', {'addons': {name: {'tag': tag} for name, tag in requirements.items()}})
         (self.project / 'gdam.lock').write_text(json.dumps({'version': 1, 'requirements': requirements, 'addons': releases}))
         (self.project / 'addon-provenance.json').write_text(json.dumps(provenance))
+        subprocess.run(['git', 'init', '--quiet', str(self.root)], check=True)
+        (self.root / '.gitignore').write_text('.artifacts/\n/app/gdam.json\n')
+        subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
+        godot_game.runtime_configuration().prepare(self.root, 'app/gdam.toml', 'gdam')
         self.fetches = []
 
     def fetch(self, repository, asset, target):

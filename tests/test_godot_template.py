@@ -21,8 +21,14 @@ class CustomEngineTemplate(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         (self.root / 'app/engine').mkdir(parents=True)
-        self.profile = self.root / 'app/engine/profile.json'
-        self.profile.write_text('{"version":1,"godot_version":"4.7.2","options":{"disable_3d":"yes"}}\n')
+        self.profile = self.root / 'app/engine/profile.toml'
+        self.data = {'version': 1, 'godot_version': '4.7.2', 'source_commit': 'a'*40, 'source_sha256': 'b'*64,
+                     'emsdk_image': 'emscripten/emsdk@sha256:'+'c'*64, 'scons_url': 'https://example.test/scons.whl',
+                     'scons_sha256': 'd'*64, 'modules': ['gdscript'],
+                     'options': {'platform': 'web', 'target': 'template_release', 'production': 'yes',
+                         'optimize': 'size', 'lto': 'full', 'disable_3d': 'yes', 'threads': 'no',
+                         'modules_enabled_by_default': 'no'}}
+        template._source_config().write(self.profile, self.data)
         self.source = self.root / 'reviewed'; self.source.mkdir()
         self.archive = self.source / 'engine-template.zip'
         with zipfile.ZipFile(self.archive, 'w') as archive:
@@ -33,7 +39,7 @@ class CustomEngineTemplate(unittest.TestCase):
         self.pin = {'repository': 'owner/game', 'tag': 'template-4.7.2.1', 'archive': self.archive.name,
             'receipt': self.receipt.name, 'archive_sha256': receipt['archive_sha256'],
             'receipt_sha256': hashlib.sha256(self.receipt.read_bytes()).hexdigest(), 'profile_sha256': receipt['profile_sha256']}
-        self.config = {'components': {'godot': {'templates': {'profile': 'app/engine/profile.json', 'directory': 'app/.export-templates'}}}}
+        self.config = {'components': {'godot': {'templates': {'profile': 'app/engine/profile.toml', 'directory': 'app/.export-templates'}}}}
         self.cache = self.root / 'app/.export-templates'
         self.write_pins()
 
@@ -53,8 +59,29 @@ class CustomEngineTemplate(unittest.TestCase):
         self.assertTrue((self.cache / '.gdignore').is_file())
         (self.cache / self.pin['archive']).write_bytes(b'foreign engine')
         with self.assertRaisesRegex(ValueError, 'digest'): template.verify(self.root, self.config, {})
-        self.profile.write_text('{"version":2}')
+        self.profile.write_text('version=2\n')
         with self.assertRaisesRegex(ValueError, 'provenance profile'): template.declaration(self.root, self.config)
+
+    def test_toml_source_and_immutable_historical_profile_identity_are_separate(self):
+        receipt = json.loads(self.receipt.read_bytes())
+        receipt['profile_sha256'] = 'e' * 64  # Immutable native JSON profile origin, not current TOML bytes.
+        self.receipt.write_text(json.dumps(receipt))
+        self.pin['receipt_sha256'] = hashlib.sha256(self.receipt.read_bytes()).hexdigest()
+        self.write_pins()
+        self.install()
+        template.verify(self.root, self.config, {})
+        for kind in ['request', 'unknown']:
+            data = copy.deepcopy(self.data)
+            if kind == 'request': data['options']['optimize'] = 'speed'
+            else: data['unbound_compiler_flag'] = 'yes'
+            template._source_config().write(self.profile, data)
+            changed = self.pin | {'profile_sha256': hashlib.sha256(self.profile.read_bytes()).hexdigest()}
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                template.verify_directory(self.cache, changed, self.profile)
+        template._source_config().write(self.profile, self.data)
+        (self.cache / self.pin['receipt']).write_text('{}')
+        with self.assertRaisesRegex(ValueError, 'digest'):
+            template.verify_directory(self.cache, self.pin, self.profile)
 
     def test_offline_build_verification_never_fetches_or_repairs_a_missing_sdk(self):
         with patch.object(template.subprocess, 'run') as command:
@@ -78,7 +105,7 @@ class CustomEngineTemplate(unittest.TestCase):
         self.install()
         for field in ['build_inputs', 'components', 'profile_sha256']:
             receipt = json.loads(self.receipt.read_text())
-            receipt[field] = {} if field != 'profile_sha256' else 'f' * 64
+            receipt[field] = {} if field != 'profile_sha256' else 'invalid-origin'
             path = self.cache / self.pin['receipt']; path.write_text(json.dumps(receipt))
             pin = self.pin | {'receipt_sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'disagree'):
@@ -105,7 +132,7 @@ class CustomEngineTemplate(unittest.TestCase):
         self.assertEqual(template.declaration(self.root, self.config)['pin'], self.pin)
         with self.assertRaisesRegex(ValueError, 'Mise SDK authority'):
             template.verify(self.root, self.config, {'GODOT_TEMPLATE_TAG': 'foreign'})
-        for profile, directory in [('../outside.json', 'app/.export-templates'), ('app/engine/profile.json', '../outside')]:
+        for profile, directory in [('../outside.json', 'app/.export-templates'), ('app/engine/profile.toml', '../outside')]:
             changed = copy.deepcopy(self.config); changed['components']['godot']['templates'] = {'profile': profile, 'directory': directory}
             with self.subTest(profile=profile, directory=directory), self.assertRaises(ValueError): template.declaration(self.root, changed)
         self.pin['tag'] = '--foreign'; self.write_pins()

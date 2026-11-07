@@ -1,5 +1,4 @@
 import importlib.util
-import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -18,8 +17,8 @@ class RuntimeInputs(unittest.TestCase):
         self.rows = [{'source': 'input.prompt', 'target': 'native/input.md'}]
 
     def prepare(self):
-        (self.root / 'runtime.json').write_text(json.dumps(self.rows))
-        return native.prepare(self.root, 'runtime.json')
+        native._source.write(self.root / 'runtime.toml', {'sources': self.rows})
+        return native.prepare(self.root, 'runtime.toml')
 
     def test_idempotent_generation_preserves_source_bytes_and_refuses_user_edits(self):
         self.assertEqual(self.prepare(), 1)
@@ -44,6 +43,13 @@ class RuntimeInputs(unittest.TestCase):
         self.rows[0]['symlink'] = '../../outside'
         with self.assertRaises(ValueError):
             self.prepare()
+
+    def test_source_is_toml_with_one_explicit_sources_wrapper(self):
+        for text in ['sources = []\nother = true\n', 'source = []\n', 'sources = 2026-11-07\n']:
+            (self.root / 'runtime.toml').write_text(text)
+            with self.assertRaises(ValueError):
+                native.prepare(self.root, 'runtime.toml')
+        self.assertFalse((self.root / 'native/input.md').exists())
 
 
 if __name__ == '__main__':

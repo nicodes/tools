@@ -15,6 +15,7 @@ import ci
 import godot_ci
 import image_import_cache
 import image_fixtures
+from source_fixture import read_source, write_source, dump_source
 
 
 class ImageCacheWiring(unittest.TestCase):
@@ -88,9 +89,9 @@ class ImageCacheWiring(unittest.TestCase):
         definition = {'version': 1, 'project': 'fixture', 'image_base': 'example.invalid/fixture',
             'inputs': {'artifacts': ['.artifacts/release'], 'images': ['example.invalid/fixture-image:{revision}'],
                 'environment': [], 'revision_environment': []}, 'tests': ['native']}
-        path = self.root / 'deploy/release.json'; path.parent.mkdir()
-        path.write_text(json.dumps(definition))
-        subprocess.run(['git', '-C', str(self.root), 'add', 'deploy/release.json'], check=True)
+        path = self.root / 'deploy/release.toml'; path.parent.mkdir()
+        write_source(path, definition)
+        subprocess.run(['git', '-C', str(self.root), 'add', 'deploy/release.toml'], check=True)
         self.proof['configuration_sha256'] = godot_ci.configuration_hash(self.root)
         with (chdir(self.root), patch.object(ci, 'identity'),
                 patch.object(image_fixtures.images, 'definition', return_value=definition),

@@ -1,6 +1,7 @@
 """Exercise release source/artifact/publisher binding through the real CLI."""
 import json
 import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -8,6 +9,9 @@ import tempfile
 import unittest
 
 HELPER = Path(__file__).resolve().parents[1] / 'helpers/release.py'
+_source_spec = importlib.util.spec_from_file_location('release_test_source_config', HELPER.with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(source_config)
 
 
 class ReleaseBinding(unittest.TestCase):
@@ -25,7 +29,7 @@ class ReleaseBinding(unittest.TestCase):
                        'tests': ['unit','integration'],
                        'inputs': {'artifacts':['.artifacts/release'], 'images':[],
                                   'environment':['PRIVATE_BUILD_INPUT'], 'revision_environment':[]}}
-        (self.root / 'deploy/release.json').write_text(json.dumps(declaration))
+        source_config.write(self.root / 'deploy/release.toml', declaration)
         for name in ('unit','integration'):
             (self.root/(name+'.py')).write_text('pass\n')
         self.git('init', '-q')
@@ -81,7 +85,7 @@ assert len(proof['input_identity']) == 64
         env.update(self.context)
         env['GITHUB_JOB'] = 'Test'
         verifier=HELPER.with_name('verification.py')
-        calls=[[os.sys.executable,str(verifier),'test','--name',name,'--definition','deploy/release.json',
+        calls=[[os.sys.executable,str(verifier),'test','--name',name,'--definition','deploy/release.toml',
                 '--',os.sys.executable,name+'.py'] for name in ('unit','integration')]
         script='import subprocess;'+''.join('subprocess.run('+repr(call)+',check=True);' for call in calls)
         result = subprocess.run([os.sys.executable,str(verifier),'session','--test','unit','--test','integration',
@@ -130,14 +134,14 @@ assert len(proof['input_identity']) == 64
         declaration = {'version': 1, 'schema': {'minimum': 1, 'maximum': 1, 'write': 1},
                        'data_revision': 'records-v1', 'credential_revision': 'restricted-runtime-v1',
                        'migrations': [{'identity': '001.sql', 'sha256': 'd'*64}], 'recovery_action': 'forward_only'}
-        path = self.root/'stateful.json'
-        path.write_text(json.dumps(declaration))
-        self.git('add', 'stateful.json')
+        path = self.root/'stateful.toml'
+        source_config.write(path, declaration)
+        self.git('add', 'stateful.toml')
         self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'stateful declaration')
         self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
         self.context['GITHUB_SHA'] = self.sha
         self.produce_tests()
-        extra = ('--stateful-contract', 'stateful.json')
+        extra = ('--stateful-contract', 'stateful.toml')
         self.run_cli('record', extra=extra)
         expected = declaration | {'source_revision': self.sha}
         self.assertEqual(self.manifest()['stateful_contract'], expected)
@@ -151,7 +155,7 @@ assert len(proof['input_identity']) == 64
         self.calls.write_text('')
         self.run_cli('publish', False)  # Old publishers cannot silently drop the contract.
         self.assert_no_publication()
-        path.write_text(json.dumps(declaration | {'data_revision': 'modified-v2'}))
+        source_config.write(path, declaration | {'data_revision': 'modified-v2'})
         self.run_cli('record', False, extra=extra)
 
     def test_stateful_migration_paths_bind_actual_source_bytes_and_never_reach_host(self):
@@ -162,14 +166,14 @@ assert len(proof['input_identity']) == 64
             'migrations': [{'identity': 'schema.sql', 'source_path': 'schema.sql',
                            'sha256': hashlib.sha256(migration.read_bytes()).hexdigest()}],
             'recovery_action': 'forward_only'}
-        path = self.root/'stateful.json'
-        path.write_text(json.dumps(declaration))
-        self.git('add', 'schema.sql', 'stateful.json')
+        path = self.root/'stateful.toml'
+        source_config.write(path, declaration)
+        self.git('add', 'schema.sql', 'stateful.toml')
         self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'bound migration')
         self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
         self.context['GITHUB_SHA'] = self.sha
         self.produce_tests()
-        extra = ('--stateful-contract', 'stateful.json')
+        extra = ('--stateful-contract', 'stateful.toml')
         self.run_cli('record', extra=extra)
         contract = self.manifest()['stateful_contract']
         self.assertEqual(contract['migrations'], [{'identity': 'schema.sql', 'sha256': declaration['migrations'][0]['sha256']}])
@@ -179,16 +183,16 @@ assert len(proof['input_identity']) == 64
         result = self.run_cli('record', False, extra=extra)
         self.assertIn('checksum differs from source', result.stderr)
         declaration['migrations'][0]['sha256'] = hashlib.sha256(migration.read_bytes()).hexdigest()
-        path.write_text(json.dumps(declaration))
+        source_config.write(path, declaration)
         result = self.run_cli('record', False, extra=extra)
         self.assertIn('immutable checked-out Git blob', result.stderr)
         for escaping in ('../schema.sql', '/schema.sql', 'api/../schema.sql'):
             declaration['migrations'][0]['source_path'] = escaping
-            path.write_text(json.dumps(declaration))
+            source_config.write(path, declaration)
             self.run_cli('record', False, extra=extra)
         declaration['migrations'][0]['source_path'] = 'linked.sql'
         (self.root/'linked.sql').symlink_to(migration)
-        path.write_text(json.dumps(declaration))
+        source_config.write(path, declaration)
         self.run_cli('record', False, extra=extra)
         self.assertEqual(self.calls.read_text(), '')
 
@@ -348,9 +352,9 @@ assert len(proof['input_identity']) == 64
         self.assert_no_publication()
 
     def test_empty_test_policy_is_refused_before_publication(self):
-        file=self.root/'deploy/release.json'
-        definition=json.loads(file.read_text());definition['tests']=[]
-        file.write_text(json.dumps(definition))
+        file=self.root/'deploy/release.toml'
+        definition=source_config.read(file);definition['tests']=[]
+        source_config.write(file, definition)
         result=self.run_cli('record',False)
         self.assertIn('declared test tasks',result.stderr)
         self.assertFalse((self.release/'release.json').exists())

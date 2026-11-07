@@ -5,23 +5,19 @@ Rollback additionally needs exact disposable read/write evidence for both
 binaries, the observed schema and unchanged data/credential contracts.
 """
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
 from pathlib import Path
 
+_source_spec = importlib.util.spec_from_file_location('_stateful_source_config', Path(__file__).resolve().with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(_source_spec)
+_source_spec.loader.exec_module(source_config)
+
 SHA = re.compile(r'[a-f0-9]{64}')
 REVISION = re.compile(r'[a-f0-9]{40}')
 IDENTITY = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}')
-
-
-def _unique(pairs):
-    value = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError('duplicate stateful contract field')
-        value[key] = item
-    return value
 
 
 def materialize(path, revision):
@@ -30,7 +26,7 @@ def materialize(path, revision):
     path = Path(path)
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents) or not path.is_file() or path.stat().st_size > 32768:
         raise ValueError('stateful declaration must be a bounded regular caller-owned file')
-    value = json.loads(path.read_bytes(), object_pairs_hook=_unique)
+    value = source_config.read(path, maximum=32768)
     if not isinstance(value, dict) or 'source_revision' in value:
         raise ValueError('the producer supplies the exact checked-out source revision')
     # Caller-owned source paths are producer inputs, never host execution

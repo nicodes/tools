@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 import re
 
-from configuration import load, ci_settings
+from configuration import load, ci_settings, read_source_data
 import orchestration
 import recipe as native_recipe
 
@@ -124,10 +124,9 @@ permissions: {}''',1)
     if config.get('preview'):
         import preview_workflows
         files.update(preview_workflows.workflow_files(root, revision, config))
-    dependency_policy = Path(root) / '.github/dependency-policy.json'
+    dependency_policy = Path(root) / '.github/dependency-policy.toml'
     if dependency_policy.is_file():
-        import json
-        policy = json.loads(dependency_policy.read_text())
+        policy = read_source_data(dependency_policy, maximum=262144)
         if policy.get('version') == 2:
             files['.github/workflows/dependency-policy.yml'] = header + """name: Dependency Policy
 'on':

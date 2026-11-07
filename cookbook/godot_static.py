@@ -10,7 +10,7 @@ import sys
 import tempfile
 import tomllib
 
-from configuration import relative
+from configuration import relative, parse_source_data
 from recipe_contract import release_definition
 
 TOOLS=Path(__file__).resolve().parents[1]
@@ -32,7 +32,7 @@ def read(path,maximum=262144):
 def declaration(root,config):
     selected=config.get('delivery')
     if not isinstance(selected,dict) or 'definition' not in selected:return None
-    data=json.loads(read(relative(root,selected['definition'],exists=True),32768))
+    data=parse_source_data(read(relative(root,selected['definition'],exists=True),32768), maximum=32768)
     if data.get('mode')!='godot-static':return None
     if config.get('recipe')!='godot-game':raise ValueError('static configuration publication requires a Godot game')
     static=data.get('static')
@@ -42,7 +42,7 @@ def declaration(root,config):
     if not re.fullmatch('[a-f0-9]{40}',data.get('komizo_ref','')):raise ValueError('static parser SDK requires its accepted immutable Komizo pin')
     for key in ['config','compose']:
         name=static[key]
-        if (not isinstance(name,str) or not name.startswith('deploy/') or Path(name).suffix not in {'.yml','.yaml'}):
+        if (not isinstance(name,str) or not name.startswith('deploy/') or Path(name).suffix not in ({'.toml'} if key == 'config' else {'.yml','.yaml'})):
             raise ValueError('static host configuration belongs in native deploy source')
         relative(root,name,exists=True)
     relative(root,static['release_manifest'])
@@ -59,7 +59,7 @@ def declaration(root,config):
                 or any(not isinstance(name,str) or not re.fullmatch('[a-z][a-z0-9_-]{0,63}',name) for name in names.values())
                 or type(static.get('production_current_source',True)) is not bool):
             raise ValueError('static public verification must preserve its native dispatch and source policy')
-    definition=json.loads(read(relative(root,release_definition(config),exists=True)))
+    definition=parse_source_data(read(relative(root,release_definition(config),exists=True)))
     repository=definition.get('image_base','').removeprefix('ghcr.io/')
     if not re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+',repository):raise ValueError('static images require their exact native repository family')
     if definition['image_base']!='ghcr.io/'+repository or definition.get('project')!=data.get('project'):

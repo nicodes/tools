@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import godot_game as game
+from source_fixture import read_source, write_source, dump_source
 
 
 class GodotContract(unittest.TestCase):
@@ -85,12 +86,12 @@ class GodotContract(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'native lint refused'): game.lint(self.root, self.config, {})
 
     def test_retired_release_definition_selector_is_refused(self):
-        self.config['artifacts'] = {'definition': 'deploy/release.json'}
+        self.config['artifacts'] = {'definition': 'deploy/release.toml'}
         with self.assertRaisesRegex(ValueError, 'unknown Godot build artifact'):
             game.verification_scope(self.root, self.config)
 
     def test_release_file_alone_does_not_enable_release_input_scope(self):
-        path = self.root / 'deploy/release.json'
+        path = self.root / 'deploy/release.toml'
         path.parent.mkdir()
         path.write_text('an unrelated, unselected native file')
         self.config['artifacts'] = {'paths': ['app/build/web']}
@@ -99,14 +100,14 @@ class GodotContract(unittest.TestCase):
     def test_image_capability_requires_canonical_closed_release_inputs(self):
         self.config['components']['images'] = [{'name': 'gate'}]
         with self.assertRaises(ValueError): game.verification_scope(self.root, self.config)
-        path = self.root / 'deploy/release.json'
+        path = self.root / 'deploy/release.toml'
         path.parent.mkdir()
         definition = {'version': 1, 'project': 'fixture', 'image_base': 'ghcr.io/example/fixture',
             'inputs': {'artifacts': ['public'], 'images': ['ghcr.io/example/fixture-gate:{revision}'],
                 'environment': ['NATIVE_POLICY'], 'revision_environment': ['SOURCE_COMMIT']}, 'tests': ['native']}
-        path.write_text(json.dumps(definition))
+        write_source(path, definition)
         subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
-        subprocess.run(['git', '-C', str(self.root), 'add', 'deploy/release.json'], check=True)
+        subprocess.run(['git', '-C', str(self.root), 'add', 'deploy/release.toml'], check=True)
         with chdir(self.root):
             scope = game.verification_scope(self.root, self.config)
         self.assertEqual(scope['artifacts'], ['public'])

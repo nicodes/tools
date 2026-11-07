@@ -1,3 +1,4 @@
+from source_fixture import write_source
 import datetime
 import hashlib
 import importlib.util
@@ -136,11 +137,11 @@ class WhatTheBuildLogSays(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         app = Path(temp.name)
-        (app/'security-remediations.json').write_text(json.dumps([{
+        write_source(app/'security-remediations.toml', {'remediations': [{
             'kind': 'accepted', 'package': 'brace-expansion', 'owner': 'nicodes',
             'advisories': ['GHSA-qhr7-859c-m2p7'],
             'rationale': 'build-time only; nothing in production runs JavaScript at all.',
-            'review_date': str(datetime.date.today() + datetime.timedelta(days=10))}]))
+            'review_date': str(datetime.date.today() + datetime.timedelta(days=10))}]})
         said = self.report(app, {'brace-expansion': [
             {'severity': 'high', 'url': 'https://github.com/advisories/GHSA-qhr7-859c-m2p7'}]})
         self.assertIn('Accepted as unreachable', said)
