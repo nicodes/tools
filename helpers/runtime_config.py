@@ -74,6 +74,13 @@ def declaration(root, source, family):
         raise ValueError('native projection requires its tracked canonical TOML source')
     raw = source_config.read_bytes(source, maximum=MAXIMUM)
     data = source_config.loads(raw, maximum=MAXIMUM)
+    # A pinned native GDAM still discovers adjacent JSON link policy. Never let
+    # removal of its authored source leave an old enabled policy behind.
+    if family == 'gdam' and not source.with_name('gdam.link.toml').exists():
+        links = source.with_name('gdam.link.json')
+        if links.exists() or links.is_symlink():
+            raise ValueError('obsolete or foreign native gdam.link.json has no canonical gdam.link.toml; '
+                             'retire it explicitly or migrate its source before native execution')
     key = sha(name.encode())[:24]
     directory = Path('.artifacts/runtime-config') / key
     target = source.with_suffix('.json') if adjacent else owned(root, directory / (family + '.json'))

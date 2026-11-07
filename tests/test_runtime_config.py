@@ -70,6 +70,27 @@ class RuntimeConfig(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'links'):
             runtime.prepare(self.root, 'app/gdam.toml', 'gdam')
 
+    def test_absent_optional_source_cannot_enable_foreign_or_owned_orphan_links(self):
+        links = self.root / 'app/gdam.link.json'
+        links.write_text('{"links":{"@example/test":"../other"}}')
+        for command in [runtime.prepare, runtime.verify]:
+            with self.subTest(state='foreign', command=command.__name__), self.assertRaisesRegex(ValueError, 'obsolete or foreign'):
+                command(self.root, 'app/gdam.toml', 'gdam')
+        self.assertEqual(json.loads(links.read_bytes()), {'links': {'@example/test': '../other'}})
+        links.unlink()
+        (self.root / '.gitignore').write_text('.artifacts/\n/app/gdam.json\n/app/gdam.link.json\n')
+        optional = self.root / 'app/gdam.link.toml'
+        runtime.source_config.write(optional, {'links': {'@example/test': '../other'}})
+        subprocess.run(['git', '-C', str(self.root), 'add', 'app/gdam.link.toml'], check=True)
+        runtime.prepare(self.root, 'app/gdam.link.toml', 'gdam-link')
+        runtime.prepare(self.root, 'app/gdam.toml', 'gdam')
+        original = links.read_bytes()
+        optional.unlink()
+        for command in [runtime.prepare, runtime.verify]:
+            with self.subTest(state='owned-orphan', command=command.__name__), self.assertRaisesRegex(ValueError, 'obsolete or foreign'):
+                command(self.root, 'app/gdam.toml', 'gdam')
+        self.assertEqual(links.read_bytes(), original)
+
     def test_explicit_temp_assertion_wire_is_private_and_removed(self):
         with runtime.temporary(self.root, 'app/gdam.toml') as target:
             self.assertEqual(json.loads(target.read_bytes()), runtime.source_config.read(self.source))
