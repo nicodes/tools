@@ -266,6 +266,53 @@ class OwnedRustupExecution(unittest.TestCase):
         self.assertEqual(Path(shutil.which('rustup', path=result['PATH'])).resolve(), self.manager.resolve())
         self.assertEqual(result['RUSTUP_AUTO_INSTALL'], '0')
 
+    def rewritten_tracking_lookup(self, foreign=False):
+        tracking = self.root / 'mise-recorded-rust'
+        tracking.symlink_to(self.proxy, target_is_directory=True)
+        runtime = self.root / 'selected-runtime-proxies'
+        runtime.mkdir()
+        for name in ['cargo', 'rustc', 'rustup']:
+            (runtime / (name + self.suffix)).symlink_to(self.manager)
+        chosen = runtime
+        if foreign:
+            chosen = self.root / 'foreign-PATH'
+            chosen.mkdir()
+            path = chosen / ('cargo' + self.suffix)
+            shutil.copyfile(sys.executable, path)
+            path.chmod(0o755)
+        queries = []
+
+        def lookup(arguments, root, environment):
+            self.assertEqual(root, self.root)
+            queries.append(arguments)
+            if arguments == ['where', 'rust@1.94.0']:
+                return str(tracking)
+            self.assertEqual(arguments, ['env', '--json', 'rust@1.94.0'])
+            tracking.unlink()
+            tracking.symlink_to(runtime, target_is_directory=True)
+            self.proxy = runtime
+            return json.dumps({'PATH': str(chosen) + os.pathsep + str(runtime),
+                'RUSTUP_HOME': str(self.home), 'RUSTUP_TOOLCHAIN': '1.94.0'})
+
+        return lookup, runtime, tracking, queries
+
+    def test_tracking_link_rewritten_by_Mise_env_selects_current_owned_runtime(self):
+        lookup, runtime, tracking, queries = self.rewritten_tracking_lookup()
+        result = tools.activation(self.root, [('rust', 'cargo'), ('rust', 'rustc')],
+                                  lookup=lookup, rustup_lookup=self.rustup)
+        self.assertEqual(tracking.resolve(), runtime)
+        self.assertEqual(Path(shutil.which('cargo', path=result['PATH'])).resolve(), self.native / ('cargo' + self.suffix))
+        self.assertEqual(queries, [['where', 'rust@1.94.0'], ['env', '--json', 'rust@1.94.0']])
+
+    def test_foreign_PATH_still_refuses_after_tracking_link_rewrite(self):
+        lookup, runtime, tracking, queries = self.rewritten_tracking_lookup(foreign=True)
+        with self.assertRaisesRegex(ValueError, 'exact installed SDK'):
+            tools.activation(self.root, [('rust', 'cargo'), ('rust', 'rustc')],
+                             lookup=lookup, rustup_lookup=self.rustup)
+        self.assertEqual(tracking.resolve(), runtime)
+        self.assertFalse(self.rustup_queries)
+        self.assertEqual(queries, [['where', 'rust@1.94.0'], ['env', '--json', 'rust@1.94.0']])
+
 
 if __name__ == '__main__':
     unittest.main()

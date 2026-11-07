@@ -126,7 +126,7 @@ def activation(root, required, environment=None, *, lookup=query, rustup_lookup=
         directory = Path(text)
         if not directory.is_absolute() or not directory.is_dir():
             raise ValueError('required exact caller SDK is not installed: ' + tool)
-        installs[tool] = directory.resolve()
+        installs[tool] = directory if tool == 'rust' else directory.resolve()
     raw = lookup(['env', '--json', *selectors.values()], root, base)
     values = json.loads(raw)
     if not isinstance(values, dict) or any(not isinstance(k, str) or not isinstance(v, str)
@@ -139,6 +139,7 @@ def activation(root, required, environment=None, *, lookup=query, rustup_lookup=
                 raise ValueError('SDK activation must preserve source and execution identity')
     manager = None
     if 'rust' in installs:
+        installs['rust'] = installs['rust'].resolve()
         result, native, manager = rustup_activation(root, installs['rust'], versions['rust'],
             [executable for tool, executable in required if tool == 'rust'], result, rustup_lookup)
         proxy = installs['rust']
