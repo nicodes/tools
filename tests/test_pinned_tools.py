@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 SPEC = importlib.util.spec_from_file_location('pinned_tool_control', Path(__file__).parents[1] / 'helpers/pinned-tools.py')
 tools = importlib.util.module_from_spec(SPEC)
@@ -203,8 +205,8 @@ class OwnedRustupExecution(unittest.TestCase):
         selected = shutil.which('cargo', path=str(self.proxy))
         self.assertFalse(Path(selected).resolve().is_relative_to(self.proxy), 'counterfactual must exercise the old physical-root refusal')
         result = self.activate()
-        self.assertEqual(Path(shutil.which('cargo', path=result['PATH'])).resolve(), self.native / ('cargo' + self.suffix))
-        self.assertEqual(Path(shutil.which('rustc', path=result['PATH'])).resolve(), self.native / ('rustc' + self.suffix))
+        self.assertEqual(Path(shutil.which('cargo', path=result['PATH'])).parent.resolve(), self.proxy)
+        self.assertEqual(Path(shutil.which('rustc', path=result['PATH'])).parent.resolve(), self.proxy)
         self.assertEqual(result['GITHUB_RUN_ID'], '41')
         self.assertEqual(result['NATIVE_FLAG'], '0')
         self.assertEqual(result['RUSTUP_AUTO_INSTALL'], '0')
@@ -301,7 +303,7 @@ class OwnedRustupExecution(unittest.TestCase):
         result = tools.activation(self.root, [('rust', 'cargo'), ('rust', 'rustc')],
                                   lookup=lookup, rustup_lookup=self.rustup)
         self.assertEqual(tracking.resolve(), runtime)
-        self.assertEqual(Path(shutil.which('cargo', path=result['PATH'])).resolve(), self.native / ('cargo' + self.suffix))
+        self.assertEqual(Path(shutil.which('cargo', path=result['PATH'])).parent.resolve(), runtime)
         self.assertEqual(queries, [['where', 'rust@1.94.0'], ['env', '--json', 'rust@1.94.0']])
 
     def test_foreign_PATH_still_refuses_after_tracking_link_rewrite(self):
@@ -312,6 +314,84 @@ class OwnedRustupExecution(unittest.TestCase):
         self.assertEqual(tracking.resolve(), runtime)
         self.assertFalse(self.rustup_queries)
         self.assertEqual(queries, [['where', 'rust@1.94.0'], ['env', '--json', 'rust@1.94.0']])
+
+    def test_exact_default_pin_overrides_inherited_toolchain_without_install(self):
+        result = tools.activation(self.root, [('rust', 'cargo'), ('rust', 'rustc')],
+                                  {'RUSTUP_TOOLCHAIN': 'unrelated-inherited-toolchain', 'RUSTUP_AUTO_INSTALL': '1',
+                                   'GITHUB_RUN_ID': '41', 'NATIVE_FLAG': 'same'},
+                                  lookup=self.mise, rustup_lookup=self.rustup)
+        self.assertEqual(result['RUSTUP_TOOLCHAIN'], '1.94.0')
+        self.assertEqual(result['RUSTUP_AUTO_INSTALL'], '0')
+        self.assertEqual(result['GITHUB_RUN_ID'], '41')
+        self.assertEqual(result['NATIVE_FLAG'], 'same')
+        self.assertEqual(Path(result['PATH'].split(os.pathsep)[0]), self.proxy)
+        self.assertEqual([q[-1] for q in self.rustup_queries], ['rustc', 'cargo'])
+
+    def test_cargo_selector_argv_uses_owned_proxy_without_rewriting(self):
+        activation = tools.activation
+        command = ['cargo', '+1.94.0', '--version']
+        observed = []
+        def selected(root, required, environment):
+            return activation(root, required, environment, lookup=self.mise, rustup_lookup=self.rustup)
+        def run(argv, *, cwd, env):
+            observed.append(argv)
+            self.assertEqual(cwd, self.root)
+            self.assertEqual(argv, command)
+            self.assertEqual(Path(shutil.which('cargo', path=env['PATH'])).parent.resolve(), self.proxy)
+            self.assertEqual(env['RUSTUP_TOOLCHAIN'], '1.94.0')
+            self.assertEqual(env['RUSTUP_AUTO_INSTALL'], '0')
+            return SimpleNamespace(returncode=0)
+        with patch.object(tools, 'activation', selected), patch.object(tools.subprocess, 'run', run):
+            self.assertEqual(tools.execute(self.root, [('rust', 'cargo')], command), 0)
+        self.assertEqual(observed, [command])
+
+    def test_explicit_missing_selector_failure_is_returned_without_fallback(self):
+        activation = tools.activation
+        command = ['cargo', '+uninstalled-explicit-toolchain', '--version']
+        observed = []
+        def selected(root, required, environment):
+            return activation(root, required, environment, lookup=self.mise, rustup_lookup=self.rustup)
+        def run(argv, *, cwd, env):
+            observed.append(argv)
+            self.assertEqual(argv, command)
+            self.assertEqual(env['RUSTUP_AUTO_INSTALL'], '0')
+            self.assertEqual(Path(shutil.which('cargo', path=env['PATH'])).parent.resolve(), self.proxy)
+            return SimpleNamespace(returncode=1)
+        with patch.object(tools, 'activation', selected), patch.object(tools.subprocess, 'run', run):
+            self.assertEqual(tools.execute(self.root, [('rust', 'cargo')], command), 1)
+        self.assertEqual(observed, [command])
+
+    def test_cargo_only_still_refuses_foreign_compiler_proxy_before_metadata(self):
+        foreign = self.root / 'foreign-compiler'
+        foreign.mkdir()
+        executable = foreign / ('rustc' + self.suffix)
+        shutil.copyfile(sys.executable, executable)
+        executable.chmod(0o755)
+        self.path = str(foreign) + os.pathsep + str(self.proxy)
+        with self.assertRaisesRegex(ValueError, 'exact installed SDK'):
+            tools.activation(self.root, [('rust', 'cargo')], lookup=self.mise, rustup_lookup=self.rustup)
+        self.assertFalse(self.rustup_queries)
+
+    def test_cargo_only_requires_its_owned_compiler_proxy(self):
+        (self.proxy / ('rustc' + self.suffix)).unlink()
+        with self.assertRaisesRegex(ValueError, 'exact installed SDK'):
+            tools.activation(self.root, [('rust', 'cargo')], lookup=self.mise, rustup_lookup=self.rustup)
+        self.assertFalse(self.rustup_queries)
+
+    def test_final_Rust_PATH_guard_refuses_foreign_entrypoint_after_native_proof(self):
+        foreign = self.root / 'foreign-final-cargo'
+        foreign.mkdir()
+        executable = foreign / ('cargo' + self.suffix)
+        shutil.copyfile(sys.executable, executable)
+        executable.chmod(0o755)
+        rustup_activation = tools.rustup_activation
+        def changed(*arguments):
+            environment, native, manager = rustup_activation(*arguments)
+            environment['PATH'] = str(foreign) + os.pathsep + environment['PATH']
+            return environment, native, manager
+        with patch.object(tools, 'rustup_activation', changed), self.assertRaisesRegex(ValueError, 'exact installed SDK'):
+            self.activate()
+        self.assertEqual([q[-1] for q in self.rustup_queries], ['rustc', 'cargo'])
 
 
 if __name__ == '__main__':
