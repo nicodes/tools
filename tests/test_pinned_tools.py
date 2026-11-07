@@ -17,7 +17,7 @@ class InstalledExecution(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         (self.root / 'mise.toml').write_text('[tools]\npython="3.13.11"\nrust="1.94.0"\n')
         self.install = self.root / 'installed-python'
         self.install.mkdir()
@@ -62,8 +62,15 @@ class InstalledExecution(unittest.TestCase):
         foreign = self.root / 'foreign'
         foreign.mkdir()
         executable = foreign / self.python.name
-        executable.write_bytes(b'unrelated executable')
+        shutil.copyfile(sys.executable, executable)
         executable.chmod(0o755)
+        selected = shutil.which('python3', path=str(foreign) + os.pathsep + str(self.bin))
+        self.assertIsNotNone(selected, 'the foreign native executable must actually resolve before its refusal')
+        self.assertEqual(Path(selected).resolve(), executable.resolve())
+        if os.name == 'nt':
+            self.assertEqual(executable.suffix.lower(), '.exe')
+            with executable.open('rb') as stream:
+                self.assertEqual(stream.read(2), b'MZ')
         original = self.lookup
 
         def lookup(arguments, root, environment):
@@ -93,6 +100,32 @@ class InstalledExecution(unittest.TestCase):
     def test_table_pin_keeps_frozen_native_version_and_options(self):
         (self.root / 'mise.toml').write_text('[tools]\npython={version="v3.13.11",asset_pattern="unchanged",bin="python3"}\n')
         tools.activation(self.root, [('python', 'python3')], lookup=self.lookup)
+
+    @unittest.skipUnless(os.name == 'nt', 'native short/long path aliases use the Windows path API')
+    def test_native_short_and_long_aliases_bind_the_same_canonical_fixture(self):
+        import ctypes
+        from ctypes import wintypes
+        library = ctypes.WinDLL('kernel32', use_last_error=True)
+        aliases = {}
+        for name in ['GetShortPathNameW', 'GetLongPathNameW']:
+            function = getattr(library, name)
+            function.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+            function.restype = wintypes.DWORD
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = function(str(self.root), buffer, len(buffer))
+            self.assertGreater(length, 0, ctypes.get_last_error())
+            self.assertLess(length, len(buffer))
+            aliases[name] = Path(buffer.value)
+        short, long = aliases['GetShortPathNameW'], aliases['GetLongPathNameW']
+        self.assertTrue(short.samefile(long))
+        self.assertEqual(short.resolve(), self.root)
+        self.assertEqual(long.resolve(), self.root)
+        self.assertEqual(Path(self.temporary.name).resolve(), self.root)
+        result = tools.activation(short, [('python', 'python3')], lookup=self.lookup)
+        self.assertEqual(Path(shutil.which('python3', path=result['PATH'])).resolve(), self.python.resolve())
+        print(json.dumps({'native_path_aliases': {'short': str(short), 'long': str(long),
+            'different_spelling': str(short).casefold() != str(long).casefold(),
+            'same_native_directory': True, 'canonical_fixture': str(self.root)}}), flush=True)
 
 
 class RealExactSelection(unittest.TestCase):
