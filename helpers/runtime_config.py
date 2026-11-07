@@ -16,7 +16,7 @@ _spec = importlib.util.spec_from_file_location('_runtime_source_config', Path(__
 source_config = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(source_config)
 FAMILIES = {'gdam': ('gdam.toml', True), 'gdam-link': ('gdam.link.toml', True),
-            'ghenv': ('ghenv.toml', False), 'gdlint': ('gdlint.toml', False),
+            'ghenv': ('ghenv.toml', False), 'gdlint': ('gdlint.toml', True),
             'komizo': ('komizo.toml', True), 'readme-policy-v1': ('readme-source.toml', True)}
 MAXIMUM = 8 << 20
 

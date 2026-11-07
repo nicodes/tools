@@ -448,8 +448,6 @@ def setup(root, config, env):
         import godot_security
         godot_security.setup(root,config,env,run)
     directory, _ = project(root, config)
-    if stage in {'fast', 'full'} and (directory / 'gdlint.toml').exists():
-        runtime_configuration().prepare(root, (directory / 'gdlint.toml').relative_to(root), 'gdlint')
     if stage != 'full':
         return
     if env.get('COOKBOOK_GODOT_ENTRY')!='build':komizo_sdk.setup(root,config,env)
@@ -575,9 +573,12 @@ def lint(root, config, env):
     if (root / '.github/workflows').is_dir():
         run(['actionlint'], root, env)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, env)
-    lint_config = (["--config", str(runtime_configuration().verify(root, (directory / 'gdlint.toml').relative_to(root), 'gdlint'))]
-                   if (directory / 'gdlint.toml').exists() else [])
-    run([pinned_gdlint(root, env), *lint_config, '-warn'], directory, env)
+    command = [pinned_gdlint(root, env), '-warn']
+    if (directory / 'gdlint.toml').exists():
+        with runtime_configuration().scoped(root, (directory / 'gdlint.toml').relative_to(root), 'gdlint'):
+            run(command, directory, env)
+    else:
+        run(command, directory, env)
     node_component.lint(root, packages(config), env, run)
     components = config.get('components', {})
     if components.get('rust'):
