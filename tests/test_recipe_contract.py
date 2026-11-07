@@ -83,7 +83,7 @@ class StrictRecipeContract(unittest.TestCase):
             read.assert_not_called()
         with patch.object(request_merge, 'api', side_effect=[{'merge_commit_sha':'c'*40}, {}]) as api, \
                 patch.object(request_merge.candidate, 'snapshot', return_value={'head':'a'*40,'base':'b'*40}), \
-                patch.object(request_merge, 'source_file', side_effect=['unused Makefile',
+                patch.object(request_merge, 'source_file', side_effect=['[tools]\npython="3.13.11"\n', 'unused Makefile',
                     'version=1\nrecipe="react-native"\n[components.app]\nverify_image=false\n']), \
                 patch.object(request_merge, 'status') as status:
             with self.assertRaises(ValueError):

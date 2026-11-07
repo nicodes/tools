@@ -234,6 +234,20 @@ def makefile(root, revision):
     return '\n'.join(lines)
 
 
+def check_entrypoint(root, revision):
+    import namespace_bridge
+    source = namespace_bridge.source_helper()
+    namespace_bridge.legacy_source(source.read_regular(Path(root) / 'mise.toml').decode('utf-8'))
+    text = source.read_regular(Path(root) / 'Makefile').decode('utf-8')
+    if text.replace('\r\n', '\n').replace('\r', '\n') != makefile(root, revision):
+        raise ValueError('Makefile differs from the pinned recipe generator')
+
+
+def task_command(operation):
+    """This immutable transition edition still executes its real Make ABI."""
+    return ['make', operation]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
@@ -242,6 +256,8 @@ def main():
     parser.add_argument('--workflows', action='store_true')
     args = parser.parse_args()
     try:
+        if args.check:
+            check_entrypoint(args.root, args.revision)
         expected = makefile(args.root, args.revision)
         files = {'Makefile': expected}
         if args.workflows:

@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from configuration import ci_settings, validate_data
 import orchestration
+import namespace_bridge
 
 TOOLS = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('request_merge_candidate', TOOLS / 'helpers/merge-candidate.py')
@@ -83,6 +84,14 @@ def snapshot(repository, number, expected_head='', expected_base=''):
     commit = api(f'repos/{repository}/git/commits/{revision}')
     receipt = candidate.snapshot(repository, pull, commit)
     expected_candidate(receipt, expected_head, expected_base)
+    mise = source_file(repository, revision, 'mise.toml')
+    if namespace_bridge.declared(mise):
+        modern = namespace_bridge.invoke('snapshot', repository, number, receipt['head'], receipt['base'])
+        if (namespace_bridge.protocol(modern) != 'mise-v1'
+                or any(modern.get(key) != value for key, value in receipt.items())):
+            raise ValueError('Cookbook snapshot differs from the exact initially selected candidate')
+        return modern
+    namespace_bridge.legacy_source(mise)
     makefile = source_file(repository, revision, 'Makefile')
     source = source_file(repository, revision, 'cookbook.toml')
     declaration = validate_data(tomllib.loads(source))
@@ -96,12 +105,18 @@ def snapshot(repository, number, expected_head='', expected_base=''):
     settings = ci_settings(declaration)
     receipt.update(validation_runner=settings['runner'], validation_timeout=str(settings['timeout_minutes']))
     receipt['preview_environment'] = settings.get('preview_environment', '')
+    receipt.update(entrypoint_contract='make-v0', cookbook_repository='nicodes/tools')
     status(repository, receipt['head'], 'pending', 'Validating current head with base ' + receipt['base'][:12])
     return receipt
 
 
 def workflow_acceptance(receipt, proof, run, jobs, environment=None):
     environment = environment or os.environ
+    contract = namespace_bridge.protocol(receipt)
+    if namespace_bridge.protocol(proof) != contract:
+        raise ValueError('candidate proof differs from its selected source entrypoint contract')
+    if contract == 'mise-v1':
+        return namespace_bridge.invoke('workflow_acceptance', receipt, proof, run, jobs, dict(environment))
     candidate.tested_candidate(receipt, proof)
     if proof.get('cookbook_commit') != receipt['cookbook_commit'] or proof.get('test_groups') != receipt['test_groups']:
         raise ValueError('validation used another cookbook or omitted test groups')
@@ -144,6 +159,8 @@ def workflow_acceptance(receipt, proof, run, jobs, environment=None):
 
 
 def finish(receipt, proof, validation_result):
+    if namespace_bridge.protocol(receipt) == 'mise-v1':
+        return namespace_bridge.invoke('finish', receipt, proof, validation_result)
     repository = receipt['repository']
     if validation_result != 'success':
         status(repository, receipt['head'], 'failure', 'Full validation did not pass; merge refused')
@@ -204,7 +221,7 @@ def main():
             args.receipt.write_text(json.dumps(value, indent=2) + '\n')
             if os.environ.get('GITHUB_OUTPUT'):
                 with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-                    for name in ['head', 'base', 'candidate', 'tree', 'cookbook_commit', 'validation_runner', 'validation_timeout', 'recipe', 'preview_environment']:
+                    for name in ['head', 'base', 'candidate', 'tree', 'cookbook_commit', 'validation_runner', 'validation_timeout', 'recipe', 'preview_environment', 'entrypoint_contract']:
                         output.write(name + '=' + value[name] + '\n')
         else:
             value = read_json(args.receipt)

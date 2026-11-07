@@ -33,6 +33,7 @@ jobs:
       preview-environment: ${{ steps.candidate.outputs.preview_environment }}
       runner: ${{ steps.candidate.outputs.validation_runner }}
       timeout: ${{ steps.candidate.outputs.validation_timeout }}
+      entrypoint-contract: ${{ steps.candidate.outputs.entrypoint_contract }}
     steps:
       - name: Check out trusted merge controller
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -41,6 +42,27 @@ jobs:
           ref: ${{ inputs.tools-ref }}
           path: _cookbook
           persist-credentials: false
+      - name: Require the fixed Cookbook template to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          revision="d68b54a178d84cd206a68af3e947a6d8c223286f"
+          [[ "$revision" != 0000000000000000000000000000000000000000 ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$revision...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out the fixed namespace bridge template
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: d68b54a178d84cd206a68af3e947a6d8c223286f
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare the separate checked Cookbook and Tools template sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: d68b54a178d84cd206a68af3e947a6d8c223286f
       - name: Record current candidate and accepted recipe pin
         id: candidate
         env:
@@ -60,6 +82,7 @@ jobs:
   validate:
     name: Validate candidate
     needs: snapshot
+    if: needs.snapshot.outputs.entrypoint-contract == 'make-v0'
     permissions:
       contents: read
       actions: read
@@ -75,9 +98,28 @@ jobs:
       preview-environment: ${{ needs.snapshot.outputs.preview-environment }}
       runner: ${{ needs.snapshot.outputs.runner }}
       timeout-minutes: ${{ fromJSON(needs.snapshot.outputs.timeout) }}
+  validate-cookbook:
+    name: Validate candidate
+    needs: snapshot
+    if: needs.snapshot.outputs.entrypoint-contract == 'mise-v1'
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    uses: nicodes/cookbook/.github/workflows/cookbook-ci.yml@d68b54a178d84cd206a68af3e947a6d8c223286f
+    with:
+      cookbook-ref: ${{ needs.snapshot.outputs.cookbook }}
+      source: ${{ needs.snapshot.outputs.candidate }}
+      head: ${{ needs.snapshot.outputs.head }}
+      base: ${{ needs.snapshot.outputs.base }}
+      merge-gate: false
+      recipe: ${{ needs.snapshot.outputs.recipe }}
+      preview-environment: ${{ needs.snapshot.outputs.preview-environment }}
+      runner: ${{ needs.snapshot.outputs.runner }}
+      timeout-minutes: ${{ fromJSON(needs.snapshot.outputs.timeout) }}
   finalize:
     name: Merge validated candidate
-    needs: [snapshot, validate]
+    needs: [snapshot, validate, validate-cookbook]
     if: always() && needs.snapshot.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -94,13 +136,34 @@ jobs:
           ref: ${{ inputs.tools-ref }}
           path: _cookbook
           persist-credentials: false
+      - name: Require the fixed Cookbook template to be accepted on main
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          revision="d68b54a178d84cd206a68af3e947a6d8c223286f"
+          [[ "$revision" != 0000000000000000000000000000000000000000 ]]
+          relation="$(gh api "repos/nicodes/cookbook/compare/$revision...main" --jq .status)"
+          [[ "$relation" == ahead || "$relation" == identical ]]
+      - name: Check out the fixed namespace bridge template
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: d68b54a178d84cd206a68af3e947a6d8c223286f
+          path: .artifacts/recipe-sdks/_cookbook
+          persist-credentials: false
+      - name: Prepare the separate checked Cookbook and Tools template sources
+        uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
+        with:
+          cookbook-ref: d68b54a178d84cd206a68af3e947a6d8c223286f
       - name: Download this execution's immutable request
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: merge-request-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts
       - name: Download this execution's accepted proof
-        if: needs.validate.result == 'success'
+        if: (needs.snapshot.outputs.entrypoint-contract == 'make-v0' && needs.validate.result == 'success') || (needs.snapshot.outputs.entrypoint-contract == 'mise-v1' && needs.validate-cookbook.result == 'success')
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: cookbook-full-${{ needs.snapshot.outputs.candidate }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -109,7 +172,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST: ${{ inputs.pull-request }}
-          VALIDATION_RESULT: ${{ needs.validate.result }}
+          VALIDATION_RESULT: ${{ needs.snapshot.outputs.entrypoint-contract == 'mise-v1' && needs.validate-cookbook.result || needs.validate.result }}
         run: python3 _cookbook/cookbook/request_merge.py finish --repository "$GITHUB_REPOSITORY" --pull-request "$PULL_REQUEST" --receipt .artifacts/merge-request.json --proof .artifacts/cookbook-validation.json --validation-result "$VALIDATION_RESULT"
       - name: Preserve merge/source relationship
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
