@@ -20,8 +20,8 @@ def archive_name(name):
     return 'gdam.json' if name == 'gdam.toml' else name
 
 
-def payload(path):
-    if path.name != 'gdam.toml':
+def payload(path, name):
+    if name != 'gdam.toml':
         return path.read_bytes()
     data = source_config.read(path, maximum=1 << 20)
     addons = data.get('addons')
@@ -36,7 +36,7 @@ def payload(path):
 
 
 def records(files, prefix=''):
-    result = [(prefix + archive_name(name), payload(path), 0o644 | (path.stat().st_mode & 0o111))
+    result = [(prefix + archive_name(name), payload(path, name), 0o644 | (path.stat().st_mode & 0o111))
               for name, path in sorted(files.items())]
     if len({name for name, _, _ in result}) != len(result):
         raise ValueError('source manifest has conflicting native archive identities')

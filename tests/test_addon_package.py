@@ -48,6 +48,18 @@ class AddonPackage(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, 'exact named addon tags'):
                 package.build(self.source, self.manifest, self.archive)
 
+    def test_nested_same_basename_remains_an_exact_ordinary_archive_payload(self):
+        nested = self.source / 'docs/gdam.toml'
+        nested.parent.mkdir()
+        original = b'# Native example asset; not the root package declaration.\nexample = "preserve"\n'
+        nested.write_bytes(original)
+        self.manifest.write_text('docs/gdam.toml\nplugin.cfg\n')
+        package.build(self.source, self.manifest, self.archive)
+        with zipfile.ZipFile(self.archive) as archive:
+            self.assertEqual(archive.namelist(), ['docs/gdam.toml', 'plugin.cfg'])
+            self.assertEqual(archive.read('docs/gdam.toml'), original)
+        package.verify(self.archive, self.manifest, self.source)
+
     def test_unlisted_source_cannot_replace_existing_good_archive(self):
         package.build(self.source, self.manifest, self.archive)
         before = self.archive.read_bytes()
