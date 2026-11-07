@@ -797,9 +797,6 @@ def setup_worker(root, config, environment, entry):
     if entry.get('virtual_display'):
         import virtual_display
         virtual_display.setup(root, environment, game.run)
-    lint_directory, _ = game.project(root, config)
-    if role == 'host' and (lint_directory / 'gdlint.toml').exists():
-        game.runtime_configuration().prepare(root, (lint_directory / 'gdlint.toml').relative_to(root), 'gdlint')
     if role not in {'unit', 'host'} and entry.get('setup') != 'godot':
         return
     directory, settings = game.project(root, config)
