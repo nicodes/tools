@@ -7,6 +7,7 @@ This module never extracts archives or starts an image.
 import datetime
 import gzip
 import hashlib
+import importlib.util
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -240,8 +241,16 @@ def data_image(path, reference, inspected, report, deadline=None):
     """Authenticate every saved layer before classifying its bounded text files."""
     deadline = deadline if deadline is not None else time.monotonic() + 60
     path, original = regular(path, MAX_ARCHIVE)
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
-    from image_import_cache import archive_images, remaining
+    core_path = Path(__file__).resolve().with_name('image_import_cache.py')
+    module = sys.modules.get('_tools_image_import_cache')
+    if module is not None and Path(getattr(module, '__file__', '')).resolve() != core_path:
+        raise ValueError('image archive core origin differs from this Tools source')
+    if module is None:
+        spec = importlib.util.spec_from_file_location('_tools_image_import_cache', core_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules['_tools_image_import_cache'] = module
+    archive_images, remaining = module.archive_images, module.remaining
     # Apply the much smaller data-image bounds before the generic archive
     # authenticator reads any possibly compressed filesystem layer.
     with tarfile.open(path, 'r:*') as outer:

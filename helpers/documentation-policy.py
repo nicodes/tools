@@ -51,7 +51,7 @@ def check(root, include_history=True, history_required=False):
                 if history_required and history is None:
                     raise ValueError('public repositories require a history boundary')
                 if include_history and history is not None:
-                    if set(history) != {'forbidden_commits'} or not isinstance(history['forbidden_commits'], list) or not history['forbidden_commits']:
+                    if set(history) != {'forbidden_commits'} or not isinstance(history['forbidden_commits'], list):
                         raise ValueError('invalid public history boundary')
                     forbidden = set(history['forbidden_commits'])
                     if any(not isinstance(oid, str) or len(oid) != 40 or any(c not in '0123456789abcdef' for c in oid) for oid in forbidden):
