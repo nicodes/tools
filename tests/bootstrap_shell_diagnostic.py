@@ -21,4 +21,6 @@ print(json.dumps(record, sort_keys=True), flush=True)
 assert record['explicit_native']['exit'] == 0, 'selected native Bash did not execute its finite probe'
 assert record['explicit_native']['stdout'].startswith('BASH_PROBE:'), 'native Bash probe produced no identity'
 if os.name == 'nt':
-    assert '|msys' in record['explicit_native']['stdout'], 'the selected Windows shell is not Git Bash'
+    image = record['explicit_native']['process_image']
+    assert isinstance(image, str), 'the native shell process image was not established'
+    assert Path(image).resolve() == Path(selected).resolve(), 'the child differs from the selected Git Bash executable'
