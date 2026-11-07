@@ -25,10 +25,9 @@ Spelled out, because each clause is a mistake somebody already made:
 
   4. secrets.env is ONE file holding EVERY GitHub secret, so a service that
      reads it reads all of them. Only the service that needs them may. This is
-     the check that would have caught the Revik near-miss: flattening all four
-     services onto secrets.env would have handed the API the migrator DSN --
-     the credential that can drop the schema -- in the name of simplifying the
-     deploy.
+     the check that keeps a serving process from receiving a migration DSN.
+     Flattening services onto secrets.env exposes credentials beyond each
+     service's declared purpose, including credentials that can drop a schema.
 
   5. No secret value is ever committed. A key in compose.yml is a key in the
      registry image, in every clone, and in the reflog after it is "removed".
@@ -55,7 +54,7 @@ except ImportError:
     # Same reasoning as publish-config/parse-config.py: this repository does not
     # pip install at deploy time. Every GitHub-hosted runner ships PyYAML.
     print(
-        "::error::The reviewed PyYAML SDK is required; run make setup before source-policy checks.",
+        "::error::The reviewed PyYAML SDK is required; run mise run setup before source-policy checks.",
         file=sys.stderr,
     )
     sys.exit(1)

@@ -129,7 +129,7 @@ def publish(repo, base, inventory, changes):
             '| Application | Package | Current | Update | Latest |\n|---|---|---|---|---|\n'+rows+'\n'+refresh+'\n\n'
             'Owner decision (2026-09-05): this workflow creates or updates this issue only. '
             'It never creates branches or PRs, approves changes, merges or dispatches CI. '
-            'Review the updates and open a PR manually. Run the complete `make check` and '
+            'Review the updates and open a PR manually. Run the complete `mise run check` and '
             'require passing Test and Build checks before merging. Authentication/cryptography, '
             'PocketBase, pre-1.0 minor and major updates require owner review.\n\n'
             'This workflow creates maintenance issues only; '

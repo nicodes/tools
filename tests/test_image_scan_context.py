@@ -10,6 +10,8 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
+import types
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'helpers'))
 from image_security_report import blocking_findings, image_scan_findings
@@ -18,6 +20,13 @@ import image_scan_fixture as fixture
 
 
 class ImageScanContextControls(unittest.TestCase):
+    def test_foreign_cached_archive_core_cannot_replace_this_Tools_source(self):
+        foreign = types.ModuleType('_tools_image_import_cache')
+        foreign.__file__ = '/foreign/image_import_cache.py'
+        with patch.dict(sys.modules, {'_tools_image_import_cache': foreign}):
+            with self.assertRaisesRegex(ValueError, 'core origin differs'):
+                self.admit()
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(); self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name); self.path = self.root / 'image.tar'

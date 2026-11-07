@@ -19,7 +19,7 @@ import time
 from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(TOOLS / 'cookbook'))
+sys.path.insert(0, str(TOOLS / 'helpers'))
 import image_import_cache
 
 SOURCE = 'a' * 40

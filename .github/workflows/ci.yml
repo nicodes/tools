@@ -29,11 +29,18 @@ jobs:
       attestations: read
     env:
       MISE_GITHUB_TOKEN: ${{ github.token }}
+      MISE_AUTO_INSTALL: 'false'
+      MISE_EXEC_AUTO_INSTALL: 'false'
+      MISE_TASK_RUN_AUTO_INSTALL: 'false'
     steps:
     - name: Check out source
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
+    - name: Prepare the private artifact parent before SDK installers
+      timeout-minutes: 1
+      run: >-
+        python3 -I -B -c 'import runpy,sys; sys.version_info >= (3,11) or sys.exit("Private SDK preparation requires host Python 3.11 or newer"); sys.argv=["helpers/private_directory.py","prepare"]; runpy.run_path(sys.argv[0],run_name="__main__")'
     - name: "Set up tools"
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       with:
@@ -67,8 +74,6 @@ jobs:
       run: |
         python3 helpers/godot-setup.py --version 4.7.2 --expected-version 4.7.2.stable.official.ed1daf0bf --binary-checksum sha256:cadd3204e728a35d3f13adb7fd0d7902636b79f6b95c40c265eb73b6c35329e4 --origin godot-builds --root .artifacts/native-test-godot
         printf 'GODOT_BIN=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-test-godot/bin/godot" >> "$GITHUB_ENV"
-        python3 tests/test_godot_host_templates.py --prepare .artifacts/native-host-template-fixture .artifacts/native-test-godot/archives
-        printf 'GODOT_HOST_TEMPLATE_CACHE=%s\n' "$GITHUB_WORKSPACE/.artifacts/native-host-template-fixture" >> "$GITHUB_ENV"
     - name: Prepare pinned native addon CLI and display for real controls
       timeout-minutes: 5
       env:
@@ -87,6 +92,8 @@ jobs:
       run: |
         python3 tests/native_image_security_control.py setup --directory "$RUNNER_TEMP/native-image-security"
         printf 'TOOLS_NATIVE_IMAGE_SECURITY_ROOT=%s\n' "$RUNNER_TEMP/native-image-security" >> "$GITHUB_ENV"
+    - name: Prepare locked native verification dependencies
+      run: mise run setup
     - name: Check libraries and disposable recovery
       run: mise run check
     - name: Verify isolated classic image-cache reset

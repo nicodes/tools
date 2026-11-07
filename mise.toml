@@ -13,30 +13,52 @@ node = "26.7.0"
 CARGO_TARGET_DIR = "{{ get_env(name='CARGO_TARGET_DIR', default=config_root ~ '/.artifacts/rust-target') }}"
 CARGO_INCREMENTAL = "0"
 PYTHONDONTWRITEBYTECODE = "1"
+MISE_AUTO_INSTALL = "false"
+MISE_EXEC_AUTO_INSTALL = "false"
+MISE_TASK_RUN_AUTO_INSTALL = "false"
+
+[settings]
+task.run_auto_install = false
 
 [tasks.install]
-run = "make install"
+raw = true
+run = ["mise install python", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 -- python3 -I -B helpers/private_directory.py prepare", "mise install", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'python3 helpers/source_policy.py setup'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'rustup component add --toolchain 1.94.0 rustfmt clippy'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'cargo fetch --locked'"]
 
 [tasks.lint]
-run = "make lint"
+raw = true
+run = ["python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool actionlint=actionlint --tool shellcheck=shellcheck --tool rust=cargo --tool rust=rustc -- bash -euc 'bash scripts/lint.sh'"]
 
 [tasks.unit]
-run = "make unit"
-
-[tasks.integration]
-run = "make integration"
-
-[tasks.test]
-run = "make test"
+raw = true
+run = ["python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc --tool node=node --tool bun=bun -- bash -euc 'node --test tests/fixture-origins.test.mjs tests/fixture-ports.test.mjs tests/prepare-metro.test.mjs'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc --tool node=node --tool bun=bun -- bash -euc 'cargo test --workspace --all-targets --locked'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc --tool node=node --tool bun=bun -- bash -euc 'cargo build --locked -p tools-operator'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc --tool node=node --tool bun=bun -- bash -euc 'bash tests/publish-inputs.test.sh'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc --tool node=node --tool bun=bun -- bash -euc 'bash tests/setup-godot-inputs.test.sh'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc --tool node=node --tool bun=bun -- bash -euc 'python3 -m unittest discover -s scripts -p '\"'\"'test_*.py'\"'\"' -v'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc --tool node=node --tool bun=bun -- bash -euc 'python3 -m unittest discover -s tests -p '\"'\"'test_*.py'\"'\"' -v'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc --tool node=node --tool bun=bun -- bash -euc 'python3 -m unittest discover -s crates/operator/internal/operator -p '\"'\"'test_*.py'\"'\"' -v'"]
 
 [tasks.build]
-run = "make build"
+raw = true
+run = ["python3 -I -B helpers/pinned-tools.py exec --tool rust=cargo --tool rust=rustc -- bash -euc 'cargo build --workspace --locked'"]
 
 [tasks.vuln]
-run = "make vuln"
+raw = true
+run = ["python3 -I -B helpers/pinned-tools.py exec --tool rust=cargo --tool rust=rustc --tool cargo:cargo-audit=cargo-audit -- bash -euc 'bash scripts/vuln.sh'"]
 
-[tasks.check]
-run = "make check"
+[tasks.integration]
+raw = true
+run = ["python3 -I -B helpers/pinned-tools.py exec --tool python=python3 -- bash -euc 'TOOLS_TEST_POSTGRES=1 python3 -m unittest discover -s tests -p test_postgres_recovery.py -v'"]
 
 [tasks.clean]
-run = "make clean"
+raw = true
+run = ["python3 -I -B helpers/pinned-tools.py exec --tool python=python3 -- bash -euc 'python3 helpers/clean.py --path .artifacts/rust-target --path .artifacts/native-operator --path dist'"]
+
+[tasks.setup]
+raw = true
+run = [{task = "install"}]
+
+[tasks.test]
+raw = true
+run = [{task = "unit"}, {task = "integration"}]
+
+[tasks.check]
+raw = true
+run = [{task = "lint"}, {task = "unit"}, {task = "build"}, {task = "vuln"}, {task = "integration"}]
+
+[tasks.help]
+run = "printf '%s\\n' 'mise run setup|lint|unit|test|build|vuln|integration|check|clean'"

@@ -8,6 +8,11 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location('_godot_project_import', Path(__file__).with_name('godot_import.py'))
+godot_import = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(godot_import)
 
 
 def files(directory, ignored=('build', 'node_modules'), ignored_patterns=()):
@@ -58,7 +63,8 @@ def import_project(project, binary, run, timeout=180, arguments=(), ignored_patt
         from godot_authoring import preserve_imports
         native_run = run
         run = lambda argv, timeout: preserve_imports(project, lambda: native_run(argv, timeout=timeout))
-    original = config.read_bytes()
+    authored = godot_import._Settings(config)
+    original = authored.original
     engine = subprocess.check_output([str(binary), '--version'], text=True, timeout=30).strip()
     cache = project / '.godot/imported'
     state = project / '.godot/cookbook-import.json'
@@ -76,13 +82,15 @@ def import_project(project, binary, run, timeout=180, arguments=(), ignored_patt
     command = [str(binary), '--headless', '--editor', '--quit', '--path', str(project), '--import', *arguments]
     if not warm and bootstrap != original:
         try:
-            config.write_bytes(bootstrap)
-            if run(command, timeout=timeout):
-                raise ValueError('Godot bootstrap import failed')
+            authored.write(bootstrap)
+            with godot_import.serial_import(project):
+                if run(command, timeout=timeout):
+                    raise ValueError('Godot bootstrap import failed')
         finally:
-            config.write_bytes(original)
-    if run(command, timeout=timeout):
-        raise ValueError('Godot strict import failed')
+            authored.restore()
+    with godot_import.serial_import(project):
+        if run(command, timeout=timeout):
+            raise ValueError('Godot strict import failed')
     if cache.is_dir() and outputs(project) is not None:
         state.write_text(json.dumps({'inputs': {'engine': engine, 'files': files(project, ignored_patterns=ignored_patterns)},
                                      'outputs': outputs(project)}, sort_keys=True) + '\n')

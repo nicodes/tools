@@ -22,7 +22,5 @@ jobs:
           tools: python
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Declare the fixture's absent image capability
-        run: printf '%s\n' '[components]' 'images=[]' > cookbook.toml
       - name: Admit every composite step before evaluating optional capability conditions
         uses: ./docker-ci

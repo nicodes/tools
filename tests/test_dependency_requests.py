@@ -1,4 +1,4 @@
-"""Cookbook dependency checks request fresh full validation, never merge directly."""
+"""Dependency checks request fresh full validation, never merge directly."""
 import copy
 import importlib.util
 from pathlib import Path
@@ -50,7 +50,7 @@ class DependencyRequests(unittest.TestCase):
                 self.inspect([self.pull,self.target|change])
 
     def test_changed_authority_and_managed_dependencies_stay_in_review(self):
-        for filename in ['Makefile','cookbook.toml','.github/workflows/request-merge.yml']:
+        for filename in ['Makefile','cookbook.toml','mise.toml','.mise.toml','.github/workflows/request-merge.yml']:
             result,api=self.inspect([self.pull],files=[{'filename':filename}])
             self.assertEqual(result['state'],'review');self.assertEqual(api.call_count,1)
         self.policy['managed_dependencies']=['example']

@@ -26,6 +26,9 @@ jobs:
     timeout-minutes: 30
     env:
       MISE_GITHUB_TOKEN: ${{ github.token }}
+      MISE_AUTO_INSTALL: 'false'
+      MISE_EXEC_AUTO_INSTALL: 'false'
+      MISE_TASK_RUN_AUTO_INSTALL: 'false'
       VERSION: ${{ inputs.version }}
       COMMIT: ${{ github.sha }}
     steps:
@@ -33,6 +36,10 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
+    - name: Prepare the private artifact parent before SDK installers
+      timeout-minutes: 1
+      run: >-
+        python3 -I -B -c 'import runpy,sys; sys.version_info >= (3,11) or sys.exit("Private SDK preparation requires host Python 3.11 or newer"); sys.argv=["helpers/private_directory.py","prepare"]; runpy.run_path(sys.argv[0],run_name="__main__")'
     - name: Set up tools
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       with:
@@ -41,11 +48,6 @@ jobs:
     - name: Install static Linux linker
       if: runner.os == 'Linux'
       run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-    - name: Verify cache wrapper on the native macOS shell
-      if: runner.os == 'macOS'
-      env:
-        CACHE_TEST_SHELL: /bin/bash
-      run: python3 -m unittest discover -s tests -p test_compiler_cache.py -k test_shell_wrapper -v
     - name: Verify native Rust libraries and operator
       run: |-
         set -euo pipefail

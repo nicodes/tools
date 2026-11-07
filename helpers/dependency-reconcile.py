@@ -77,7 +77,7 @@ def validate_policy(value):
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*', value['integration_job']):
             raise ValueError('explicit integration job required')
     elif value['request_workflow'] != 'request-merge.yml':
-        raise ValueError('cookbook updates require the trusted requested full-validation workflow')
+        raise ValueError('dependency updates require the trusted requested full-validation workflow')
     checks = value['required_checks']
     if not isinstance(checks, list) or not checks or len(set(checks)) != len(checks) or not all(isinstance(c, str) and c for c in checks):
         raise ValueError('nonempty unique required checks required')
@@ -214,7 +214,7 @@ def inspect(repo, number, base, policy, apply=False):
     if reason:
         return {**result, 'state': 'review', 'reason': reason}
     files = pages(f'repos/{repo}/pulls/{number}/files')
-    if not files or any(f['filename'] in ('.github/dependency-policy.toml', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', '.github/workflows/request-merge.yml', 'cookbook.toml', 'Makefile') for f in files):
+    if not files or any(f['filename'] in ('.github/dependency-policy.toml', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', '.github/workflows/request-merge.yml', 'cookbook.toml', 'Makefile', 'mise.toml', '.mise.toml') for f in files):
         return {**result, 'state': 'review', 'reason': 'merge policy changes require review'}
     if pull.get('mergeable_state') == 'dirty':
         return {**result, 'state': 'blocked', 'reason': 'merge conflict requires a bot rebase'}
