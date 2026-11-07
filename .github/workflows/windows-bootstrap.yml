@@ -2,6 +2,7 @@ name: Windows SDK bootstrap
 'on':
   pull_request:
     paths:
+      - .gitattributes
       - setup/**
       - helpers/verification.py
       - helpers/source_config.py
@@ -9,6 +10,7 @@ name: Windows SDK bootstrap
       - helpers/sdk-bootstrap.py
       - helpers/pinned-tools.py
       - helpers/private_directory.py
+      - helpers/bootstrap-python.ps1
       - helpers/source_policy.py
       - tests/test_sdk_identity.py
       - tests/test_sdk_bootstrap.py
