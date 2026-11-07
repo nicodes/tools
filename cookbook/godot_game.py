@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import sdk_environment
 
-from configuration import godot_pins, load, relative
+from configuration import godot_pins, load, relative, runtime_configuration
 from recipe_contract import app_directory, release_definition
 from native_tests import run_entries
 import rust_component
@@ -238,7 +238,7 @@ def validate_config(root, config):
                 raise ValueError('unsupported native application development setting')
             if type(development.get('capture_output',False)) is not bool:
                 raise ValueError('development output capture must be explicit')
-            relative(root,development.get('identity','ghenv.json'),exists=True)
+            relative(root,development.get('identity','ghenv.toml'),exists=True)
             development_project(root,config)
             for entry in [development.get('program'),*([development['cleanup']] if development.get('cleanup') else [])]:
                 application_development.native_entry(root,entry,{'APP_VERSION':'0'*40},long_running=True,
@@ -317,7 +317,7 @@ def required_tools(root, config, stage='full'):
         active_packages = package_linters(config) if stage == 'fast' else [value for value in packages(config) if value.get('audit', True)]
         for value in active_packages:
             selected.append('bun' if value.get('manager', 'npm') == 'bun' else 'node')
-            if (relative(root, value['directory']) / 'security-remediations.json').exists():
+            if (relative(root, value['directory']) / 'security-remediations.toml').exists():
                 selected.append('node')
     if config.get('security',{}).get('auth_policy') and stage in {'full','security'}:
         selected.append('bun')
@@ -447,6 +447,9 @@ def setup(root, config, env):
     if components.get('image_security') and stage in {'full','security'} and env.get('COOKBOOK_GODOT_ENTRY')!='build' and requested_stage!='local':
         import godot_security
         godot_security.setup(root,config,env,run)
+    directory, _ = project(root, config)
+    if stage in {'fast', 'full'} and (directory / 'gdlint.toml').exists():
+        runtime_configuration().prepare(root, (directory / 'gdlint.toml').relative_to(root), 'gdlint')
     if stage != 'full':
         return
     if env.get('COOKBOOK_GODOT_ENTRY')!='build':komizo_sdk.setup(root,config,env)
@@ -468,7 +471,8 @@ def setup(root, config, env):
         godot_template.setup(root,config,env)
     if requested_stage != 'local':
         godot_static.setup(root,config,env,run)
-    if (directory / 'gdam.json').exists():
+    if (directory / 'gdam.toml').exists():
+        runtime_configuration().prepare(root, (directory / 'gdam.toml').relative_to(root), 'gdam')
         helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
             bindings=godot_addon_bindings.installed(root, config, env))
     if native_import_stage(settings) == 'setup':
@@ -520,7 +524,8 @@ def native_godot(root, config, entry, env):
 
 def verify_addons(root, config, env):
     directory, _ = project(root, config)
-    if (directory / 'gdam.json').exists():
+    if (directory / 'gdam.toml').exists():
+        runtime_configuration().verify(root, (directory / 'gdam.toml').relative_to(root), 'gdam')
         helper('godot-addons').verify(directory, bindings=godot_addon_bindings.installed(root, config, env))
 
 
@@ -570,7 +575,9 @@ def lint(root, config, env):
     if (root / '.github/workflows').is_dir():
         run(['actionlint'], root, env)
     run([sys.executable, str(TOOLS / 'helpers/documentation-policy.py')], root, env)
-    run([pinned_gdlint(root, env), '-warn'], directory, env)
+    lint_config = (["--config", str(runtime_configuration().verify(root, (directory / 'gdlint.toml').relative_to(root), 'gdlint'))]
+                   if (directory / 'gdlint.toml').exists() else [])
+    run([pinned_gdlint(root, env), *lint_config, '-warn'], directory, env)
     node_component.lint(root, packages(config), env, run)
     components = config.get('components', {})
     if components.get('rust'):
@@ -641,7 +648,7 @@ def compile_outputs(root, config, env):
     compiler_environment = godot_sdk.activate(root, config, env)
     node_component.build(root, packages(config), env, run)
     directory, settings = project(root, config)
-    if (directory / 'gdam.json').exists():
+    if (directory / 'gdam.toml').exists():
         verify_addons(root, config, env)
     build_rust(root, config, compiler_environment)
     go_component.build(root,config,env,run)
@@ -778,7 +785,7 @@ def main():
                 if args.suite == 'unit' and config.get('components', {}).get('rust'):
                     rust_component.test(root, cargo_records(config, env), env, run)
                 directory, _ = project(root, config)
-                if (directory / 'gdam.json').exists():
+                if (directory / 'gdam.toml').exists():
                     verify_addons(root, config, env)
                 native_tests(root, config, env, args.suite)
             if env.get('COOKBOOK_GODOT_HOST'):

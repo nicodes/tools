@@ -25,7 +25,7 @@ class ManifestArchiveControls(unittest.TestCase):
         self.names = ['plugin.cfg', 'plugin.gd', 'plugin.gd.uid']
         (self.root / 'package.files').write_text('\n'.join(self.names) + '\n')
         (self.root / 'package.json').write_text('{"version":"1.2.3"}')
-        (self.root / 'package-allowlist.json').write_text(json.dumps(dict(files=self.names, addon_files=3, zip_entries=4)))
+        manifest_addon.package_helper().source_config.write(self.root / 'package-allowlist.toml', dict(files=self.names, addon_files=3, zip_entries=4))
         self.config = {'recipe': 'godot-addon', 'package': dict(archive='dist/@owner_plugin.zip',
                                                                embedded_manifest=True, script_uids=True)}
 

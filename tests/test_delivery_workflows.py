@@ -7,6 +7,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import delivery_workflows as delivery
 import generate
+from source_fixture import read_source, write_source, dump_source
 
 
 class DeliveryWorkflows(unittest.TestCase):
@@ -14,7 +15,7 @@ class DeliveryWorkflows(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        self.config = {'delivery': {'definition': 'delivery.json'}}
+        self.config = {'delivery': {'definition': 'delivery.toml'}}
         self.data = dict(version=1, project='demo', komizo_ref='a' * 40,
                          publish_runner='ubuntu-24.04', publish_timeout=35,
                          deploy_runner='ubuntu-24.04', deploy_timeout=100,
@@ -23,7 +24,7 @@ class DeliveryWorkflows(unittest.TestCase):
                          variables={'KOMIZO_SECRET_PUBLIC_KEY': 'PUBLIC_KEY'})
 
     def write(self):
-        (self.root / 'delivery.json').write_text(json.dumps(self.data))
+        write_source(self.root / 'delivery.toml', self.data)
 
     def test_same_run_publication_and_serialized_host_after_validation(self):
         self.write()
@@ -68,7 +69,7 @@ class DeliveryWorkflows(unittest.TestCase):
         self.write()
         (self.root / 'tests').mkdir()
         (self.root / 'tests/unit.py').write_text('assert 1 + 1 == 2\n')
-        (self.root / 'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        (self.root / 'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files = generate.workflow_files(self.root, 'b' * 40)
         self.assertNotIn('  push:', files['.github/workflows/ci.yml'])
         self.assertNotIn('  pull_request:', files['.github/workflows/cd.yml'])
@@ -124,7 +125,7 @@ class DeliveryWorkflows(unittest.TestCase):
         self.write()
         with self.assertRaisesRegex(ValueError,'one native production policy'):
             delivery.declaration(self.root,self.config)
-        self.config['operations']={'definition':'deploy/operations.json'}
+        self.config['operations']={'definition':'deploy/operations.toml'}
         self.assertTrue(delivery.declaration(self.root,self.config)['readiness_operation'])
 
     def test_scoped_profile_keeps_generation_and_never_transports_profile_values(self):
@@ -149,7 +150,7 @@ class DeliveryWorkflows(unittest.TestCase):
         self.write()
         (self.root/'tests').mkdir()
         (self.root/'tests/unit.py').write_text('assert 2+2==4\n')
-        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\ntimeout_minutes=45\n[delivery]\ndefinition="delivery.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[ci]\ntimeout_minutes=45\n[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
         self.assertIn('      timeout-minutes: 45',files['.github/workflows/ci.yml'])
         self.assertIn('      timeout-minutes: 60',files['.github/workflows/cd.yml'])
@@ -161,7 +162,7 @@ class DeliveryWorkflows(unittest.TestCase):
         self.write()
         (self.root/'tests').mkdir()
         (self.root/'tests/unit.py').write_text('assert 2+2==4\n')
-        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="delivery.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
         text=files['.github/workflows/cd.yml']
         self.assertIn('      version:',text)
@@ -182,8 +183,8 @@ class DeliveryWorkflows(unittest.TestCase):
 
     def test_setup_connection_capture_and_download_have_actual_workflow_deadlines(self):
         (self.root/'deploy').mkdir()
-        (self.root/'deploy/backup.json').write_text('{}\n')
-        self.data.update(backup='deploy/backup.json',upload_backup=True)
+        (self.root/'deploy/backup.toml').write_text('')
+        self.data.update(backup='deploy/backup.toml',upload_backup=True)
         self.write()
         text=delivery.jobs(self.root,self.config,'b'*40)
         for action,minutes in [('nicodes/tools/setup@',5),('nicodes/komizo-actions/connect@',3),

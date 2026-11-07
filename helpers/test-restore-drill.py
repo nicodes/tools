@@ -216,7 +216,7 @@ def main(project, release, engine=None, *, config_file):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project', required=True)
-    parser.add_argument('--config', type=Path, default=Path('deploy/restore.json'))
+    parser.add_argument('--config', type=Path, default=Path('deploy/restore.toml'))
     parser.add_argument('--release', type=Path, default=Path('.artifacts/release/release.json'))
     parser.add_argument('--engine', help='the pinned postgres@sha256:... digest, for a PostgreSQL product')
     args = parser.parse_args()

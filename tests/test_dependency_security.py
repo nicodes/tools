@@ -19,6 +19,7 @@ import dependency_security as gate
 import delivery_workflows
 import generate
 import source_policy
+from source_fixture import read_source, write_source, dump_source
 
 
 def read_yaml(body):
@@ -173,7 +174,7 @@ class DependencySecurityControls(unittest.TestCase):
             'deploy_runner': 'ubuntu-24.04', 'deploy_timeout': 15 if combined else 100,
             'health_urls': ['https://example.test/readyz'], 'notification_url': 'https://example.test/',
             'combined': combined}
-        (self.root / 'delivery.json').write_text(json.dumps(data))
+        write_source(self.root / 'delivery.toml', data)
         (self.root / 'cookbook.toml').write_text('''version=1
 recipe="react-native"
 [ci.dependency_security]
@@ -183,7 +184,7 @@ setup_timeout_minutes=5
 [node]
 packages=[{directory="app",manager="npm"}]
 [delivery]
-definition="delivery.json"
+definition="delivery.toml"
 [[tests.unit]]
 runner="python"
 path="tests/unit.py"
@@ -246,8 +247,8 @@ path="tests/unit.py"
         data = dict(version=1, project='fixture', mode='godot-static', komizo_ref='a'*40,
             publish_runner='ubuntu-24.04', deploy_runner='ubuntu-24.04', publish_timeout=15, deploy_timeout=15,
             health_urls=['https://example.test/readyz'], notification_url='https://example.test/')
-        (self.root / 'delivery.json').write_text(json.dumps(data))
-        config = copy.deepcopy(self.config); config['delivery'] = {'definition': 'delivery.json'}
+        write_source(self.root / 'delivery.toml', data)
+        config = copy.deepcopy(self.config); config['delivery'] = {'definition': 'delivery.toml'}
         with patch('godot_static.declaration', return_value={'production': False}):
             jobs = read_yaml(delivery_workflows.jobs(self.root, config, 'b'*40))
             self.assertEqual(jobs['cd']['needs'], ['validate', 'dependency-security'])

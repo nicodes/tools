@@ -9,6 +9,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import addon_dependencies
+from source_fixture import write_source
 
 
 class RegistrySdkControls(unittest.TestCase):
@@ -16,6 +17,10 @@ class RegistrySdkControls(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
+        subprocess.run(['git', 'init', '--quiet', str(self.root)], check=True)
+        (self.root / '.gitignore').write_text('.artifacts/\n/gdam.json\n')
+        write_source(self.root / 'gdam.toml', {'addons': {}})
+        subprocess.run(['git', '-C', str(self.root), 'add', '.'], check=True)
         (self.root / 'mise.toml').write_text('[tools]\n"github:owner/gdam" = {version="v0.1.5",asset_pattern="gdam_Linux_x86_64.tar.gz",bin="gdam"}\n')
         binary = b'verified native SDK bytes'
         data = io.BytesIO()

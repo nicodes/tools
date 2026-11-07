@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tomllib
 
-from configuration import load, relative
+from configuration import load, relative, runtime_configuration
 
 TOOLS = Path(__file__).resolve().parents[1]
 ENVIRONMENT = re.compile(r'[A-Z][A-Z0-9_]*\Z')
@@ -105,11 +105,11 @@ def stop_services(root, config, environment, *, api):
 
 
 def isolated_operation(root, config, environment, operation, *, api):
-    selected = relative(root, config.get('dev', {}).get('identity', 'ghenv.json'), exists=True)
+    selected = relative(root, config.get('dev', {}).get('identity', 'ghenv.toml'), exists=True)
     base = [api.pinned_ghenv(root, environment), 'local', '--', 'env', 'DEV_PROJECT=' + api.development_project(root, config),
             'TOOLS_ROOT=' + str(TOOLS), sys.executable, str(Path(__file__).resolve()), operation]
-    if selected.name != 'ghenv.json' or selected.parent != root:
-        raise ValueError('application development identity uses the owned root ghenv.json')
+    if selected.name != 'ghenv.toml' or selected.parent != root:
+        raise ValueError('application development identity uses the owned root ghenv.toml')
     return base
 
 
@@ -143,13 +143,14 @@ def development(root, config, environment, operation, *, api):
     mode = environment.get('DEV_MODE', 'auto')
     if mode not in {'auto', 'local', 'preview'}:
         raise ValueError('development identity must be local, preview or the configured automatic mode')
-    command = [ghenv, 'dev', '--config', 'ghenv.json', '--mode', mode, '--', 'env',
+    native_config = runtime_configuration().prepare(root, 'ghenv.toml', 'ghenv')
+    command = [ghenv, 'dev', '--config', str(native_config), '--mode', mode, '--', 'env',
                'DEV_PROJECT=' + api.development_project(root, config), 'TOOLS_ROOT=' + str(TOOLS),
                sys.executable, str(Path(__file__).resolve()), '_dev']
     preparation = [ghenv, 'local', '--', 'env', 'COOKBOOK_STAGE=local', 'make', 'setup']
     arguments = [*supervisor, 'run', '--state', '.local/dev', '--prepare', json.dumps(preparation),
                  '--cleanup', json.dumps(cleanup), '--policy-input', 'mise.toml',
-                 '--policy-input', 'cookbook.toml', '--policy-input', 'ghenv.json']
+                 '--policy-input', 'cookbook.toml', '--policy-input', 'ghenv.toml']
     if config['dev'].get('capture_output', False):
         arguments += ['--log', '.local/dev/output.log']
     api.run([*arguments, '--', *command], root, environment)

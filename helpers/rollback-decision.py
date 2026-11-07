@@ -42,7 +42,7 @@ if __name__ == '__main__':
     parser.add_argument('--current', required=True)
     parser.add_argument('--previous', default='')
     args = parser.parse_args()
-    declaration = json.loads(args.declaration.read_text()) if args.declaration.exists() else {}
+    declaration = stateful_release.source_config.read(args.declaration, maximum=262144) if args.declaration.exists() else {}
     evidence = json.loads(args.evidence.read_text()) if args.evidence.exists() else None
     result = decide(declaration, evidence, args.current, args.previous, os.environ.get('GITHUB_RUN_ID', ''))
     print(json.dumps(result, indent=2))

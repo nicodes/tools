@@ -170,7 +170,7 @@ mprocs="0.9.6"
         self.assertEqual(calls[1][-1], 300)
 
     def test_database_reset_isolated_to_local_identity_and_owned_checkout_lease(self):
-        (self.root / 'ghenv.json').write_text('{"version":1}')
+        (self.root / 'ghenv.toml').write_text('version=1\n')
         calls = []
         config = {'dev': {'kind': 'native'}, 'database': {'reset': {'runner': 'python', 'path': 'internal/dev/database.py'}}}
         with patch.object(recipe, 'pinned_ghenv', return_value='/owned/sdk/ghenv'), patch.object(recipe, 'run', side_effect=lambda *args: calls.append(args)):

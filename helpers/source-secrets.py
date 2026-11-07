@@ -2,10 +2,15 @@
 """Check tracked text source for high-confidence credentials without printing values."""
 import argparse
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import re
 import subprocess
+
+_spec = importlib.util.spec_from_file_location('_secrets_source_config', Path(__file__).with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(source_config)
 
 PATTERNS = {
     'private-key': re.compile(rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----\r?\n[A-Za-z0-9+/=\r\n]{48,}-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----'),
@@ -18,7 +23,7 @@ def scan(root, fixture_policy=None):
     root = Path(root).resolve()
     approved = {}
     if fixture_policy is not None:
-        policy = json.loads(Path(fixture_policy).read_text())
+        policy = source_config.read(fixture_policy)
         if policy.get('version') != 1 or not isinstance(policy.get('fixtures'), list):
             raise ValueError('invalid credential-fixture policy')
         for entry in policy['fixtures']:

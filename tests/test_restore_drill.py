@@ -10,6 +10,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('restore_drill', Path(__file__).parents[1]/'helpers/restore-drill.py')
 drill = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(drill)
+source_config = drill.helper('source_config')
 
 
 def fixture_config(project, postgres=False):
@@ -29,7 +30,7 @@ class RestoreBoundaries(unittest.TestCase):
             dsn.chmod(0o600)
             config=fixture_config('demo',postgres=True)
             config.update(dsn_transport='environment',dsn_variable='RUNTIME_DATABASE_URL')
-            path=root/'restore.json';path.write_text(json.dumps(config))
+            path=root/'restore.toml';source_config.write(path, config)
             drill.load_config(path)
             values,mounts=drill.serving_credentials(config,dsn)
             self.assertEqual(values['RUNTIME_DATABASE_URL'],dsn.read_text().strip())
@@ -40,7 +41,7 @@ class RestoreBoundaries(unittest.TestCase):
                     drill.serving_credentials(config,dsn)
                 self.assertNotIn('fixture-secret',str(refused.exception))
             config['env']['RUNTIME_DATABASE_URL']='competing'
-            path.write_text(json.dumps(config))
+            source_config.write(path, config)
             with self.assertRaisesRegex(ValueError,'competing'):
                 drill.load_config(path)
 
@@ -57,7 +58,7 @@ class RestoreBoundaries(unittest.TestCase):
             return ''
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config_file = root/'config.json'; config_file.write_text(json.dumps(config))
+            config_file = root/'config.toml'; source_config.write(config_file, config)
             self.assertEqual(drill.load_config(config_file)['database'], 'oldapp')
             with patch.object(fixture.os, 'getuid', return_value=1000), patch.object(fixture, 'docker_bytes', return_value=b'PGDMPfixture'):
                 result = fixture.postgres_fixture('newapp', 'a' * 40, engine,
@@ -69,7 +70,7 @@ class RestoreBoundaries(unittest.TestCase):
             self.assertEqual(manifest['roles'], ['oldapp_runtime'])
             self.assertIn('/newapp-api:', manifest['images']['api']['reference'])
             for name, invalid in [('database', 'oldapp\nPGDATA=/escape'), ('role_namespace', '../oldapp')]:
-                config_file.write_text(json.dumps({**config, name: invalid}))
+                source_config.write(config_file, {**config, name: invalid})
                 with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'PostgreSQL identity'):
                     drill.load_config(config_file)
 
@@ -166,13 +167,13 @@ class PostgresRestoreBoundaries(unittest.TestCase):
     def test_explicit_backend_declarations_are_validated(self):
         import tempfile
         with tempfile.TemporaryDirectory() as directory:
-            file = Path(directory)/'restore.json'
+            file = Path(directory)/'restore.toml'
             config = fixture_config('example', postgres=True)
-            file.write_text(json.dumps(config))
+            source_config.write(file, config)
             self.assertEqual(drill.load_config(file), config)
             for key in ('runtime_role', 'dsn_file', 'api_port', 'health_path', 'root', 'env'):
                 missing = dict(config); missing.pop(key)
-                file.write_text(json.dumps(missing))
+                source_config.write(file, missing)
                 with self.assertRaises(ValueError): drill.load_config(file)
         self.assertEqual(drill.SERVING_DSN_VARIABLE, 'RUNTIME_DATABASE_URL_FILE')
 

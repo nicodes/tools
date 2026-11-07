@@ -12,6 +12,7 @@ from unittest.mock import patch
 TOOLS=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(TOOLS/'cookbook'))
 import komizo_sdk as sdk
+from source_fixture import read_source, write_source, dump_source
 
 
 class KomizoSdk(unittest.TestCase):
@@ -27,8 +28,8 @@ class KomizoSdk(unittest.TestCase):
             '-C',str(self.source),'commit','-m','Fixture source')
         self.revision=self.command('-C',str(self.source),'rev-parse','HEAD').strip()
         (self.root/'deploy').mkdir()
-        self.config={'delivery':{'definition':'deploy/delivery.json'},'preview':{'definition':'deploy/preview.json'}}
-        for name in ['delivery','preview']:(self.root/'deploy'/f'{name}.json').write_text(json.dumps({'komizo_ref':self.revision}))
+        self.config={'delivery':{'definition':'deploy/delivery.toml'},'preview':{'definition':'deploy/preview.toml'}}
+        for name in ['delivery','preview']:write_source(self.root/'deploy'/f'{name}.toml', {'komizo_ref':self.revision})
         self.receipt=self.root/sdk.SDK/'source.json'
         self.receipt.write_text(json.dumps(dict(version=1,repository=sdk.REPOSITORY,source=self.revision,accepted_main=True)))
 
@@ -62,9 +63,9 @@ class KomizoSdk(unittest.TestCase):
 
 
     def test_disagreeing_invalid_or_arbitrary_source_pins_are_refused(self):
-        path=self.root/'deploy/preview.json'
+        path=self.root/'deploy/preview.toml'
         for value in ['b'*40,'main','https://elsewhere.invalid/project.git','$(touch bad)']:
-            path.write_text(json.dumps({'komizo_ref':value}))
+            write_source(path, {'komizo_ref':value})
             with self.subTest(value=value),self.assertRaises(ValueError):sdk.check(self.root,self.config,dict(os.environ))
 
     def test_dirty_untracked_ignored_and_wrong_remote_cache_cannot_supply_programs(self):

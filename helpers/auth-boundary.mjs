@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import {readSource} from './source-config.mjs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
@@ -433,10 +434,10 @@ export function report(product, findings, enforced) {
 if (import.meta.main) {
   try {
     const args = process.argv.slice(2);
-    if (args.length !== 2 || args[0] !== '--policy') throw new Error('usage: auth-boundary.mjs --policy CALLER_POLICY.json');
+    if (args.length !== 2 || args[0] !== '--policy') throw new Error('usage: auth-boundary.mjs --policy CALLER_POLICY.toml');
     const info = fs.lstatSync(args[1]);
     if (!info.isFile() || info.size > 65536) throw new Error('auth policy must be a bounded regular file');
-    const declared = JSON.parse(fs.readFileSync(args[1], 'utf8'));
+    const declared = readSource(args[1], {maximum: 65536});
     if (!declared || typeof declared !== 'object' || Array.isArray(declared)
         || Object.keys(declared).sort().join() !== 'api,provider'
         || typeof declared.provider !== 'string' || typeof declared.api !== 'boolean') {

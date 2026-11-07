@@ -51,9 +51,9 @@ def dependencies(root, config):
             raise ValueError('dependency audit requires an existing frozen native Node lock')
         files.update((directory / name).relative_to(root).as_posix() for name in ['package.json', *present])
         tools.add('bun' if manager == 'bun' else 'node')
-        if (directory / 'security-remediations.json').exists():
+        if (directory / 'security-remediations.toml').exists():
             tools.add('node')
-            files.add((directory / 'security-remediations.json').relative_to(root).as_posix())
+            files.add((directory / 'security-remediations.toml').relative_to(root).as_posix())
         packages.append(package)
     if not manifests and not packages:
         raise ValueError('dependency security requires real declared dependency inventories')

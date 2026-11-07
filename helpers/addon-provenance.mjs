@@ -1,4 +1,5 @@
 // Generic addon publication guards; all product names, notes and SDK policy are caller data.
+import {readSource} from "./source-config.mjs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -14,10 +15,10 @@ function owned(root, name) {
 }
 
 export function loadPolicy(root) {
-  const policy = JSON.parse(readFileSync(join(root, "package-provenance.json"), "utf8"));
+  const policy = readSource(join(root, "package-provenance.toml"));
   for (const key of ["name", "candidate_schema", "description", "archive", "registry_archive", "vendor", "allowlist", "browser_entry", "vendor_package", "vendor_digest_field", "vendor_version_field"])
     if (typeof policy[key] !== "string" || !policy[key]) throw new Error("missing native package provenance: " + key);
-  const allowlist = JSON.parse(readFileSync(owned(root, policy.allowlist), "utf8"));
+  const allowlist = readSource(owned(root, policy.allowlist));
   if (!Number.isSafeInteger(allowlist.zip_entries) || allowlist.zip_entries < 2) throw new Error("invalid closed package entry count");
   const parts = policy.forbidden_token_parts || [];
   if (!Array.isArray(parts) || parts.some((token) => !Array.isArray(token) || !token.length || token.some((part) => typeof part !== "string" || !part)))

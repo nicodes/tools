@@ -11,7 +11,7 @@ import subprocess
 import tempfile
 import zipfile
 
-from configuration import load, relative
+from configuration import load, relative, read_source_data
 from godot_addon import package_data
 
 TOOLS = Path(__file__).resolve().parents[1]
@@ -36,7 +36,7 @@ def inputs(root, config):
             raise ValueError('addon package output must be outside source')
         return actual, '', None, archive, None
     prefix = values['prefix']
-    allowed = json.loads(relative(root, values['allowlist'], exists=True).read_text())
+    allowed = read_source_data(relative(root, values['allowlist'], exists=True))
     if (sorted(allowed.get('files', [])) != names or allowed.get('addon_files') != len(names)
             or allowed.get('zip_entries') != len(names) + 1):
         raise ValueError('addon allowlist counts differ from the closed file manifest')
@@ -54,6 +54,8 @@ def inputs(root, config):
             actual[rel.as_posix()] = path
         elif not path.is_dir():
             raise ValueError('addon source contains a non-regular file')
+    if 'gdam.json' in actual:
+        raise ValueError('authored addon manifests must use gdam.toml; gdam.json is generated native I/O')
     if sorted(actual) != names:
         raise ValueError('addon source differs from the closed file manifest')
     version = json.loads(relative(root, values['version_source'], exists=True).read_text()).get('version')
@@ -101,7 +103,7 @@ def write_zip(path, entries):
 def build(root, config):
     root = Path(root).resolve()
     files, prefix, version, archive, registry = inputs(root, config)
-    records = [(prefix + name, path.read_bytes(), 0o644 | (path.stat().st_mode & 0o111)) for name, path in sorted(files.items())]
+    records = package_helper().records(files, prefix)
     manifest = {'plugin_version': version, 'closed': True, 'zip_entries': len(records) + 1,
                 'files': [{'path': name, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}
                           for name, data, _ in records]}
@@ -125,14 +127,15 @@ def build(root, config):
 
 def verify(root, config):
     files, prefix, version, archive, registry = inputs(root, config)
-    expected_records = [{'path': prefix + name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'bytes': path.stat().st_size}
-                        for name, path in sorted(files.items())]
+    native = package_helper().records(files)
+    expected_records = [{'path': prefix + name, 'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}
+                        for name, data, _ in native]
     expected_manifest = {'plugin_version': version, 'closed': True, 'zip_entries': len(files) + 1, 'files': expected_records}
     helper = package_helper()
     for path, prefixed in [(archive, bool(registry)), *([(registry, False)] if registry else [])]:
         helper.verify_checksum(path)
         with zipfile.ZipFile(path) as package:
-            expected_names = [prefix + name if prefixed else name for name in sorted(files)]
+            expected_names = [prefix + name if prefixed else name for name, _, _ in native]
             if prefixed:
                 expected_names.append('PACKAGE_MANIFEST.json')
             if package.namelist() != expected_names:
@@ -140,8 +143,8 @@ def verify(root, config):
             for item in package.infolist():
                 if not stat.S_ISREG(item.external_attr >> 16):
                     raise ValueError('addon archive entry must be a regular file')
-            for name, original in files.items():
-                if package.read(prefix + name if prefixed else name) != original.read_bytes():
+            for name, data, _ in native:
+                if package.read(prefix + name if prefixed else name) != data:
                     raise ValueError('addon archive payload differs from its source')
             if prefixed:
                 embedded = package.read('PACKAGE_MANIFEST.json')

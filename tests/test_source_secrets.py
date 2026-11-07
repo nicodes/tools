@@ -1,3 +1,4 @@
+from source_fixture import write_source
 import hashlib
 import importlib.util
 import json
@@ -41,9 +42,9 @@ class SourceSecrets(unittest.TestCase):
     def test_reviewed_test_fixture_is_bound_to_exact_file_bytes(self):
         key = b'-----BEGIN PRIVATE KEY-----\n' + b'A' * 64 + b'\n-----END PRIVATE KEY-----\n'
         path = self.track('tests/fixtures/test-key.pem', key)
-        policy = self.root / 'fixtures.json'
-        policy.write_text(json.dumps({'version': 1, 'fixtures': [{'path': 'tests/fixtures/test-key.pem',
-            'sha256': hashlib.sha256(key).hexdigest(), 'reason': 'Public deterministic key used only for isolated protocol tests.'}]}))
+        policy = self.root / 'fixtures.toml'
+        write_source(policy, {'version': 1, 'fixtures': [{'path': 'tests/fixtures/test-key.pem',
+            'sha256': hashlib.sha256(key).hexdigest(), 'reason': 'Public deterministic key used only for isolated protocol tests.'}]})
         self.assertEqual(len(secrets.scan(self.root)), 1)
         self.assertEqual(secrets.scan(self.root, policy), [])
         path.write_bytes(key + b'changed')
@@ -51,9 +52,9 @@ class SourceSecrets(unittest.TestCase):
             secrets.scan(self.root, policy)
 
     def test_missing_approved_fixture_does_not_silently_disable_scanning(self):
-        policy = self.root / 'fixtures.json'
-        policy.write_text(json.dumps({'version': 1, 'fixtures': [{'path': 'missing', 'sha256': 'a' * 64,
-            'reason': 'A deliberately missing reviewed fixture.'}]}))
+        policy = self.root / 'fixtures.toml'
+        write_source(policy, {'version': 1, 'fixtures': [{'path': 'missing', 'sha256': 'a' * 64,
+            'reason': 'A deliberately missing reviewed fixture.'}]})
         with self.assertRaisesRegex(ValueError, 'missing'):
             secrets.scan(self.root, policy)
 

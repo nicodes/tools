@@ -41,7 +41,7 @@ SERVING_DSN_VARIABLE = 'RUNTIME_DATABASE_URL_FILE'
 
 
 def load_config(file):
-    config = json.loads(Path(file).read_text())
+    config = helper('source_config').read(file, maximum=262144)
     if not re.fullmatch(r'[a-z][a-z0-9-]*', config.get('project', '')):
         raise ValueError('restore config must name an explicit project')
     if not re.fullmatch(r'[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9/._-]*', config.get('image_base', '')):
@@ -376,7 +376,7 @@ def drill(project, export, key, pull=False, *, config):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--project', required=True)
-    parser.add_argument('--config', type=Path, default=Path('deploy/restore.json'))
+    parser.add_argument('--config', type=Path, default=Path('deploy/restore.toml'))
     parser.add_argument('--export', type=Path, required=True)
     parser.add_argument('--key', type=Path, required=True)
     parser.add_argument('--lock', type=Path, help='root-owned host lock for scheduled drills')

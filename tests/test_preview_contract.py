@@ -11,6 +11,7 @@ from unittest.mock import patch
 TOOLS=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(TOOLS/'cookbook'))
 import preview_workflows as preview
+from source_fixture import read_source, write_source, dump_source
 spec=importlib.util.spec_from_file_location('preview_release',TOOLS/'helpers/release.py')
 release=importlib.util.module_from_spec(spec);spec.loader.exec_module(release)
 
@@ -75,7 +76,7 @@ class PreviewDeclaration(unittest.TestCase):
         self.config={'version':1,'recipe':'react-native','ci':{'runner':'ubuntu-24.04','timeout_minutes':90,'preview_environment':'Preview'},
             'components':{'app':{'preview_environment':{'EXPO_PUBLIC_API_URL':'/api'},
                 'preview_variables':{'EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY':'COOKBOOK_PREVIEW_CLERK_KEY'}}},
-            'artifacts':{},'preview':{'definition':'deploy/preview.json'}}
+            'artifacts':{},'preview':{'definition':'deploy/preview.toml'}}
         self.data={'version':1,'project':'demo','komizo_ref':'c'*40,'components':['gate','api'],
             'runner':'ubuntu-24.04','up_timeout_minutes':35,'down_timeout_minutes':10,'publish_timeout_minutes':10,
             'origin_variables':{'ALLOWED_ORIGINS':['app','api'],'CLERK_AUTHORIZED_PARTIES':['app']},
@@ -86,7 +87,7 @@ class PreviewDeclaration(unittest.TestCase):
         self.write()
 
     def write(self):
-        (self.root/'deploy/preview.json').write_text(json.dumps(self.data))
+        write_source(self.root/'deploy/preview.toml', self.data)
 
     def declaration(self):
         with patch.object(preview.images,'definition',return_value=self.definition):

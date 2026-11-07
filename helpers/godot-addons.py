@@ -2,6 +2,7 @@
 """Restore and verify exact addon release bytes from caller-owned provenance."""
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -13,6 +14,11 @@ import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
+
+
+_spec = importlib.util.spec_from_file_location('_addons_source_config', Path(__file__).with_name('source_config.py'))
+source_config = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(source_config)
 
 
 def tree_hash(root, generated=()):
@@ -35,11 +41,11 @@ def tree_hash(root, generated=()):
 
 def declaration(project):
     project = Path(project)
-    for name in ['gdam.json', 'addon-provenance.json']:
+    for name in ['gdam.toml', 'addon-provenance.json']:
         path = project / name
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 1 << 20:
             raise ValueError('addon declarations must be bounded regular source files')
-    manifest = json.loads((project / 'gdam.json').read_text())['addons']
+    manifest = source_config.read(project / 'gdam.toml', maximum=1 << 20)['addons']
     lock = json.loads((project / 'addon-provenance.json').read_text())
     if not isinstance(manifest, dict) or not manifest or set(manifest) != set(lock):
         raise ValueError('addon manifest and reviewed provenance must name the same releases')
@@ -104,14 +110,14 @@ def binding_inputs(project, bindings):
     return {'tool': bindings['tool'], 'pin': bindings['pin'],
             'cli_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
             'sources': {name: hashlib.sha256((project / name).read_bytes()).hexdigest()
-                        for name in ['gdam.json', 'gdam.lock', 'addon-provenance.json']}}
+                        for name in ['gdam.toml', 'gdam.lock', 'addon-provenance.json']}}
 
 
 def binding_paths(project):
     frozen = project / 'gdam.lock'
     if frozen.is_symlink() or not frozen.is_file() or frozen.stat().st_size > 1 << 20:
         raise ValueError('canonical addon bindings require the exact frozen lock')
-    if json.loads((project / 'gdam.json').read_text()).get('package'):
+    if source_config.read(project / 'gdam.toml', maximum=1 << 20).get('package'):
         raise ValueError('release addon bindings require a dependency-only project manifest')
     return sorted(release['installs'][0]['path'] + '/.gdam/deps.gd'
                   for release in json.loads(frozen.read_text())['addons'].values() if release.get('dependencies'))
@@ -170,8 +176,9 @@ def prepare_bindings(project, bindings, archives):
     with tempfile.TemporaryDirectory(prefix='godot-addon-bindings-') as temporary:
         candidate = Path(temporary) / 'project'; candidate.mkdir()
         cache = Path(temporary) / 'cache'; cache.mkdir()
-        for name in ['gdam.json', 'gdam.lock']:
-            shutil.copyfile(project / name, candidate / name)
+        # The isolated pinned native generator consumes its immutable JSON ABI.
+        (candidate / 'gdam.json').write_text(json.dumps(source_config.read(project / 'gdam.toml', maximum=1 << 20), indent=2) + '\n')
+        shutil.copyfile(project / 'gdam.lock', candidate / 'gdam.lock')
         lock = declaration(project)
         for name, entry in lock.items():
             archive = archives[name]

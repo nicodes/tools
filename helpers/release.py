@@ -241,7 +241,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation', choices=['record', 'publish'])
     parser.add_argument('--project', required=True)
-    parser.add_argument('--definition', type=Path, default=Path('deploy/release.json'))
+    parser.add_argument('--definition', type=Path, default=Path('deploy/release.toml'))
     parser.add_argument('--image-base')
     parser.add_argument('--revision', required=True)
     parser.add_argument('--components', nargs='+', required=True)

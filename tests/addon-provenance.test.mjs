@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { spawnSync } from 'node:child_process';
+import {mkdtempSync, writeFileSync, rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertMainRef, assertChecksum, assertReleaseIdentity, buildCandidate, renderNotes, assertNotes,
-         assertGodotLog, FIXED_ZIP_STAMP } from '../helpers/addon-provenance.mjs';
+         assertGodotLog, FIXED_ZIP_STAMP, loadPolicy, loadProvenance } from '../helpers/addon-provenance.mjs';
 
 const sha = 'a'.repeat(64);
 const commit = 'b'.repeat(40);
@@ -49,4 +52,29 @@ test('archive epoch stays fixed across timezone environments', () => {
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', `import {FIXED_ZIP_STAMP as s} from ${JSON.stringify(helper)}; if(s.time!==0||s.day!==33)process.exit(1)`], { env: { ...process.env, TZ }, encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
   }
+});
+
+
+test('authored TOML policy and allowlist preserve JSON vendor/package wire metadata', () => {
+  const root = mkdtempSync(join(tmpdir(), 'addon-source-'));
+  try {
+    const declared = {...policy, registry_archive: 'dist/example.gdam.zip', vendor: 'VENDOR.json',
+      allowlist: 'package-allowlist.toml', browser_entry: 'browser.js'};
+    delete declared.zip_entries;
+    const text = Object.entries(declared).map(([key,value]) => `${JSON.stringify(key)} = ${JSON.stringify(value)}\n`).join('');
+    writeFileSync(join(root, 'package-provenance.toml'), text);
+    writeFileSync(join(root, 'package-allowlist.toml'), 'zip_entries=4\n');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({version: '1.2.3'}));
+    writeFileSync(join(root, 'VENDOR.json'), JSON.stringify({version: '6.0.0',integrity: 'sha512-source'}));
+    const loaded = loadPolicy(root);
+    assert.equal(loaded.zip_entries, 4);
+    assert.deepEqual(loadProvenance(root,loaded), {version:'1.2.3',vendorVersion:'6.0.0',integrity:'sha512-source',entries:4});
+    const candidate = buildCandidate(info,loaded);
+    assert.equal(JSON.parse(JSON.stringify(candidate)).schema, policy.candidate_schema);
+    writeFileSync(join(root,'package-allowlist.toml'), 'zip_entries="4"\n');
+    assert.throws(() => loadPolicy(root), /entry count/);
+    rmSync(join(root,'package-provenance.toml'));
+    writeFileSync(join(root,'package-provenance.json'), JSON.stringify(declared));
+    assert.throws(() => loadPolicy(root));
+  } finally { rmSync(root, {recursive:true,force:true}); }
 });

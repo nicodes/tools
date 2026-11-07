@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import operational_workflows as operations
 import configuration
 import generate
+from source_fixture import read_source, write_source, dump_source
 
 
 class OperationalWorkflows(unittest.TestCase):
@@ -17,26 +18,26 @@ class OperationalWorkflows(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        for name in ['deploy/health.py', 'deploy/security.py', 'deploy/backup.json',
-                     'deploy/deployed-scan.json', 'deploy/restore.json', 'api/Cargo.toml']:
+        for name in ['deploy/health.py', 'deploy/security.py', 'deploy/backup.toml',
+                     'deploy/deployed-scan.toml', 'deploy/restore.toml', 'api/Cargo.toml']:
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text('{}\n' if path.suffix == '.json' else '# Native fixture\n')
-        self.config = {'recipe': 'react-native', 'delivery': {'definition': 'deploy/delivery.json'},
-                       'operations': {'definition': 'deploy/operations.json'}}
+            path.write_text('# Native fixture\n')
+        self.config = {'recipe': 'react-native', 'delivery': {'definition': 'deploy/delivery.toml'},
+                       'operations': {'definition': 'deploy/operations.toml'}}
         delivery = dict(version=1, project='demo', komizo_ref='a' * 40,
                         publish_runner='ubuntu-24.04', publish_timeout=35,
                         deploy_runner='ubuntu-24.04', deploy_timeout=100,
                         health_urls=['https://example.test/readyz'], notification_url='https://example.test/',
                         secrets={}, variables={})
-        (self.root / 'deploy/delivery.json').write_text(json.dumps(delivery))
+        write_source(self.root / 'deploy/delivery.toml', delivery)
         self.data = dict(version=1, project='demo',
             backup=dict(runner='ubuntu-24.04', timeout_minutes=40, environment='production',
-                        schedule=['8 0 * * *'], config='deploy/backup.json',
+                        schedule=['8 0 * * *'], config='deploy/backup.toml',
                         concurrency='deploy-production', queue='max', gate_variable='BACKUP_ENABLED'),
             recovery=dict(runner='ubuntu-24.04', timeout_minutes=45, environment='production'),
             security=dict(runner='ubuntu-24.04', timeout_minutes=110, report_timeout=5,
-                          deployed_policy='deploy/deployed-scan.json', evidence=['.artifacts/security/']),
+                          deployed_policy='deploy/deployed-scan.toml', evidence=['.artifacts/security/']),
             production=dict(runner='ubuntu-24.04', timeout_minutes=45, environment='Production',
                             checks=[dict(runner='python', path='deploy/health.py', timeout=180)]),
             paid=[dict(id='model_smoke', description='Run the existing live model assertion',
@@ -44,10 +45,10 @@ class OperationalWorkflows(unittest.TestCase):
                        deployment_required=True, skip_default=True,
                        check=dict(runner='cargo-run', path='api/Cargo.toml', binary='model-smoke',
                                   args=['--live'], timeout=1200))],
-            restore_profiles=[dict(name='default', project='demo', config='deploy/restore.json')])
+            restore_profiles=[dict(name='default', project='demo', config='deploy/restore.toml')])
 
     def write(self):
-        (self.root / 'deploy/operations.json').write_text(json.dumps(self.data))
+        write_source(self.root / 'deploy/operations.toml', self.data)
 
     def declaration(self):
         self.write()
@@ -224,7 +225,7 @@ class OperationalWorkflows(unittest.TestCase):
         self.write()
         (self.root/'tests').mkdir()
         (self.root/'tests/unit.py').write_text('assert 2 + 2 == 4\n')
-        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="deploy/delivery.json"\n[operations]\ndefinition="deploy/operations.json"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
+        (self.root/'cookbook.toml').write_text('version=1\nrecipe="react-native"\n[delivery]\ndefinition="deploy/delivery.toml"\n[operations]\ndefinition="deploy/operations.toml"\n[[tests.unit]]\nrunner="python"\npath="tests/unit.py"\n')
         files=generate.workflow_files(self.root,'b'*40)
         self.assertIn('.github/workflows/security-scan.yml',files)
         self.assertIn('.github/workflows/recovery.yml',files)

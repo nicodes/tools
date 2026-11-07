@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).parents[1]/'cookbook'))
 import godot_static as static
+from source_fixture import read_source, write_source, dump_source
 
 SOURCE='a'*40
 GATE='ghcr.io/example/game-gate@sha256:'+'b'*64
@@ -22,14 +23,14 @@ def stack(reference):return {'name':'godot-static','services':{'game-gate':{'ima
 class StaticBlueprint(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);self.root=Path(temporary.name)
-        for name,body in {'deploy/komizo.yml':'compose: compose.yml\nhostnames: [game.example.test]\n','deploy/compose.yml':COMPOSE,
+        for name,body in {'deploy/komizo.toml':'compose = "compose.yml"\nhostnames = ["game.example.test"]\n','deploy/compose.yml':COMPOSE,
             'public/release-manifest.json':json.dumps({'source_commit':SOURCE,'release_id':'c'*64}),
             'mise.toml':'[tools]\npython="3.13.11"\n'}.items():
             path=self.root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(body)
-        selected={'config':'deploy/komizo.yml','compose':'deploy/compose.yml','release_manifest':'public/release-manifest.json','record':True,'recovery':False,'production':False,'recovery_test':'shipping'}
-        (self.root/'deploy/delivery.json').write_text(json.dumps({'mode':'godot-static','komizo_ref':'d'*40,'project':'game','static':selected}))
-        (self.root/'deploy/release.json').write_text(json.dumps({'project':'game','image_base':'ghcr.io/example/game'}))
-        self.config={'recipe':'godot-game','tests':{'integration':[{'name':'shipping','runner':'bash','path':'tests/gate.sh'}]},'delivery':{'definition':'deploy/delivery.json'},'artifacts':{
+        selected={'config':'deploy/komizo.toml','compose':'deploy/compose.yml','release_manifest':'public/release-manifest.json','record':True,'recovery':False,'production':False,'recovery_test':'shipping'}
+        write_source(self.root/'deploy/delivery.toml', {'mode':'godot-static','komizo_ref':'d'*40,'project':'game','static':selected})
+        write_source(self.root/'deploy/release.toml', {'project':'game','image_base':'ghcr.io/example/game'})
+        self.config={'recipe':'godot-game','tests':{'integration':[{'name':'shipping','runner':'bash','path':'tests/gate.sh'}]},'delivery':{'definition':'deploy/delivery.toml'},'artifacts':{
             'release_metadata':[static.CONFIG_ARTIFACT,static.MANIFEST_ARTIFACT]}}
         self.environment={'SOURCE_COMMIT':SOURCE}
         subprocess.run(['git','init','-q',str(self.root)],check=True)
@@ -51,7 +52,7 @@ class StaticBlueprint(unittest.TestCase):
     def test_blueprint_and_public_identity_are_closed_before_publication(self):
         blueprint=self.make_blueprint()
         self.assertEqual(blueprint['compose']['text'],COMPOSE)
-        self.assertEqual(blueprint['config']['text'],(self.root/'deploy/komizo.yml').read_text())
+        self.assertEqual(blueprint['config']['text'],(self.root/'deploy/komizo.toml').read_text())
         self.assertEqual(blueprint['production_stack'],stack('ghcr.io/example/game-gate@'+static.PLACEHOLDER))
         self.assertEqual(json.loads((self.root/static.MANIFEST_ARTIFACT).read_text())['release_id'],'c'*64)
 
@@ -92,7 +93,7 @@ class StaticBlueprint(unittest.TestCase):
     def test_metadata_is_recipe_owned_and_lifecycle_cannot_invent_recovery(self):
         config=copy.deepcopy(self.config);config['artifacts']['release_metadata']=[]
         self.assertEqual(static.declaration(self.root,config),static.declaration(self.root,self.config))
-        path=self.root/'deploy/delivery.json';value=json.loads(path.read_text());value['static']['record']=False;value['static']['recovery']=True;path.write_text(json.dumps(value))
+        path=self.root/'deploy/delivery.toml';value=read_source(path);value['static']['record']=False;value['static']['recovery']=True;write_source(path, value)
         with self.assertRaisesRegex(ValueError,'real release records'):static.declaration(self.root,self.config)
 
 

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 
-from configuration import relative
+from configuration import relative, read_source_data
 
 RUNNERS = {'ubuntu-22.04', 'ubuntu-24.04', 'blacksmith-4vcpu-ubuntu-2204', 'blacksmith-4vcpu-ubuntu-2404'}
 NAME = re.compile(r'(?:test-|suite-)[a-z0-9_-]{1,120}\Z')
@@ -102,7 +102,7 @@ def effective_host_budget(root, config, original, environment=None):
     path=relative(Path(root),selected['definition'],exists=True)
     if not path.is_file() or path.stat().st_size>32768:
         raise ValueError('Godot delivery deadlines require bounded native source data')
-    data=json.loads(path.read_text())
+    data=read_source_data(path, maximum=32768)
     if not isinstance(data,dict) or 'validation_timeout_minutes' not in data:
         return original
     value=data['validation_timeout_minutes']
@@ -797,6 +797,9 @@ def setup_worker(root, config, environment, entry):
     if entry.get('virtual_display'):
         import virtual_display
         virtual_display.setup(root, environment, game.run)
+    lint_directory, _ = game.project(root, config)
+    if role == 'host' and (lint_directory / 'gdlint.toml').exists():
+        game.runtime_configuration().prepare(root, (lint_directory / 'gdlint.toml').relative_to(root), 'gdlint')
     if role not in {'unit', 'host'} and entry.get('setup') != 'godot':
         return
     directory, settings = game.project(root, config)
@@ -809,7 +812,8 @@ def setup_worker(root, config, environment, entry):
     if role == 'host':
         engine += ['--templates-checksum', godot['GODOT_TEMPLATES_CHECKSUM'], '--templates']
     game.run(engine, root, environment)
-    if (directory / 'gdam.json').exists():
+    if (directory / 'gdam.toml').exists():
+        game.runtime_configuration().prepare(root, (directory / 'gdam.toml').relative_to(root), 'gdam')
         game.helper('godot-addons').restore(directory, taint_markers=settings.get('addon_taint_markers', []),
             bindings=game.godot_addon_bindings.installed(root, config, environment))
     game.import_native(root, config, environment)

@@ -1,6 +1,7 @@
 import importlib.util
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
 
@@ -84,6 +85,25 @@ class WebsitePerformanceContract(unittest.TestCase):
                 with self.assertRaises(ValueError):helper.performance(root,budget)
             (root/'linked').symlink_to(root/'missing')
             with self.assertRaises(ValueError):helper.performance(root,self.budget())
+
+    def test_toml_budget_cli_enforces_the_same_byte_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / 'export'
+            output.mkdir()
+            (output / 'index.html').write_text(PAGE.format('Home'))
+            budget_path = root / 'budget.toml'
+            helper._source.write(budget_path, self.budget())
+            command = [sys.executable, '-I', '-B', str(Path(helper.__file__)), str(output), '--budget', str(budget_path)]
+            good = subprocess.run(command, capture_output=True, text=True)
+            self.assertEqual(good.returncode, 0, good.stderr)
+            limited = self.budget(); limited['max_total_bytes'] = 1
+            helper._source.write(budget_path, limited)
+            bad = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(bad.returncode, 0)
+            self.assertIn('exceeds total budget 1', bad.stderr)
+            budget_path.write_text('max_total_bytes = 2026-11-07\n')
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
 
 
 if __name__ == '__main__':

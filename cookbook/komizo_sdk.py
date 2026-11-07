@@ -5,17 +5,22 @@ from pathlib import Path
 import re
 import subprocess
 
-from configuration import relative
+from configuration import relative, read_source_data
 
 SDK='.artifacts/sdk/komizo'
 REPOSITORY='https://github.com/nicodes/komizo-actions.git'
 SHA=re.compile('[a-f0-9]{40}')
 
 
-def read(path,maximum=32768):
+def bounded(path,maximum=32768):
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents) or not path.is_file() or path.stat().st_size>maximum:
         raise ValueError('Komizo SDK declarations must be bounded regular source files')
-    return json.loads(path.read_text())
+    return path.read_bytes()
+
+
+def read(path,maximum=32768):
+    bounded(path, maximum)
+    return read_source_data(path, maximum=maximum)
 
 
 def declaration(root,config):
@@ -71,7 +76,7 @@ def check(root,config,environment):
     source=relative(root,SDK+'/source',exists=True)
     clean_source(root,source,environment)
     expected={'version':1,'repository':REPOSITORY,'source':revision,'accepted_main':True}
-    if read(relative(root,SDK+'/source.json',exists=True))!=expected:
+    if json.loads(bounded(relative(root,SDK+'/source.json',exists=True)))!=expected:
         raise ValueError('run make setup for the exact accepted Komizo SDK')
     if capture(git(source,'rev-parse','HEAD'),root,environment)!=revision:
         raise ValueError('Komizo SDK source differs from the declared immutable pin')

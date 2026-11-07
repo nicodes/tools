@@ -12,6 +12,7 @@ import unittest
 spec = importlib.util.spec_from_file_location('stateful', Path(__file__).resolve().parents[1]/'helpers/stateful_release.py')
 stateful = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(stateful)
+source_config = stateful.source_config
 
 INITIAL = 'CREATE TABLE records(id INTEGER PRIMARY KEY, value INTEGER NOT NULL)'
 ADDITIVE = "ALTER TABLE records ADD COLUMN note TEXT NOT NULL DEFAULT ''"
@@ -34,13 +35,13 @@ class StatefulContract(unittest.TestCase):
                    'migrations': [{'identity': '001.sql', 'sha256': 'b'*64}], 'recovery_action': 'forward_only'}
         self.assertEqual(stateful.identity(current), 'e8e790b253bd846e99adc4d63d399272f932bd9193957c08dee80806c2fd8fc3')
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)/'declaration.json'
+            path = Path(directory)/'declaration.toml'
             declaration = {key: value for key, value in current.items() if key != 'source_revision'}
-            path.write_text(json.dumps(declaration))
+            source_config.write(path, declaration)
             self.assertEqual(stateful.materialize(path, 'a'*40), current)
-            path.write_text('{"version":1,"version":1}')
+            path.write_text('version = 1\nversion = 1\n')
             with self.assertRaises(ValueError): stateful.materialize(path, 'a'*40)
-            path.write_text(json.dumps(current))
+            source_config.write(path, current)
             with self.assertRaises(ValueError): stateful.materialize(path, 'a'*40)
 
     def test_real_disposable_old_new_processes_preserve_overlapping_writes(self):

@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import {readSource} from './source-config.mjs';
 
 // The deployment manifest owns this data; the cookbook supplies only encoding.
-const manifest = Bun.YAML.parse(fs.readFileSync('deploy/komizo.yml', 'utf8'));
+const manifest = readSource('deploy/komizo.toml', {maximum: 65536});
 assert.ok(manifest && typeof manifest === 'object' && !Array.isArray(manifest));
 assert.deepEqual(Object.keys(manifest).sort(), ['compose', 'hostnames']);
 assert.equal(manifest.compose, 'compose.yml');

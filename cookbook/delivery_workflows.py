@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
-from configuration import relative
+from configuration import relative, read_source_data
 
 
 def deadlines(data):
@@ -48,7 +48,7 @@ def declaration(root, config):
     path = relative(Path(root), value['definition'], exists=True)
     if path.stat().st_size > 32768:
         raise ValueError('delivery declaration exceeds its bound')
-    data = json.loads(path.read_text())
+    data = read_source_data(path, maximum=32768)
     keys = {'version', 'project', 'komizo_ref', 'publish_runner', 'publish_timeout',
             'deploy_runner', 'deploy_timeout', 'health_urls', 'secrets', 'variables',
             'backup', 'upload_backup', 'readiness', 'diagnostics', 'notification_url', 'combined', 'mode', 'static',

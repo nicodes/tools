@@ -10,12 +10,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'cookbook'))
 import godot_ci
+from source_fixture import read_source, write_source, dump_source
 
 
 class GodotTopologyControls(unittest.TestCase):
     def delivery_source(self, root):
         (root/'deploy').mkdir()
-        (root/'deploy/delivery.json').write_text(json.dumps({'version':1,'validation_timeout_minutes':60}))
+        write_source(root/'deploy/delivery.toml', {'version':1,'validation_timeout_minutes':60})
         def git(*args):
             return subprocess.check_output(['git','-c','user.name=Fixture','-c','user.email=fixture@example.test',
                 '-c','commit.gpgsign=false','-C',str(root),*args],text=True,stderr=subprocess.DEVNULL).strip()
@@ -24,7 +25,7 @@ class GodotTopologyControls(unittest.TestCase):
         environment=dict(GITHUB_REPOSITORY='owner/demo',GITHUB_SHA=source,GITHUB_WORKFLOW_SHA=source,
             GITHUB_WORKFLOW_REF='owner/demo/.github/workflows/cd.yml@refs/heads/main',
             GITHUB_REF='refs/heads/main',GITHUB_EVENT_NAME='push',SOURCE_SHA=source,COOKBOOK_VALIDATION_TIMEOUT='60')
-        config=self.config();config['delivery']={'definition':'deploy/delivery.json'}
+        config=self.config();config['delivery']={'definition':'deploy/delivery.toml'}
         config['ci']['godot'].update(build_timeout_minutes=45,unit_timeout_minutes=45,host_timeout_minutes=45)
         return config,environment
 
@@ -41,7 +42,7 @@ class GodotTopologyControls(unittest.TestCase):
                     self.assertEqual(plan['requirements'][-1]['timeout_minutes'],45)
             with self.assertRaisesRegex(ValueError,'caller deadline'):
                 godot_ci.plan(root,config,environment|{'COOKBOOK_VALIDATION_TIMEOUT':'180'})
-            (root/'deploy/delivery.json').write_text(json.dumps({'version':1,'validation_timeout_minutes':60,'modified':True}))
+            write_source(root/'deploy/delivery.toml', {'version':1,'validation_timeout_minutes':60,'modified':True})
             with self.assertRaisesRegex(ValueError,'exact tracked source'):
                 godot_ci.plan(root,config,environment)
 

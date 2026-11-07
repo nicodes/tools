@@ -11,6 +11,7 @@ from unittest.mock import patch
 HELPER=Path(__file__).resolve().parents[1]/'helpers/verification.py'
 spec=importlib.util.spec_from_file_location('verification',HELPER)
 verification=importlib.util.module_from_spec(spec);spec.loader.exec_module(verification)
+source_config = verification.source_config
 
 
 class Evidence(unittest.TestCase):
@@ -116,20 +117,20 @@ class Evidence(unittest.TestCase):
 
     def test_release_metadata_accepts_inputs_and_test_names_without_a_runner_schema(self):
         Path('deploy').mkdir()
-        file=Path('deploy/release.json')
+        file=Path('deploy/release.toml')
         definition={'version':1,'project':'mailroom','image_base':'registry.example/mailroom',
                     'tests':['unit'],'inputs':{'artifacts':['dist'],'images':[],
                     'environment':[],'revision_environment':[]}}
-        file.write_text(json.dumps(definition))
+        source_config.write(file, definition)
         with self.assertRaisesRegex(ValueError,'tracked'):
             verification.release_definition(file)
         subprocess.run(['git','add',str(file)],check=True)
         self.assertEqual(verification.release_definition(file),definition)
         for field,value in [('stages',{'unit':[['echo','untrusted']]}),('tools',{'python':'3.13.11'})]:
-            file.write_text(json.dumps({**definition,field:value}))
+            source_config.write(file, {**definition,field:value})
             with self.assertRaises(ValueError):verification.release_definition(file)
-        file.write_text('{"version":1,"version":1}')
-        with self.assertRaisesRegex(ValueError,'duplicate'):verification.release_definition(file)
+        file.write_text('version = 1\nversion = 1\n')
+        with self.assertRaisesRegex(ValueError,'overwrite|duplicate'):verification.release_definition(file)
 
 
 if __name__=='__main__':

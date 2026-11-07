@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 512a930a3dc81344bddfe74fc9224dff28f9715d10bf729b1a5f208891bd0523 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 3031649ca0a32a1712df44c95d8fc4b79e96a87d0792dcb73f5710fe0150c1c2 -->
 
 # tools
 
@@ -27,7 +27,7 @@ Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your produ
 
 Check out this repository at a reviewed full commit to use `helpers/integration-identity.py`. Run it from the product checkout with `EXPECTED_HEAD` set to the exact pull request head. It records the actual tested integration commit and raw parents in `.artifacts/fleet-integration.json`, refusing a checkout that does not contain the requested PR head as its second parent. Upload that file from the same job that performs verification. The helper also supports exact `main` delivery identity for push and manual dispatch events.
 
-`nicodes/tools/dependencies@FULL_40_CHARACTER_COMMIT` inspects signed bot updates against the caller's protected `.github/dependency-policy.json`. Supply a new `output` report path and use `apply: 'true'` only from the trusted policy workflow. It verifies the bot commit, current required checks, integration tree and unchanged base/head before merging. It builds its metadata parser from the pinned action source and never loads the product's tool hooks or PR code.
+`nicodes/tools/dependencies@FULL_40_CHARACTER_COMMIT` inspects signed bot updates against the caller's protected `.github/dependency-policy.toml`. Supply a new `output` report path and use `apply: 'true'` only from the trusted policy workflow. It verifies the bot commit, current required checks, integration tree and unchanged base/head before merging. It builds its metadata parser from the pinned action source and never loads the product's tool hooks or PR code.
 
 The recovery helpers accept caller-owned declarations and commands. The snapshot helper packages a product capture; the PostgreSQL helper retains ownership/ACL metadata; restore drills verify restoration in isolated disposable containers. Products supply database/image choices, role and data assertions, resource limits and retention policy. Transport helpers preserve conditioned creation, bounded responses and private credentials. The backup-store capability probe creates a uniquely named synthetic object only when explicitly invoked; it is never part of ordinary setup. Deployed-image scanning requires an explicit repository, image components and deployment environment in its scan declaration. Production host backup/restore authority and admission remain in the deployment system.
 
@@ -47,24 +47,22 @@ python3 "$TOOLS_ROOT/helpers/verification.py" session --test unit -- \
 
 Every required test must complete within the same session. Stale receipts, changed source inputs, linked artifacts and conflicting production build variants or revision inputs are refused. Declare relevant environment variable names with `--environment` and revision variable names with `--revision-environment`; their values contribute to the input digest and are never written to receipts. Local edits can be checked, and receipts identify whether tracked source was clean.
 
-Container publishers use `helpers/release.py` to record and publish the exact images checked by their Build job. They own a tracked `deploy/release.json` artifact definition:
+Container publishers use `helpers/release.py` to record and publish the exact images checked by their Build job. They own a tracked `deploy/release.toml` artifact definition:
 
-```json
-{
-  "version": 1,
-  "project": "example",
-  "image_base": "ghcr.io/example/example",
-  "tests": ["unit", "integration"],
-  "inputs": {
-    "artifacts": [".artifacts/release"],
-    "images": ["ghcr.io/example/example-api:{revision}"],
-    "environment": [],
-    "revision_environment": []
-  }
-}
+```toml
+version = 1
+project = "example"
+image_base = "ghcr.io/example/example"
+tests = ["unit", "integration"]
+
+[inputs]
+artifacts = [".artifacts/release"]
+images = ["ghcr.io/example/example-api:{revision}"]
+environment = []
+revision_environment = []
 ```
 
-Pass `--definition deploy/release.json` to verification commands instead of individual input flags. The definition contains output selectors and required tests; product task commands and SDK pins stay in native configuration. An optional `stateful_contract` names the product's tracked data compatibility declaration. Publication retains immutable image IDs, archive hashes, clean source and same-run test checks. Stateful declarations alone cannot authorize automatic image rollback. Ordinary library, CLI and static builds need no release definition or deployment configuration.
+Pass `--definition deploy/release.toml` to verification commands instead of individual input flags. The definition contains output selectors and required tests; product task commands and SDK pins stay in native configuration. An optional `stateful_contract` names the product's tracked data compatibility declaration. Publication retains immutable image IDs, archive hashes, clean source and same-run test checks. Stateful declarations alone cannot authorize automatic image rollback. Ordinary library, CLI and static builds need no release definition or deployment configuration.
 
 ## Development sessions and optional auth checks
 
@@ -75,13 +73,13 @@ python3 "$TOOLS_ROOT/helpers/dev.py" run --state .artifacts/dev -- \
   ghenv local -- python3 "$TOOLS_ROOT/helpers/static-site.py"
 ```
 
-Install the optional [ghenv](https://github.com/nicodes/ghenv) CLI for credential isolation. `ghenv local` needs no account or remote credentials; `ghenv dev --config ghenv.json` applies the product's explicit local or Preview credential policy. Products own setup commands and credential selection. The static-site helper keeps supported Astro development scripts in the foreground and preserves caller arguments and exit status.
+Install the optional [ghenv](https://github.com/nicodes/ghenv) CLI for credential isolation. `ghenv local` needs no account or remote credentials; `ghenv dev --config ghenv.toml` applies the product's explicit local or Preview credential policy. Products own setup commands and credential selection. The static-site helper keeps supported Astro development scripts in the foreground and preserves caller arguments and exit status.
 
 Use `dev.py stop --state .artifacts/dev` to stop that checkout. `dev.py clean --state .artifacts/dev -- COMMAND` refuses cleanup while its session is active. A run can supply `--cleanup '["ghenv","local","--","bash","scripts/stop.sh"]'` before `--` to execute caller-owned cleanup after its descendants exit, while retaining the lease. Cleanup commands own their environment and resource selection.
 
 For dependency preparation before credential selection, supply an isolated explicit command with `--prepare '["ghenv","local","--","mise","run","install"]'` and repeat `--policy-input` for the product's native task and credential policy files. The supervisor acquires the checkout lease first and refuses application launch if those files or the source revision change during preparation.
 
-`helpers/auth-boundary.mjs` is an optional source check for products that choose its Clerk environment rules. Import `checkAuthBoundary(root, policy)` from product tests, or run `bun "$TOOLS_ROOT/helpers/auth-boundary.mjs" --policy AUTH_POLICY.json` with an explicit object such as `{"provider":"clerk","api":true}`. It reads no deployment configuration. Provider choice, runtime authorization and authentication acceptance tests remain product-owned.
+`helpers/auth-boundary.mjs` is an optional source check for products that choose its Clerk environment rules. Import `checkAuthBoundary(root, policy)` from product tests, or run `bun "$TOOLS_ROOT/helpers/auth-boundary.mjs" --policy AUTH_POLICY.toml` with `provider = "clerk"` and `api = true` entries. It reads no deployment configuration. Provider choice, runtime authorization and authentication acceptance tests remain product-owned.
 
 ## Protected operator
 
@@ -131,7 +129,7 @@ The caller supplies its own `mise.toml` and required `check-command`. Verificati
 
 Publication requires an explicit dispatch from `main`. It refuses existing tags/releases, checks the complete archive matrix and SHA-256 checksums, stages a draft, verifies every uploaded asset digest, and publishes the draft only after the payload matches. Products own their versions, release assets, installer and additional acceptance checks. Installation does not require a tools checkout, a Go compiler or a server connection.
 
-Website exports can declare product byte limits with `helpers/site-contract.py OUTPUT --budget scripts/site-budget.json`. The JSON requires `max_total_bytes` and `max_file_bytes` for the complete export, `max_html_gzip_bytes` per page and `max_javascript_gzip_bytes` for all JavaScript. These reproducible byte checks complement browser acceptance; they do not claim network timing.
+Website exports can declare product byte limits with `helpers/site-contract.py OUTPUT --budget scripts/site-budget.toml`. The TOML requires `max_total_bytes` and `max_file_bytes` for the complete export, `max_html_gzip_bytes` per page and `max_javascript_gzip_bytes` for all JavaScript. These reproducible byte checks complement browser acceptance; they do not claim network timing.
 
 
 ## Cookbook building blocks
@@ -174,7 +172,9 @@ Run **Request merge** from `main` with a PR number. The shared controller snapsh
 
 Native test entries can use `cwd` and bounded filename `pattern` data. `python-unittest` runs native discovery and refuses zero completed cases; `node-test` expands declared regular test files without shell interpretation. Recipe-specific native runners plug into the same owned-source dispatch. Reviewed Godot engine/template checksum pins may use SHA-256 or SHA-512, preserving their existing exact identities. Native SDK activation disables implicit installation during build/test; setup remains explicit.
 
-The four recipe adapters reject unknown, inapplicable and retired settings before running product programs. Application projects use `app/`, Compose uses `deploy/compose.yml`, and release input definitions use `deploy/release.json`. Rust CLIs have a primary `cli` component at root `Cargo.toml`, release shipping output in `.artifacts/build/<binary>`, and optional UI source `app/` with output `.artifacts/ui`. The SDK derives artifact identity and named binary bindings; caller-selected identity replacements and package-manager audit waivers are rejected. Godot import timing follows declared build inputs, authored-file preservation always applies, and authenticated image state selects reuse, load or scoped repair. Native assertions, target matrices, platform requirements and bounded job/step budgets remain explicit.
+Authored project declarations use TOML. Explicit preparation produces hash-bound ignored JSON only where a pinned executable or addon package protocol requires it; validation refuses stale or foreign projections. Receipts, API payloads and native Compose output keep their protocol formats.
+
+The four recipe adapters reject unknown, inapplicable and retired settings before running product programs. Application projects use `app/`, Compose uses `deploy/compose.yml`, and release input definitions use `deploy/release.toml`. Rust CLIs have a primary `cli` component at root `Cargo.toml`, release shipping output in `.artifacts/build/<binary>`, and optional UI source `app/` with output `.artifacts/ui`. The SDK derives artifact identity and named binary bindings; caller-selected identity replacements and package-manager audit waivers are rejected. Godot import timing follows declared build inputs, authored-file preservation always applies, and authenticated image state selects reuse, load or scoped repair. Native assertions, target matrices, platform requirements and bounded job/step budgets remain explicit.
 
 The addon adapter prepares locked Node/browser dependencies and hash-locked Python environments only during `make setup`. Package verification compares the closed archive with current source, optional installed files and declared script UID policy. Native Godot tests use bounded execution, isolated user configuration and exact assertion markers or positive assertion counters. Fixture exports run during `make build`; integration and browser tests consume verified outputs without exporting again. Post-test screenshots, installed-tree records and candidate provenance have a separate evidence scope, so they do not change the accepted build identity.
 
