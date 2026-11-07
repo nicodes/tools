@@ -1,4 +1,5 @@
 import hashlib
+from source_fixture import write_source
 import importlib.util
 import json
 import os
@@ -26,8 +27,8 @@ class RustRecipe(unittest.TestCase):
             (self.root / directory).mkdir()
         readme = '# Native recipe fixture\n'
         (self.root / 'README.md').write_text(readme)
-        (self.root / '.github/readme-source.json').write_text(json.dumps({'version': 1,
-            'sha256': hashlib.sha256(readme.encode()).hexdigest()}))
+        write_source(self.root / '.github/readme-source.toml', {'version': 1,
+            'sha256': hashlib.sha256(readme.encode()).hexdigest()})
         (self.root / '.gitignore').write_text('/.artifacts/\n/dist/\n')
         (self.root / 'Cargo.toml').write_text('[package]\nname="example"\nversion="0.0.1"\n')
         (self.root / 'Cargo.lock').write_text('version=4\n')
