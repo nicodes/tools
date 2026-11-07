@@ -10,7 +10,7 @@ import re
 import subprocess
 
 from configuration import load, relative
-from generate import makefile, workflow_files
+from generate import check_entrypoint, workflow_files
 import recipe
 import orchestration
 
@@ -30,8 +30,7 @@ def identity(root, source, tools):
     for checkout in [root, TOOLS]:
         if subprocess.run(['git', '-C', str(checkout), 'diff', '--quiet', 'HEAD', '--'], timeout=30).returncode:
             raise ValueError('CI requires clean tracked source and cookbook code')
-    if (root / 'Makefile').read_text() != makefile(root, tools):
-        raise ValueError('Makefile differs from the pinned recipe generator')
+    check_entrypoint(root, tools)
     for name, expected in workflow_files(root, tools).items():
         if (root / name).read_text() != expected:
             raise ValueError('workflow differs from the pinned recipe generator: ' + name)
@@ -75,6 +74,7 @@ def proof(root, source, tools, config):
     return {'version': 1, 'repository': os.environ.get('GITHUB_REPOSITORY'),
             'source_commit': source, 'source_tree': tree, 'cookbook_commit': tools,
             'recipe': config['recipe'],
+            'entrypoint_contract': 'make-v0',
             'configuration_sha256': hashlib.sha256(subprocess.check_output(
                 ['git', '-C', str(root), 'show', 'HEAD:cookbook.toml'], timeout=30)).hexdigest(),
             'status': 'passed', 'tracked_source_clean': True,

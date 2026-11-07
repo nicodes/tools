@@ -4,6 +4,7 @@ import argparse
 import hashlib
 from pathlib import Path
 import re
+import tomllib
 
 from configuration import load, ci_settings, read_source_data
 import orchestration
@@ -234,6 +235,32 @@ def makefile(root, revision):
     return '\n'.join(lines)
 
 
+def entrypoint_files(root, revision):
+    """The current native ABI, preserved during controller-only adoption."""
+    return {'Makefile': makefile(root, revision)}
+
+
+def check_entrypoint(root, revision):
+    # This SDK edition executes the existing Make ABI. A future task-bearing
+    # Mise candidate must select its final SDK, never this transition edition.
+    mise = Path(root) / 'mise.toml'
+    import mise_entrypoint
+    source = mise_entrypoint.discovery().read_regular(mise)
+    data = tomllib.loads(source.decode('utf-8'))
+    if not isinstance(data.get('tools'), dict) or set(data) - {'tools', 'env'}:
+        raise ValueError('this SDK executes only its canonical Make entrypoint; select the final Mise SDK')
+    for name, expected in entrypoint_files(root, revision).items():
+        path = Path(root) / name
+        actual = mise_entrypoint.discovery().read_regular(path)
+        if len(actual) > 65536 or actual.decode('utf-8') != expected:
+            raise ValueError('generated entrypoint differs from its pinned recipe data: ' + name)
+
+
+def task_command(operation):
+    """Native task invocation belonging to this immutable SDK edition."""
+    return ['make', operation]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path.cwd())
@@ -242,8 +269,9 @@ def main():
     parser.add_argument('--workflows', action='store_true')
     args = parser.parse_args()
     try:
-        expected = makefile(args.root, args.revision)
-        files = {'Makefile': expected}
+        if args.check:
+            check_entrypoint(args.root, args.revision)
+        files = entrypoint_files(args.root, args.revision)
         if args.workflows:
             files.update(workflow_files(args.root, args.revision))
         for name, expected in files.items():

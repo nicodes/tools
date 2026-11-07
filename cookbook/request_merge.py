@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from configuration import ci_settings, validate_data
 import orchestration
+import mise_entrypoint
 
 TOOLS = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('request_merge_candidate', TOOLS / 'helpers/merge-candidate.py')
@@ -83,16 +84,24 @@ def snapshot(repository, number, expected_head='', expected_base=''):
     commit = api(f'repos/{repository}/git/commits/{revision}')
     receipt = candidate.snapshot(repository, pull, commit)
     expected_candidate(receipt, expected_head, expected_base)
-    makefile = source_file(repository, revision, 'Makefile')
     source = source_file(repository, revision, 'cookbook.toml')
     declaration = validate_data(tomllib.loads(source))
-    tools, groups = recipe_pin(makefile, declaration)
+    mise = source_file(repository, revision, 'mise.toml')
+    if mise_entrypoint.declared(mise):
+        identity = mise_entrypoint.matches(mise_entrypoint.decode(mise), declaration, source.encode())
+        tools, groups = identity['revision'], identity['test_groups']
+        entrypoint_contract = 'mise-v1'
+    else:
+        makefile = source_file(repository, revision, 'Makefile')
+        tools, groups = recipe_pin(makefile, declaration)
+        entrypoint_contract = 'make-v0'
     accepted = api(f'repos/nicodes/tools/compare/{tools}...main')
     if accepted.get('status') not in {'ahead', 'identical'}:
         raise ValueError('recipe cookbook pin must already be accepted on Tools main')
     model = orchestration.contract(declaration)
     receipt.update(cookbook_commit=tools, test_groups=groups, recipe=model['recipe'], declaration=declaration,
-                   configuration_sha256=hashlib.sha256(source.encode()).hexdigest())
+                   configuration_sha256=hashlib.sha256(source.encode()).hexdigest(),
+                   entrypoint_contract=entrypoint_contract)
     settings = ci_settings(declaration)
     receipt.update(validation_runner=settings['runner'], validation_timeout=str(settings['timeout_minutes']))
     receipt['preview_environment'] = settings.get('preview_environment', '')
@@ -103,6 +112,15 @@ def snapshot(repository, number, expected_head='', expected_base=''):
 def workflow_acceptance(receipt, proof, run, jobs, environment=None):
     environment = environment or os.environ
     candidate.tested_candidate(receipt, proof)
+    # Genuine pre-transition controllers and SDKs emitted no such field. That
+    # immutable ABI is make-v0 only; it cannot authorize future Mise source.
+    expected_entrypoint = receipt.get('entrypoint_contract', 'make-v0')
+    actual_entrypoint = proof.get('entrypoint_contract', 'make-v0')
+    if (not isinstance(expected_entrypoint, str) or not isinstance(actual_entrypoint, str)
+            or expected_entrypoint not in {'make-v0', 'mise-v1'}
+            or actual_entrypoint not in {'make-v0', 'mise-v1'}
+            or actual_entrypoint != expected_entrypoint):
+        raise ValueError('validation used another native entrypoint contract')
     if proof.get('cookbook_commit') != receipt['cookbook_commit'] or proof.get('test_groups') != receipt['test_groups']:
         raise ValueError('validation used another cookbook or omitted test groups')
     declaration = receipt['declaration']

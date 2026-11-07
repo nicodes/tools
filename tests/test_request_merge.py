@@ -165,13 +165,14 @@ cases=[{name="test-first",path="app/tests/first.gd"},{name="test-second",path="a
             if '/git/commits/' in path:
                 return commit
             return self.api(path, method, data)
-        files = {'Makefile': 'COOKBOOK_REF := '+'e'*40, 'cookbook.toml': source}
+        files = {'Makefile': 'COOKBOOK_REF := '+'e'*40, 'cookbook.toml': source, 'mise.toml': '[tools]\npython="3.13.11"\n'}
         with patch.dict(os.environ, self.environment), patch.object(merge, 'api', side_effect=api), \
                 patch.object(merge, 'source_file', side_effect=lambda repository, revision, path: files[path]):
             receipt = merge.snapshot('owner/project', 7)
         self.assertEqual(receipt['declaration'], flat)
         self.assertEqual(merge.orchestration.contract(receipt['declaration']), merge.orchestration.contract(flat))
         self.assertEqual(receipt['configuration_sha256'], hashlib.sha256(source.encode()).hexdigest())
+        self.assertEqual(receipt['entrypoint_contract'], 'make-v0')
         self.assertEqual(receipt['test_groups'], ['lint', 'security', 'unit'])
         self.assertEqual(sum(method == 'POST' for _, method, _ in self.calls), 1)
 
@@ -180,6 +181,84 @@ cases=[{name="test-first",path="app/tests/first.gd"},{name="test-second",path="a
                           {'coverage': 'native-partial'}, {'native_matrix': {}}]:
             with self.subTest(overrides=overrides), self.assertRaises(ValueError):
                 merge.workflow_acceptance(self.receipt, self.proof | overrides, self.run, self.jobs, self.environment)
+
+    def test_future_Mise_snapshot_selects_exact_SDK_without_a_Makefile_or_task_execution(self):
+        from test_mise_entrypoint import future
+        source = 'version=1\nrecipe="godot-addon"\n[[tests.unit]]\nrunner="python"\npath="tests/check.py"\n'
+        commit = self.commit | {'sha': 'c' * 40, 'parents': [{'sha': 'a' * 40}, {'sha': 'b' * 40}]}
+        files = {'cookbook.toml': source, 'mise.toml': future(source)}
+        requested = []
+
+        def source_file(repository, revision, path):
+            requested.append(path)
+            return files[path]
+
+        def api(path, method='GET', data=None):
+            if '/compare/' in path:
+                self.assertEqual(path, 'repos/nicodes/tools/compare/' + 'e' * 40 + '...main')
+                return {'status': 'identical'}
+            if '/git/commits/' in path:
+                return commit
+            return self.api(path, method, data)
+
+        with patch.dict(os.environ, self.environment), patch.object(merge, 'api', side_effect=api), \
+                patch.object(merge, 'source_file', side_effect=source_file), \
+                patch('subprocess.run', side_effect=AssertionError('task execution forbidden')):
+            receipt = merge.snapshot('owner/project', 7)
+        self.assertEqual(requested, ['cookbook.toml', 'mise.toml'])
+        self.assertEqual(receipt['cookbook_commit'], 'e' * 40)
+        self.assertEqual(receipt['entrypoint_contract'], 'mise-v1')
+        self.assertEqual(receipt['test_groups'], ['lint', 'security', 'unit'])
+        self.assertEqual(receipt['configuration_sha256'], hashlib.sha256(source.encode()).hexdigest())
+        self.assertEqual(receipt['head'], 'b' * 40)
+        self.assertEqual(receipt['base'], 'a' * 40)
+        self.assertEqual(receipt['tree'], 'd' * 40)
+
+    def test_partial_future_identity_never_uses_a_present_legacy_Makefile(self):
+        source = 'version=1\nrecipe="godot-addon"\n[[tests.unit]]\nrunner="python"\npath="tests/check.py"\n'
+        commit = self.commit | {'sha': 'c' * 40, 'parents': [{'sha': 'a' * 40}, {'sha': 'b' * 40}]}
+        files = {'cookbook.toml': source, 'mise.toml': '[vars]\ntools_contract=1\n',
+                 'Makefile': 'COOKBOOK_REF := ' + 'e' * 40}
+        requested = []
+
+        def source_file(repository, revision, path):
+            requested.append(path)
+            return files[path]
+
+        def api(path, method='GET', data=None):
+            return commit if '/git/commits/' in path else self.api(path, method, data)
+
+        with patch.dict(os.environ, self.environment), patch.object(merge, 'api', side_effect=api), \
+                patch.object(merge, 'source_file', side_effect=source_file), self.assertRaises(ValueError):
+            merge.snapshot('owner/project', 7)
+        self.assertNotIn('Makefile', requested)
+        self.assertFalse(any(method == 'POST' for _, method, _ in self.calls))
+
+    def test_future_contract_cannot_accept_an_old_or_transition_SDK_proof(self):
+        receipt = self.receipt | {'entrypoint_contract': 'mise-v1'}
+        for value in [None, 'make-v0', 'unknown']:
+            proof = self.proof if value is None else self.proof | {'entrypoint_contract': value}
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'entrypoint contract'):
+                merge.workflow_acceptance(receipt, proof, self.run, self.jobs, self.environment)
+            self.assertFalse(self.calls)
+        proof = self.proof | {'entrypoint_contract': 'mise-v1'}
+        merge.workflow_acceptance(receipt, proof, self.run, self.jobs, self.environment)
+        for changed in [{'source_tree': '8' * 40}, {'test_groups': ['unit']},
+                        {'execution_context': self.environment | {'GITHUB_RUN_ATTEMPT': 'other'}}]:
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                merge.workflow_acceptance(receipt, proof | changed, self.run, self.jobs, self.environment)
+
+    def test_legacy_missing_contract_refuses_future_proof_and_unknown_partial_contracts(self):
+        merge.workflow_acceptance(self.receipt, self.proof, self.run, self.jobs, self.environment)
+        merge.workflow_acceptance(self.receipt, self.proof | {'entrypoint_contract': 'make-v0'},
+                                  self.run, self.jobs, self.environment)
+        for receipt_override, proof_override in [({}, {'entrypoint_contract': 'mise-v1'}),
+                ({'entrypoint_contract': None}, {}), ({'entrypoint_contract': 'unknown'}, {}),
+                ({}, {'entrypoint_contract': None}), ({'entrypoint_contract': []}, {}),
+                ({}, {'entrypoint_contract': {}})]:
+            with self.subTest(receipt=receipt_override, proof=proof_override), self.assertRaisesRegex(ValueError, 'entrypoint contract'):
+                merge.workflow_acceptance(self.receipt | receipt_override, self.proof | proof_override,
+                                          self.run, self.jobs, self.environment)
 
     def test_native_matrix_acceptance_is_rederived_from_snapshot_declaration(self):
         import test_native_ci
