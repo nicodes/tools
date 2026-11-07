@@ -301,9 +301,7 @@ function cookbookPreviewContract(root, declared) {
   return findings;
 }
 
-function previewNamesItsOwnOrigin(root, files, declared) {
-  const cookbook = cookbookPreviewContract(root, declared);
-  if (cookbook !== null) return cookbook;
+export function previewNamesItsOwnOrigin(root, files, declared) {
   const workflows = sourceFiles(root, { within: ['.github'], extensions: ['.yml', '.yaml'] })
     .filter(file => /preview/i.test(file));
   if (!workflows.length) {
@@ -388,6 +386,38 @@ function previewNamesItsOwnOrigin(root, files, declared) {
  * fleet adopts this one product at a time rather than turning nine
  * repositories red at once.
  */
+export function checkAuthBoundaryCore(root, declared) {
+  if (!declared) {
+    return [{ level: 'fail', text: 'this product has no auth declaration in the caller policy. Pass an explicit caller-owned auth policy.' }];
+  }
+  const files = sourceFiles(root, {
+    within: ['api', 'app', 'src', 'scripts', 'golang_api', 'web', 'e2e'],
+    extensions: ['.go', '.ts', '.tsx', '.js', '.mjs', '.cjs', '.svelte', '.gd'],
+  });
+
+  if (declared.provider === 'none') {
+    return noProvider(root, files).map(text => ({ level: 'fail', text }));
+  }
+  if (declared.provider !== 'clerk') {
+    return [{ level: 'fail', text: `unknown auth provider "${declared.provider}"` }];
+  }
+
+  const findings = [];
+  findings.push(...noPublicBypassFlag(root, files).map(text => ({ level: 'fail', text })));
+  if (declared.api) {
+    findings.push(...bypassIsCompiledOut(root));
+    findings.push(...keysDoNotCross(root).map(text => ({ level: 'fail', text })));
+  } else {
+    findings.push({ level: 'info', text: 'declared api: false -- no server verifies a token here, so there is no secret to route and no bypass to compile out' });
+  }
+  return findings;
+}
+
+function legacyPreviewBoundary(root, files, declared) {
+  const cookbook = cookbookPreviewContract(root, declared);
+  return cookbook !== null ? cookbook : previewNamesItsOwnOrigin(root, files, declared);
+}
+
 export function checkAuthBoundary(root, declared) {
   if (!declared) {
     return [{ level: 'fail', text: 'this product has no auth declaration in the caller policy. Pass an explicit caller-owned auth policy.' }];
@@ -406,7 +436,7 @@ export function checkAuthBoundary(root, declared) {
 
   const findings = [];
   findings.push(...noPublicBypassFlag(root, files).map(text => ({ level: 'fail', text })));
-  findings.push(...previewNamesItsOwnOrigin(root, files, declared));
+  findings.push(...legacyPreviewBoundary(root, files, declared));
   if (declared.api) {
     findings.push(...bypassIsCompiledOut(root));
     findings.push(...keysDoNotCross(root).map(text => ({ level: 'fail', text })));
