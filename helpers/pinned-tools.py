@@ -64,7 +64,7 @@ def rustup_activation(root, proxy, version, executables, environment, lookup):
     # Mise's Rust installation is a recorded Rustup proxy directory. Its
     # entrypoints may link to a package-managed Rustup outside that directory.
     # Only those exact lexical entrypoints may perform this metadata query.
-    for executable in executables:
+    for executable in dict.fromkeys(['rustc', *executables]):
         selected = shutil.which(executable, path=environment.get('PATH', ''))
         if not owned_entrypoint(selected, proxy):
             raise ValueError('required executable is absent from its exact installed SDK: ' + executable)
@@ -100,7 +100,9 @@ def rustup_activation(root, proxy, version, executables, environment, lookup):
                 or (directory is not None and path.parent != directory)):
             raise ValueError('Rustup returned a foreign version or mixed native toolchain roots')
         directory = path.parent
-    selected['PATH'] = str(directory) + os.pathsep + environment.get('PATH', '')
+    # Keep Rustup in command dispatch: a native-bin prefix bypasses cargo +toolchain
+    # and shadows the compiler selected by an explicit rustup run invocation.
+    selected['PATH'] = str(proxy) + os.pathsep + environment.get('PATH', '')
     return selected, directory, manager
 
 
@@ -146,8 +148,10 @@ def activation(root, required, environment=None, *, lookup=query, rustup_lookup=
         installs['rust'] = native
     for tool, executable in required:
         path = shutil.which(executable, path=result.get('PATH', ''))
-        if tool == 'rust' and executable == 'rustup':
-            if not owned_entrypoint(path, proxy) or Path(path).resolve() != Path(manager).resolve():
+        if tool == 'rust':
+            if not owned_entrypoint(path, proxy):
+                raise ValueError('required executable is absent from its exact installed SDK: ' + executable)
+            if executable == 'rustup' and Path(path).resolve() != Path(manager).resolve():
                 raise ValueError('required Rustup manager is outside its selected proxy source')
             continue
         if path is None or not Path(path).resolve().is_relative_to(installs[tool]):
