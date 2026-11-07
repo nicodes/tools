@@ -20,6 +20,11 @@ name: Windows SDK bootstrap
       - tests/test_sdk_bootstrap_child.py
       - cookbook/compiler_cache.py
       - cookbook/rust_cli.py
+      - cookbook/namespace_bridge.py
+      - cookbook/request_merge.py
+      - cookbook/generate.py
+      - cookbook/ci.py
+      - tests/test_namespace_bridge.py
       - tests/test_recipe_cargo_paths.py
       - tests/test_source_config.py
       - .github/workflows/windows-bootstrap.yml
@@ -78,3 +83,5 @@ jobs:
           python3 -m unittest discover -s tests -p test_sdk_bootstrap_transport.py -v
           python3 -m unittest discover -s tests -p test_sdk_bootstrap_child.py -v
           python3 -m unittest discover -s tests -p test_pinned_tools.py -v
+      - name: Verify legacy and Cookbook namespace authority before merge
+        run: python3 -m unittest discover -s tests -p test_namespace_bridge.py -v

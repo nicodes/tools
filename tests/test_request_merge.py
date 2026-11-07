@@ -165,7 +165,8 @@ cases=[{name="test-first",path="app/tests/first.gd"},{name="test-second",path="a
             if '/git/commits/' in path:
                 return commit
             return self.api(path, method, data)
-        files = {'Makefile': 'COOKBOOK_REF := '+'e'*40, 'cookbook.toml': source}
+        files = {'Makefile': 'COOKBOOK_REF := '+'e'*40, 'cookbook.toml': source,
+                 'mise.toml': '[tools]\npython="3.13.11"\n'}
         with patch.dict(os.environ, self.environment), patch.object(merge, 'api', side_effect=api), \
                 patch.object(merge, 'source_file', side_effect=lambda repository, revision, path: files[path]):
             receipt = merge.snapshot('owner/project', 7)
