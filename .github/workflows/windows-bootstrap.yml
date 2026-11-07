@@ -5,9 +5,11 @@ name: Windows SDK bootstrap
       - setup/**
       - helpers/verification.py
       - helpers/make-setup.py
+      - helpers/source_config.py
       - cookbook/compiler_cache.py
       - cookbook/rust_cli.py
       - tests/test_recipe_cargo_paths.py
+      - tests/test_source_config.py
       - .github/workflows/windows-bootstrap.yml
   workflow_dispatch: {}
 permissions:
@@ -52,3 +54,5 @@ jobs:
           make --version
       - name: Verify nested native Cargo recipe paths
         run: python3 -m unittest discover -s tests -p test_recipe_cargo_paths.py -v
+      - name: Verify bounded TOML source identities
+        run: python3 -m unittest discover -s tests -p test_source_config.py -v
