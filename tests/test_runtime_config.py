@@ -6,6 +6,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 
 PATH = Path(__file__).resolve().parents[1] / 'helpers/runtime_config.py'
@@ -104,6 +106,108 @@ class RuntimeConfig(unittest.TestCase):
             with runtime.temporary(self.root, 'app/gdam.toml') as target:
                 self.source.write_text('changed=true\n')
         self.assertFalse(target.exists())
+
+    def test_scoped_adjacent_projection_is_exact_and_removed_on_success_or_native_failure(self):
+        for failure in (False, True):
+            with self.subTest(native_failure=failure):
+                try:
+                    with runtime.scoped(self.root, 'app/gdam.toml', 'gdam') as target:
+                        self.assertEqual(target, self.root / 'app/gdam.json')
+                        self.assertEqual(runtime.verify(self.root, 'app/gdam.toml', 'gdam'), target)
+                        self.assertEqual(json.loads(target.read_bytes()), runtime.source_config.read(self.source))
+                        self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                        receipt = runtime.declaration(self.root, 'app/gdam.toml', 'gdam')[3]
+                        if failure:
+                            raise subprocess.CalledProcessError(17, ['native', 'install'])
+                except subprocess.CalledProcessError as error:
+                    self.assertTrue(failure)
+                    self.assertEqual(error.returncode, 17)
+                self.assertFalse(target.exists())
+                self.assertFalse(receipt.exists())
+
+    def test_scoped_creation_uses_compatible_cross_api_identity_and_full_path_identity(self):
+        original = runtime.os.fstat
+        def descriptor(fd):
+            value = original(fd)
+            fields = ('st_dev', 'st_ino', 'st_mode', 'st_nlink', 'st_uid', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+            return SimpleNamespace(**{name: getattr(value, name) + (1000000000 if name == 'st_ctime_ns' else 0)
+                                      for name in fields})
+        with mock.patch.object(runtime.os, 'fstat', side_effect=descriptor):
+            with runtime.scoped(self.root, 'app/gdam.toml', 'gdam') as target:
+                self.assertEqual(json.loads(target.read_bytes()), runtime.source_config.read(self.source))
+        self.assertFalse(target.exists())
+
+    def test_scoped_projection_never_adopts_existing_outputs_or_receipts(self):
+        _, _, target, receipt, _, _, _ = runtime.declaration(self.root, 'app/gdam.toml', 'gdam')
+        for path in (target, receipt):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b'foreign')
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, 'absent'):
+                with runtime.scoped(self.root, 'app/gdam.toml', 'gdam'):
+                    self.fail('must refuse before native execution')
+            self.assertEqual(path.read_bytes(), b'foreign')
+            path.unlink()
+        runtime.prepare(self.root, 'app/gdam.toml', 'gdam')
+        with self.assertRaisesRegex(ValueError, 'absent'):
+            with runtime.scoped(self.root, 'app/gdam.toml', 'gdam'):
+                self.fail('owned persistent outputs are not scoped outputs')
+
+    def test_scoped_projection_preserves_changed_or_replaced_evidence(self):
+        for change in ('native', 'receipt', 'same_bytes_replacement', 'hardlink', 'symlink'):
+            _, _, target, receipt, _, _, _ = runtime.declaration(self.root, 'app/gdam.toml', 'gdam')
+            with self.subTest(change=change), self.assertRaises((ValueError, OSError)):
+                with runtime.scoped(self.root, 'app/gdam.toml', 'gdam'):
+                    if change == 'native':
+                        target.write_bytes(b'{"foreign":true}')
+                    elif change == 'receipt':
+                        receipt.write_bytes(b'{"foreign":true}')
+                    elif change == 'same_bytes_replacement':
+                        replacement = target.with_name('replacement.json')
+                        replacement.write_bytes(target.read_bytes())
+                        replacement.replace(target)
+                    elif change == 'hardlink':
+                        target.with_name('linked.json').hardlink_to(target)
+                    else:
+                        target.unlink()
+                        target.symlink_to(self.source)
+            self.assertTrue(target.exists() or target.is_symlink())
+            self.assertTrue(receipt.exists())
+            if change == 'native':
+                self.assertEqual(target.read_bytes(), b'{"foreign":true}')
+            if change == 'receipt':
+                self.assertEqual(receipt.read_bytes(), b'{"foreign":true}')
+            target.unlink()
+            receipt.unlink()
+            target.with_name('linked.json').unlink(missing_ok=True)
+
+    def test_scoped_projection_refuses_source_change_and_removes_only_unchanged_owned_outputs(self):
+        _, _, target, receipt, _, _, _ = runtime.declaration(self.root, 'app/gdam.toml', 'gdam')
+        with self.assertRaisesRegex(ValueError, 'prepare current'):
+            with runtime.scoped(self.root, 'app/gdam.toml', 'gdam'):
+                self.source.write_text('changed=true\n')
+        self.assertEqual(self.source.read_text(), 'changed=true\n')
+        self.assertFalse(target.exists())
+        self.assertFalse(receipt.exists())
+
+    def test_scoped_projection_refuses_tracked_unignored_and_linked_paths(self):
+        target = self.root / 'app/gdam.json'
+        target.write_text('{}')
+        subprocess.run(['git', '-C', str(self.root), 'add', '--force', 'app/gdam.json'], check=True)
+        with self.assertRaisesRegex(ValueError, 'tracked'):
+            with runtime.scoped(self.root, 'app/gdam.toml', 'gdam'):
+                self.fail('tracked output must refuse')
+        subprocess.run(['git', '-C', str(self.root), 'rm', '--cached', '--quiet', 'app/gdam.json'], check=True)
+        target.unlink()
+        (self.root / '.gitignore').write_text('.artifacts/\n')
+        with self.assertRaisesRegex(ValueError, 'ignored'):
+            with runtime.scoped(self.root, 'app/gdam.toml', 'gdam'):
+                self.fail('unignored output must refuse')
+        (self.root / '.gitignore').write_text('.artifacts/\n/app/gdam.json\n')
+        target.symlink_to(self.root / 'absent.json')
+        with self.assertRaisesRegex(ValueError, 'absent'):
+            with runtime.scoped(self.root, 'app/gdam.toml', 'gdam'):
+                self.fail('linked output must refuse')
+        self.assertTrue(target.is_symlink())
 
     def test_explicit_child_keeps_argv_status_and_cleans_projection(self):
         recorder = self.root / 'record.py'

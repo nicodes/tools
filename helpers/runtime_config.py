@@ -156,6 +156,65 @@ def verify(root, source, family):
     return target
 
 
+def exclusive(path, body):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+    with os.fdopen(descriptor, 'wb') as stream:
+        stream.write(body)
+        stream.flush()
+        opened = os.fstat(stream.fileno())
+    current = path.stat()
+    shared = ('st_dev', 'st_ino', 'st_mode', 'st_nlink', 'st_uid', 'st_size', 'st_mtime_ns')
+    if any(getattr(opened, field) != getattr(current, field) for field in shared) or regular(path) != body:
+        raise ValueError('scoped native creation identity changed; preserving unowned evidence')
+    return current
+
+
+def scoped_identity(root, path, body, original):
+    owned(root, path.relative_to(root))
+    if regular(path) != body:
+        raise ValueError('scoped native projection changed; preserving unowned evidence')
+    current = path.stat()
+    fields = ('st_dev', 'st_ino', 'st_mode', 'st_nlink', 'st_uid', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+    if any(getattr(current, field) != getattr(original, field) for field in fields):
+        raise ValueError('scoped native projection identity changed; preserving unowned evidence')
+
+
+@contextmanager
+def scoped(root, source, family):
+    """Expose absent-only adjacent native I/O for one explicit preparation call."""
+    root, source, target, receipt, _, native, identity = declaration(root, source, family)
+    if not FAMILIES[family][1]:
+        raise ValueError('scoped native projection requires an adjacent native family')
+    if any(path.exists() or path.is_symlink() for path in (target, receipt)):
+        raise ValueError('scoped native projection requires absent output and receipt')
+    bodies = [(target, native), (receipt, (json.dumps(identity, sort_keys=True, indent=2) + '\n').encode())]
+    created = []
+    try:
+        for path, body in bodies:
+            owned(root, path.relative_to(root))
+            original = exclusive(path, body)
+            created.append((path, body, original))
+        verify(root, source.relative_to(root), family)
+        yield target
+    finally:
+        # Refuse replacements, links and mutations before deleting either member.
+        # A native failure still cleans exact files created by this operation.
+        for path, body, original in created:
+            scoped_identity(root, path, body, original)
+        error = None
+        if len(created) == len(bodies):
+            try:
+                verify(root, source.relative_to(root), family)
+            except (OSError, ValueError, subprocess.SubprocessError) as failure:
+                error = failure
+        for path, body, original in reversed(created):
+            scoped_identity(root, path, body, original)
+            path.unlink()
+        if error is not None:
+            raise error
+
+
 @contextmanager
 def temporary(root, source):
     """Translate one explicitly selected assertion input; never persist source."""

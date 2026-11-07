@@ -49,6 +49,7 @@ def read_bytes(path, *, maximum=DEFAULT_MAXIMUM):
         raise ValueError('source must be a regular TOML file')
     if type(maximum) is not int or maximum < 1:
         raise ValueError('source byte limit must be a positive integer')
+    path_before = path.stat()
     descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
     with os.fdopen(descriptor, 'rb') as stream:
         before = os.fstat(stream.fileno())
@@ -57,9 +58,14 @@ def read_bytes(path, *, maximum=DEFAULT_MAXIMUM):
         raw = stream.read(maximum + 1)
         after = os.fstat(stream.fileno())
     current = path.stat()
-    identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+    shared = lambda item: (item.st_dev, item.st_ino, item.st_mode, item.st_nlink,
+                           item.st_uid, item.st_size, item.st_mtime_ns)
+    identity = lambda item: (*shared(item), item.st_ctime_ns)
+    # Windows Python can expose birth time through stat().ctime and change
+    # time through fstat().ctime. Preserve both same-API mutation checks.
     if (len(raw) > maximum or path.is_symlink() or identity(before) != identity(after)
-            or identity(before) != identity(current) or current.st_nlink != 1):
+            or identity(path_before) != identity(current) or shared(before) != shared(path_before)
+            or shared(after) != shared(current) or current.st_nlink != 1):
         raise ValueError('source changed while it was read')
     return raw
 
