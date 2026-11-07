@@ -150,5 +150,169 @@ class RealExactSelection(unittest.TestCase):
 
 
 
+class OwnedRustupExecution(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        (self.root / 'mise.toml').write_text('[tools]\nrust="1.94.0"\n')
+        self.proxy = self.root / 'owned-proxies'
+        self.proxy.mkdir()
+        self.global_bin = self.root / 'package-manager-bin'
+        self.global_bin.mkdir()
+        self.suffix = '.exe' if os.name == 'nt' else ''
+        self.manager = self.global_bin / ('rustup' + self.suffix)
+        shutil.copyfile(sys.executable, self.manager)
+        self.manager.chmod(0o755)
+        for name in ['cargo', 'rustc', 'rustup']:
+            (self.proxy / (name + self.suffix)).symlink_to(self.manager)
+        self.home = self.root / 'selected-rustup'
+        self.native = self.home / 'toolchains' / '1.94.0-fixture-native-host' / 'bin'
+        self.native.mkdir(parents=True)
+        for name in ['cargo', 'rustc']:
+            path = self.native / (name + self.suffix)
+            path.write_bytes(b'finite installed native executable')
+            path.chmod(0o755)
+        self.path = str(self.proxy)
+        self.rustup_queries = []
+
+    def mise(self, arguments, root, environment):
+        self.assertEqual(root, self.root)
+        self.assertEqual(environment['MISE_TASK_RUN_AUTO_INSTALL'], 'false')
+        if arguments == ['where', 'rust@1.94.0']:
+            return str(self.proxy)
+        self.assertEqual(arguments, ['env', '--json', 'rust@1.94.0'])
+        return json.dumps({'PATH': self.path, 'RUSTUP_HOME': str(self.home), 'RUSTUP_TOOLCHAIN': '1.94.0'})
+
+    def rustup(self, arguments, root, environment):
+        self.rustup_queries.append(arguments)
+        self.assertEqual(root, self.root)
+        self.assertEqual(Path(arguments[0]).parent.resolve(), self.proxy)
+        self.assertEqual(arguments[1:4], ['which', '--toolchain', '1.94.0'])
+        self.assertEqual(environment['RUSTUP_AUTO_INSTALL'], '0')
+        self.assertEqual(environment['RUSTUP_TOOLCHAIN'], '1.94.0')
+        self.assertEqual(environment['MISE_EXEC_AUTO_INSTALL'], 'false')
+        return str(self.native / (arguments[4] + self.suffix)) + '\n'
+
+    def activate(self, **kwargs):
+        return tools.activation(self.root, [('rust', 'cargo'), ('rust', 'rustc')],
+                                {'GITHUB_RUN_ID': '41', 'NATIVE_FLAG': '0', 'RUSTUP_AUTO_INSTALL': '1'},
+                                lookup=self.mise, rustup_lookup=kwargs.get('rustup_lookup', self.rustup))
+
+    def test_owned_external_proxy_selects_exact_real_native_toolchain(self):
+        selected = shutil.which('cargo', path=str(self.proxy))
+        self.assertFalse(Path(selected).resolve().is_relative_to(self.proxy), 'counterfactual must exercise the old physical-root refusal')
+        result = self.activate()
+        self.assertEqual(Path(shutil.which('cargo', path=result['PATH'])).resolve(), self.native / ('cargo' + self.suffix))
+        self.assertEqual(Path(shutil.which('rustc', path=result['PATH'])).resolve(), self.native / ('rustc' + self.suffix))
+        self.assertEqual(result['GITHUB_RUN_ID'], '41')
+        self.assertEqual(result['NATIVE_FLAG'], '0')
+        self.assertEqual(result['RUSTUP_AUTO_INSTALL'], '0')
+        self.assertEqual([q[-1] for q in self.rustup_queries], ['rustc', 'cargo'])
+
+    def test_foreign_PATH_proxy_refuses_before_any_rustup_query(self):
+        foreign = self.root / 'foreign'
+        foreign.mkdir()
+        path = foreign / ('cargo' + self.suffix)
+        shutil.copyfile(sys.executable, path)
+        path.chmod(0o755)
+        self.path = str(foreign) + os.pathsep + str(self.proxy)
+        with self.assertRaisesRegex(ValueError, 'exact installed SDK'):
+            self.activate()
+        self.assertFalse(self.rustup_queries)
+
+    def test_missing_owned_manager_refuses_without_foreign_PATH_fallback(self):
+        (self.proxy / ('rustup' + self.suffix)).unlink()
+        self.path += os.pathsep + str(self.global_bin)
+        with self.assertRaisesRegex(ValueError, 'owned Rustup proxy'):
+            self.activate()
+        self.assertFalse(self.rustup_queries)
+
+    def test_foreign_toolchain_home_refuses(self):
+        outside = self.root / 'foreign-toolchain' / ('cargo' + self.suffix)
+        outside.parent.mkdir()
+        outside.write_bytes(b'foreign')
+        outside.chmod(0o755)
+        def lookup(arguments, root, environment):
+            return str(outside) if arguments[-1] == 'cargo' else self.rustup(arguments, root, environment)
+        with self.assertRaisesRegex(ValueError, 'foreign toolchain home'):
+            self.activate(rustup_lookup=lookup)
+
+    def test_wrong_release_and_mixed_native_roots_refuse(self):
+        for name in ['1.93.0-fixture-native-host', '1.94.0-other-native-host']:
+            other = self.home / 'toolchains' / name / 'bin' / ('cargo' + self.suffix)
+            other.parent.mkdir(parents=True)
+            other.write_bytes(b'other native executable')
+            other.chmod(0o755)
+            def lookup(arguments, root, environment):
+                return str(other) if arguments[-1] == 'cargo' else self.rustup(arguments, root, environment)
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'foreign version or mixed'):
+                self.activate(rustup_lookup=lookup)
+
+    def test_missing_toolchain_refuses_despite_present_owned_proxies(self):
+        def lookup(arguments, root, environment):
+            self.assertEqual(environment['RUSTUP_AUTO_INSTALL'], '0')
+            raise ValueError('required exact Rust toolchain is not prepared; run explicit setup')
+        with self.assertRaisesRegex(ValueError, 'not prepared'):
+            self.activate(rustup_lookup=lookup)
+
+    def test_multiline_and_wrong_executable_output_refuse(self):
+        for text in [str(self.native / ('rustc' + self.suffix)) + '\nsecond path', str(self.native / ('cargo' + self.suffix))]:
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                self.activate(rustup_lookup=lambda *_: text)
+
+    def test_owned_manager_remains_bound_when_explicitly_required(self):
+        result = tools.activation(self.root, [('rust', 'rustup')], lookup=self.mise, rustup_lookup=self.rustup)
+        self.assertEqual(Path(shutil.which('rustup', path=result['PATH'])).resolve(), self.manager.resolve())
+        self.assertEqual(result['RUSTUP_AUTO_INSTALL'], '0')
+
+    def rewritten_tracking_lookup(self, foreign=False):
+        tracking = self.root / 'mise-recorded-rust'
+        tracking.symlink_to(self.proxy, target_is_directory=True)
+        runtime = self.root / 'selected-runtime-proxies'
+        runtime.mkdir()
+        for name in ['cargo', 'rustc', 'rustup']:
+            (runtime / (name + self.suffix)).symlink_to(self.manager)
+        chosen = runtime
+        if foreign:
+            chosen = self.root / 'foreign-PATH'
+            chosen.mkdir()
+            path = chosen / ('cargo' + self.suffix)
+            shutil.copyfile(sys.executable, path)
+            path.chmod(0o755)
+        queries = []
+
+        def lookup(arguments, root, environment):
+            self.assertEqual(root, self.root)
+            queries.append(arguments)
+            if arguments == ['where', 'rust@1.94.0']:
+                return str(tracking)
+            self.assertEqual(arguments, ['env', '--json', 'rust@1.94.0'])
+            tracking.unlink()
+            tracking.symlink_to(runtime, target_is_directory=True)
+            self.proxy = runtime
+            return json.dumps({'PATH': str(chosen) + os.pathsep + str(runtime),
+                'RUSTUP_HOME': str(self.home), 'RUSTUP_TOOLCHAIN': '1.94.0'})
+
+        return lookup, runtime, tracking, queries
+
+    def test_tracking_link_rewritten_by_Mise_env_selects_current_owned_runtime(self):
+        lookup, runtime, tracking, queries = self.rewritten_tracking_lookup()
+        result = tools.activation(self.root, [('rust', 'cargo'), ('rust', 'rustc')],
+                                  lookup=lookup, rustup_lookup=self.rustup)
+        self.assertEqual(tracking.resolve(), runtime)
+        self.assertEqual(Path(shutil.which('cargo', path=result['PATH'])).resolve(), self.native / ('cargo' + self.suffix))
+        self.assertEqual(queries, [['where', 'rust@1.94.0'], ['env', '--json', 'rust@1.94.0']])
+
+    def test_foreign_PATH_still_refuses_after_tracking_link_rewrite(self):
+        lookup, runtime, tracking, queries = self.rewritten_tracking_lookup(foreign=True)
+        with self.assertRaisesRegex(ValueError, 'exact installed SDK'):
+            tools.activation(self.root, [('rust', 'cargo'), ('rust', 'rustc')],
+                             lookup=lookup, rustup_lookup=self.rustup)
+        self.assertEqual(tracking.resolve(), runtime)
+        self.assertFalse(self.rustup_queries)
+        self.assertEqual(queries, [['where', 'rust@1.94.0'], ['env', '--json', 'rust@1.94.0']])
+
+
 if __name__ == '__main__':
     unittest.main()

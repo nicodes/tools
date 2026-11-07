@@ -48,12 +48,68 @@ def query(arguments, root, environment):
     return result.stdout
 
 
-def activation(root, required, environment=None, *, lookup=query):
+def rustup_query(arguments, root, environment):
+    result = subprocess.run(arguments, cwd=root, env=environment,
+                            text=True, capture_output=True, timeout=30)
+    if result.returncode or len(result.stdout.encode()) > MAX_ENVIRONMENT:
+        raise ValueError('required exact Rust toolchain is not prepared; run explicit setup')
+    return result.stdout
+
+
+def owned_entrypoint(path, directory):
+    return path is not None and Path(path).parent.resolve() == directory
+
+
+def rustup_activation(root, proxy, version, executables, environment, lookup):
+    # Mise's Rust installation is a recorded Rustup proxy directory. Its
+    # entrypoints may link to a package-managed Rustup outside that directory.
+    # Only those exact lexical entrypoints may perform this metadata query.
+    for executable in executables:
+        selected = shutil.which(executable, path=environment.get('PATH', ''))
+        if not owned_entrypoint(selected, proxy):
+            raise ValueError('required executable is absent from its exact installed SDK: ' + executable)
+    manager = shutil.which('rustup', path=str(proxy))
+    if not owned_entrypoint(manager, proxy):
+        raise ValueError('required owned Rustup proxy is not prepared; run explicit setup')
+    home = Path(environment.get('RUSTUP_HOME', ''))
+    if not home.is_absolute() or not home.is_dir():
+        raise ValueError('exact Rust activation requires its selected Rustup home')
+    home = home.resolve()
+    version_name = version.removeprefix('v')
+    if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+)?', version_name):
+        raise ValueError('Rustup activation requires an exact native release pin')
+    selected = {**environment, 'RUSTUP_AUTO_INSTALL': '0', 'RUSTUP_TOOLCHAIN': version_name}
+    qualified = '-' in version_name
+    directory = None
+    for executable in dict.fromkeys(['rustc', *[name for name in executables if name != 'rustup']]):
+        text = lookup([manager, 'which', '--toolchain', version_name, executable], root, selected).strip()
+        if not text or '\n' in text or '\0' in text:
+            raise ValueError('Rustup must return one exact installed native executable')
+        path = Path(text)
+        names = {executable, executable + '.exe'} if os.name == 'nt' else {executable}
+        if not path.is_absolute() or not path.is_file() or path.name not in names:
+            raise ValueError('Rustup returned a foreign native executable')
+        path = path.resolve()
+        try:
+            parts = path.relative_to(home / 'toolchains').parts
+        except ValueError:
+            raise ValueError('Rustup returned a foreign toolchain home') from None
+        native = re.fullmatch(re.escape(version_name) + r'-[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+', parts[0]) if parts else None
+        if (len(parts) != 3 or parts[1] != 'bin' or path.name not in names
+                or not (parts[0] == version_name if qualified else native)
+                or (directory is not None and path.parent != directory)):
+            raise ValueError('Rustup returned a foreign version or mixed native toolchain roots')
+        directory = path.parent
+    selected['PATH'] = str(directory) + os.pathsep + environment.get('PATH', '')
+    return selected, directory, manager
+
+
+def activation(root, required, environment=None, *, lookup=query, rustup_lookup=rustup_query):
     root = Path(root).resolve()
     inherited = dict(os.environ if environment is None else environment)
     base = {**inherited, **DISABLED}
     declared = pins(root)
-    installs, selectors = {}, {}
+    installs, selectors, versions = {}, {}, {}
     for tool, _ in required:
         if tool in installs:
             continue
@@ -63,13 +119,14 @@ def activation(root, required, environment=None, *, lookup=query):
             raise ValueError('required SDK needs an exact existing caller Mise pin: ' + tool)
         selector = tool + '@' + version
         selectors[tool] = selector
+        versions[tool] = version
         text = lookup(['where', selector], root, base).strip()
         if not text or '\n' in text or '\0' in text:
             raise ValueError('required SDK must resolve to one installed directory: ' + tool)
         directory = Path(text)
         if not directory.is_absolute() or not directory.is_dir():
             raise ValueError('required exact caller SDK is not installed: ' + tool)
-        installs[tool] = directory.resolve()
+        installs[tool] = directory if tool == 'rust' else directory.resolve()
     raw = lookup(['env', '--json', *selectors.values()], root, base)
     values = json.loads(raw)
     if not isinstance(values, dict) or any(not isinstance(k, str) or not isinstance(v, str)
@@ -80,8 +137,19 @@ def activation(root, required, environment=None, *, lookup=query):
         if key.startswith('GITHUB_') or key in {'GH_TOKEN', 'GITHUB_TOKEN', 'TOOLS_VERIFICATION_SESSION'}:
             if result.get(key) != value:
                 raise ValueError('SDK activation must preserve source and execution identity')
+    manager = None
+    if 'rust' in installs:
+        installs['rust'] = installs['rust'].resolve()
+        result, native, manager = rustup_activation(root, installs['rust'], versions['rust'],
+            [executable for tool, executable in required if tool == 'rust'], result, rustup_lookup)
+        proxy = installs['rust']
+        installs['rust'] = native
     for tool, executable in required:
         path = shutil.which(executable, path=result.get('PATH', ''))
+        if tool == 'rust' and executable == 'rustup':
+            if not owned_entrypoint(path, proxy) or Path(path).resolve() != Path(manager).resolve():
+                raise ValueError('required Rustup manager is outside its selected proxy source')
+            continue
         if path is None or not Path(path).resolve().is_relative_to(installs[tool]):
             raise ValueError('required executable is absent from its exact installed SDK: ' + executable)
     return result
