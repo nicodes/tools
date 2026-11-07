@@ -12,6 +12,9 @@ name: Windows SDK bootstrap
       - tests/test_sdk_identity.py
       - tests/test_sdk_bootstrap.py
       - tests/test_pinned_tools.py
+      - tests/native_shell.py
+      - tests/test_native_shell.py
+      - tests/bootstrap_shell_diagnostic.py
       - cookbook/compiler_cache.py
       - cookbook/rust_cli.py
       - tests/test_recipe_cargo_paths.py
@@ -64,6 +67,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p test_source_config.py -v
       - name: Verify generic exact Tools source and installed SDK guards
         run: |
+          python3 tests/bootstrap_shell_diagnostic.py
+          python3 -m unittest discover -s tests -p test_native_shell.py -v
           python3 -m unittest discover -s tests -p test_sdk_identity.py -v
           python3 -m unittest discover -s tests -p test_sdk_bootstrap.py -v
           python3 -m unittest discover -s tests -p test_pinned_tools.py -v

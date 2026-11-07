@@ -7,6 +7,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import shutil
+
+from native_shell import bash
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('bootstrap_control', ROOT/'helpers/sdk-bootstrap.py')
@@ -45,7 +48,7 @@ class StandaloneToolsBootstrap(unittest.TestCase):
 
     def run_bootstrap(self, *args, environment=None, pinned_python=False):
         command = bootstrap.command(self.ref, pinned_python=pinned_python)
-        return subprocess.run(['bash','-euc',command+' '+shlex.join(args)], cwd=self.root,
+        return subprocess.run([bash(environment or self.environment),'-euc',command+' '+shlex.join(args)], cwd=self.root,
                               env=environment or self.environment, text=True,
                               capture_output=True, timeout=10)
 
@@ -121,6 +124,33 @@ class StandaloneToolsBootstrap(unittest.TestCase):
         result = self.run_bootstrap('exec','helpers/probe.py',environment=environment,pinned_python=True)
         self.assertNotEqual(result.returncode,0)
         self.assertFalse((self.root/'executed').exists())
+
+    def test_actual_installed_Mise_executes_the_unchanged_rendered_command_and_literal_arguments(self):
+        import json
+        mise = shutil.which('mise')
+        self.assertIsNotNone(mise,'existing CI Mise is required; this control never installs it')
+        version = subprocess.run([mise,'--version'],text=True,capture_output=True,timeout=5)
+        self.assertEqual(version.returncode,0,version.stderr)
+        config = self.root/'mise.toml'
+        config.write_text('[tools]\npython="3.13.11"\n[vars]\ntools_contract=1\ntools_ref="'+self.ref+'"\n'
+            '[settings]\ntask.run_auto_install=false\n[tasks._sdk]\nhide=true\nraw=true\nshell="bash -euc"\nrun='
+            +json.dumps(bootstrap.command(self.ref))+'\n')
+        environment = dict(self.environment, MISE_CONFIG_DIR=str(self.root/'control/config'),
+            MISE_CACHE_DIR=str(self.root/'control/cache'), MISE_STATE_DIR=str(self.root/'control/state'),
+            MISE_CEILING_PATHS=str(self.root.parent), MISE_TRUSTED_CONFIG_PATHS=str(self.root), MISE_AUTO_INSTALL='false',
+            MISE_EXEC_AUTO_INSTALL='false', MISE_TASK_RUN_AUTO_INSTALL='false')
+        result = subprocess.run([mise,'run','--skip-tools','_sdk','exec','helpers/probe.py',
+                                 'literal argument with spaces','--literal'],cwd=self.root,env=environment,
+                                text=True,capture_output=True,timeout=30)
+        print(json.dumps({'actual_Mise':mise,'Mise_version':version.stdout.strip(),'exit':result.returncode,'stdout':result.stdout[:8192],
+                          'stderr':result.stderr[:8192]}),flush=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        record = json.loads(result.stdout)
+        self.assertEqual(record['argv'],['literal argument with spaces','--literal'])
+        self.assertEqual(record['tools'],str(self.sdk))
+        self.assertEqual(record['isolated'],1)
+        self.assertTrue(record['no_bytecode'])
+        self.assertEqual(self.git('status','--porcelain','--untracked-files=all','--ignored=matching').strip(),'')
 
 
 if __name__ == '__main__':
