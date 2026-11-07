@@ -267,7 +267,7 @@ def immutable_fixture(root, declaration, *, install=False):
     if install:
         folder.mkdir(parents=True, exist_ok=True)
     elif not folder.is_dir():
-        raise ValueError('immutable native fixture is missing; run make setup')
+        raise ValueError('immutable native fixture is missing; run mise run setup')
     for filename, expected in [(name, record['archives'][name]), ('checksums.txt', record['checksums_sha256'])]:
         if not re.fullmatch('[a-f0-9]{64}', expected):
             raise ValueError('native fixtures require exact reviewed SHA256 values')
@@ -276,7 +276,7 @@ def immutable_fixture(root, declaration, *, install=False):
             raise ValueError('native fixture files cannot be symlinks')
         if not path.is_file() or digest(path) != expected:
             if not install:
-                raise ValueError('immutable native fixture is missing or changed; run make setup')
+                raise ValueError('immutable native fixture is missing or changed; run mise run setup')
             url = 'https://github.com/' + repository + '/releases/download/' + quote(record['tag'], safe='') + '/' + quote(filename, safe='')
             with urllib.request.urlopen(url, timeout=60) as response:
                 content = response.read((64 << 20) + 1)

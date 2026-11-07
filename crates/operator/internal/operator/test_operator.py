@@ -346,13 +346,15 @@ class OperatorBoundary(unittest.TestCase):
 
 if __name__=='__main__':unittest.main()
 
-class CookbookMergeDelegation(unittest.TestCase):
+class TrustedWorkflowDelegation(unittest.TestCase):
     def setUp(self):
         self.source=b'reviewed immutable main caller\n'
         self.base='b'*40; self.head='a'*40; self.calls=[]
-        self.contract=dict(protocol='cookbook-request-v1',workflow_id=10,workflow_path='.github/workflows/ci.yml',
+        self.contract=dict(protocol='trusted-workflow-request-v1',workflow_id=10,workflow_path='.github/workflows/ci.yml',
             app_id=15368,event='pull_request',jobs=['validate / Fast source checks / Make fast'],
-            request_workflow_id=20,request_sha256=hashlib.sha256(self.source).hexdigest(),cookbook_commit='c'*40)
+            request_workflow_id=20,request_sha256=hashlib.sha256(self.source).hexdigest(),
+            request_workflow_path='.github/workflows/request-merge.yml',
+            source={'repository':'owner/reusable-acceptance','revision':'c'*40})
         self.pull=dict(state='open',draft=False,head={'sha':self.head,'repo':{'full_name':'owner/product'}},base={'ref':'main'})
         self.target=dict(id=20,state='active',path='.github/workflows/request-merge.yml')
         self.relation='ahead'
@@ -372,16 +374,16 @@ class CookbookMergeDelegation(unittest.TestCase):
         raise AssertionError(args)
 
     def request(self):
-        return operator.request_cookbook_merge('owner/product',7,self.head,'b'*40,self.contract,self.backend)
+        return operator.request_trusted_merge('owner/product',7,self.head,'b'*40,self.contract,self.backend)
 
-    def test_v4_is_explicit_and_legacy_policy_cannot_claim_cheap_checks_as_full_acceptance(self):
-        policy=dict(version=4,repositories={'owner/product':self.contract},hosts=[])
+    def test_v5_is_explicit_and_legacy_policy_cannot_claim_cheap_checks_as_full_acceptance(self):
+        policy=dict(version=5,repositories={'owner/product':self.contract},hosts=[])
         self.assertEqual(operator.validate_policy(policy),policy)
-        for change in [{'version':3},{'version':5}]:
+        for change in [{'version':3},{'version':4}]:
             with self.subTest(change=change),self.assertRaises(ValueError):operator.validate_policy(policy|change)
-        for change in [{'jobs':['Test']},{'event':'workflow_dispatch'},{'request_sha256':'x'}, {'integration_job':'validate'}]:
+        for change in [{'jobs':[]},{'jobs':['same','same']},{'event':'workflow_dispatch'},{'request_sha256':'x'}, {'integration_job':'validate'}, {'source':{'repository':'owner/source','revision':'main'}}, {'source':{'repository':'../source','revision':'c'*40}}, {'source':{'repository':'owner/source','revision':'c'*40,'other':True}}]:
             with self.subTest(change=change),self.assertRaises(ValueError):
-                operator.validate_cookbook_contract('owner/product',self.contract|change)
+                operator.validate_trusted_workflow_contract('owner/product',self.contract|change)
 
     def test_exact_protected_request_is_dispatched_without_merge_host_or_delivery_authority(self):
         result=self.request()
@@ -402,3 +404,26 @@ class CookbookMergeDelegation(unittest.TestCase):
             if name=='workflow':self.target['path']='.github/workflows/other.yml'
             with self.subTest(name=name),self.assertRaises(ValueError):self.request()
             self.assertFalse(any(call[:4]==['gh','api','--method','POST'] for call in self.calls))
+
+
+class TrustedWorkflowCompatibility(unittest.TestCase):
+    def test_normal_v3_v4_integration_policies_remain_unchanged(self):
+        for version in [3, 4]:
+            policy = dict(POLICY, version=version)
+            self.assertEqual(operator.validate_policy(policy), policy)
+
+    def test_retired_recipe_specific_policy_is_refused_without_fake_source_identity(self):
+        fixture = TrustedWorkflowDelegation()
+        fixture.setUp()
+        contract = dict(fixture.contract, protocol='cookbook-request-v1', cookbook_commit='c'*40)
+        contract.pop('source'); contract.pop('request_workflow_path')
+        with self.assertRaisesRegex(ValueError, 'retired Cookbook-specific'):
+            operator.validate_policy(dict(version=4, repositories={'owner/product':contract}, hosts=[]))
+
+    def test_real_source_repository_and_revision_are_bound_to_ancestry_request_and_result(self):
+        fixture = TrustedWorkflowDelegation()
+        fixture.setUp()
+        result = fixture.request()
+        self.assertEqual(result['trusted_source'], fixture.contract['source'])
+        self.assertIn(['gh','api','repos/owner/reusable-acceptance/compare/'+'c'*40+'...main'], fixture.calls)
+        self.assertFalse(any('nicodes/tools/compare' in ' '.join(call) for call in fixture.calls))

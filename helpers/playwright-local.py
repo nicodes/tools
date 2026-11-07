@@ -41,7 +41,7 @@ def prepare(root, package, *, cli_version=None, run=subprocess.run):
     local = directory / "node_modules/.bin"
     binary = local / "playwright"
     if not binary.is_file():
-        raise ValueError("install the locked browser package with make setup first")
+        raise ValueError("install the locked browser package with mise run setup first")
     environment = {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(root / ".artifacts/playwright")}
     command = [str(binary), "install", "chromium"]
     if os.environ.get("CI") == "true":
@@ -76,7 +76,7 @@ def cli(root, package, arguments):
     if "open" in arguments:
         config = root / ".artifacts/browser-config.json"
         if not config.is_file() or config.is_symlink():
-            raise ValueError("prepare the pinned browser config with make setup first")
+            raise ValueError("prepare the pinned browser config with mise run setup first")
         command += ["--config", str(config)]
     os.execvpe(command[0], command, {**os.environ, "PLAYWRIGHT_BROWSERS_PATH": str(root / ".artifacts/playwright")})
 

@@ -25,7 +25,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 root="$(pwd)"
 
-parser="${SOURCE_POLICY_PYTHON:?Prepare the reviewed source-policy SDK during make setup}"
+parser="${SOURCE_POLICY_PYTHON:?Prepare the reviewed source-policy SDK during mise run setup}"
 C=helpers/source-secret-policy.py
 pass=0
 fail=0

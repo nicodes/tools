@@ -59,7 +59,7 @@ if __name__ == '__main__':
     Handler.api=validate_api(args.api)
     root = args.root.resolve(strict=True)
     if not (root / 'index.html').is_file():
-        raise SystemExit('Run make build first.')
+        raise SystemExit('Run mise run build first.')
     server = ThreadingHTTPServer(('127.0.0.1', args.port), partial(Handler, directory=str(root)))
     print(f'Local preview: http://127.0.0.1:{args.port}/', flush=True)
     server.serve_forever()

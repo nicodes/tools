@@ -55,5 +55,5 @@ jobs:
       prepared-artifact-directory: .artifacts/native-operator
       prepared-assets: .artifacts/operator-release
       tag-prefix: operator-v
-      check-command: make check && sudo /usr/bin/python3 tests/native_operator_boot.py && python3 scripts/operator_package.py assemble
+      check-command: mise run setup && mise run check && sudo /usr/bin/python3 tests/native_operator_boot.py && python3 scripts/operator_package.py assemble
       bump: ${{ inputs.bump }}

@@ -378,7 +378,7 @@ jobs:
     environment: Preview
     runs-on: ubuntu-24.04
     steps:
-      - run: make build
+      - run: mise run build
         env:
           EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ github.event_name == 'pull_request' && vars.CLERK_PUBLISHABLE_KEY || 'pk_live_x' }}
 """
@@ -391,7 +391,7 @@ jobs:
     name: Build
     runs-on: ubuntu-24.04
     steps:
-      - run: make build
+      - run: mise run build
         env:
           EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY: pk_live_x
 """

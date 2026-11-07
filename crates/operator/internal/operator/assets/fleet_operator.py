@@ -58,7 +58,7 @@ def private_policy(path):
 
 def validate_policy(value):
     required = {'version', 'repositories', 'hosts'}
-    if value.get('version') not in {3, 4} or not required <= set(value) or set(value) - required - {'deployments', 'owner_workflows'}:
+    if value.get('version') not in {3, 4, 5} or not required <= set(value) or set(value) - required - {'deployments', 'owner_workflows'}:
         raise ValueError('unsupported operator policy')
     if not isinstance(value['repositories'], dict) or not isinstance(value['hosts'], list):
         raise ValueError('invalid operator scope')
@@ -68,9 +68,11 @@ def validate_policy(value):
     for repo, contract, owner in [*( (r, c, False) for r,c in value['repositories'].items()),
                                  *( (r, c, True) for r,c in owners.items())]:
         if isinstance(contract, dict) and contract.get('protocol') == 'cookbook-request-v1':
-            if owner or value['version'] != 4:
-                raise ValueError('cookbook merge requests require explicit operator policy v4')
-            validate_cookbook_contract(repo, contract)
+            raise ValueError('retired Cookbook-specific operator protocol requires a separately reviewed generic policy')
+        if isinstance(contract, dict) and contract.get('protocol') == 'trusted-workflow-request-v1':
+            if owner or value['version'] != 5:
+                raise ValueError('trusted workflow requests require explicit operator policy v5')
+            validate_trusted_workflow_contract(repo, contract)
             continue
         if (not REPOSITORY.fullmatch(repo) or not isinstance(contract, dict)
                 or set(contract) != {'workflow_id', 'workflow_path', 'app_id', 'event', 'jobs', 'integration_job'}
@@ -96,17 +98,26 @@ def validate_policy(value):
 
 
 
-def validate_cookbook_contract(repository, contract):
+def validate_trusted_workflow_contract(repository, contract):
     keys = {'protocol', 'workflow_id', 'workflow_path', 'app_id', 'event', 'jobs',
-            'request_workflow_id', 'request_sha256', 'cookbook_commit'}
+            'request_workflow_id', 'request_workflow_path', 'request_sha256', 'source'}
+    source = contract.get('source')
     if (not REPOSITORY.fullmatch(repository) or set(contract) != keys
-            or contract['workflow_path'] != '.github/workflows/ci.yml' or contract['event'] != 'pull_request'
+            or contract['protocol'] != 'trusted-workflow-request-v1'
+            or not re.fullmatch(r'\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml', contract['workflow_path'])
+            or not re.fullmatch(r'\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml', contract['request_workflow_path'])
+            or contract['event'] != 'pull_request'
             or any(type(contract[name]) is not int or contract[name] <= 0
                    for name in ['workflow_id', 'request_workflow_id', 'app_id'])
             or not re.fullmatch('[a-f0-9]{64}', contract['request_sha256'])
-            or not SHA.fullmatch(contract['cookbook_commit'])
-            or contract['jobs'] != ['validate / Fast source checks / Make fast']):
-        raise ValueError('cookbook policy requires exact cheap CI and a separately bound full request controller')
+            or not isinstance(source, dict) or set(source) != {'repository', 'revision'}
+            or not isinstance(source['repository'], str) or not REPOSITORY.fullmatch(source['repository'])
+            or any(part in {'.', '..'} for part in source['repository'].split('/'))
+            or not isinstance(source['revision'], str) or not SHA.fullmatch(source['revision'])
+            or not isinstance(contract['jobs'], list) or not 1 <= len(contract['jobs']) <= 64
+            or any(not isinstance(name, str) or not name.strip() or len(name) > 200 for name in contract['jobs'])
+            or len(set(contract['jobs'])) != len(contract['jobs'])):
+        raise ValueError('trusted workflow policy requires explicit CI, immutable source and bound full request caller')
 
 
 def command(arguments):
@@ -415,8 +426,8 @@ def execute_merge(request, policy, run):
     run_id = authenticate_ci(repo, head, policy['repositories'][repo], checks, run)
     base = run(['gh', 'api', f'repos/{repo}/git/ref/heads/main'])['object']['sha']
     if not SHA.fullmatch(base): raise ValueError('invalid current merge base')
-    if policy['repositories'][repo].get('protocol') == 'cookbook-request-v1':
-        return request_cookbook_merge(repo, number, head, base, policy['repositories'][repo], run)
+    if policy['repositories'][repo].get('protocol') == 'trusted-workflow-request-v1':
+        return request_trusted_merge(repo, number, head, base, policy['repositories'][repo], run)
     integration = authenticate_integration(repo, head, base, run_id, policy['repositories'][repo], run)
     review_contract(repo, number, head, run)
     if run(['gh', 'api', f'repos/{repo}/git/ref/heads/main'])['object']['sha'] != base:
@@ -434,18 +445,19 @@ def execute_merge(request, policy, run):
             'merge_revision': merged['merge_commit_sha'], 'tested_base': base, 'tested_tree': integration['tree'], 'status': 'source_merged'}
 
 
-def request_cookbook_merge(repository, number, head, base, contract, run):
+def request_trusted_merge(repository, number, head, base, contract, run):
     """The protected operator delegates full acceptance; cheap CI cannot merge."""
-    validate_cookbook_contract(repository, contract)
+    validate_trusted_workflow_contract(repository, contract)
     review_contract(repository, number, head, run)
-    accepted = run(['gh', 'api', f"repos/nicodes/tools/compare/{contract['cookbook_commit']}...main"])
+    source_identity = contract['source']
+    accepted = run(['gh', 'api', f"repos/{source_identity['repository']}/compare/{source_identity['revision']}...main"])
     if accepted.get('status') not in {'ahead', 'identical'}:
-        raise ValueError('the protected cookbook pin is not accepted main source')
+        raise ValueError('the protected trusted-source revision is not accepted main source')
     target = run(['gh', 'api', f"repos/{repository}/actions/workflows/{contract['request_workflow_id']}"])
     if (target.get('id') != contract['request_workflow_id'] or target.get('state') != 'active'
-            or target.get('path') != '.github/workflows/request-merge.yml'):
+            or target.get('path') != contract['request_workflow_path']):
         raise ValueError('full request workflow differs from protected policy')
-    source = run(['gh', 'api', f'repos/{repository}/contents/.github/workflows/request-merge.yml?ref={base}'])
+    source = run(['gh', 'api', f"repos/{repository}/contents/{contract['request_workflow_path']}?ref={base}"])
     if (source.get('type') != 'file' or source.get('encoding') != 'base64' or source.get('target')
             or type(source.get('size')) is not int or not 0 < source['size'] <= MAX_BYTES):
         raise ValueError('full request caller must be bounded regular main source')
@@ -461,7 +473,8 @@ def request_cookbook_merge(repository, number, head, base, contract, run):
          '-f', 'ref=main', '-f', f'inputs[pull-request]={number}',
          '-f', 'inputs[expected-head]='+head, '-f', 'inputs[expected-base]='+base])
     return {'operation':'merge', 'repository':repository, 'head':head, 'base':base,
-            'status':'full_validation_requested', 'full_validation_complete':False, 'delivery_authorized':False}
+            'status':'full_validation_requested', 'trusted_source':dict(source_identity),
+            'full_validation_complete':False, 'delivery_authorized':False}
 
 
 def execute_owner(request, policy, run):

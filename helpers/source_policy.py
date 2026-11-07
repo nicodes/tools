@@ -37,6 +37,11 @@ def setup(root, environment, run=subprocess.run):
     pins = tomllib.loads(relative(root, 'mise.toml', exists=True).read_text()).get('tools', {})
     if pins.get('python') != '.'.join(map(str, sys.version_info[:3])):
         raise ValueError('source-policy setup requires the exact caller-pinned Python SDK')
+    spec = importlib.util.spec_from_file_location('_source_policy_private_directory',
+                                                Path(__file__).with_name('private_directory.py'))
+    preparation = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(preparation)
+    preparation.prepare(root)
     directory, python, identity = inputs(root)
     receipt = directory / '.cookbook-source-policy.json'
     receipt.unlink(missing_ok=True)

@@ -2,30 +2,26 @@ name: Windows SDK bootstrap
 'on':
   pull_request:
     paths:
+      - .gitattributes
       - setup/**
       - helpers/verification.py
-      - helpers/make-setup.py
       - helpers/source_config.py
       - helpers/sdk_identity.py
       - helpers/sdk-bootstrap.py
       - helpers/pinned-tools.py
+      - helpers/private_directory.py
+      - helpers/bootstrap-python.ps1
+      - helpers/source_policy.py
       - tests/test_sdk_identity.py
       - tests/test_sdk_bootstrap.py
       - tests/test_pinned_tools.py
+      - tests/test_private_directory.py
       - tests/native_shell.py
       - tests/test_native_shell.py
       - tests/bootstrap_shell_diagnostic.py
       - tests/bootstrap_transport_diagnostic.py
       - tests/test_sdk_bootstrap_transport.py
       - tests/test_sdk_bootstrap_child.py
-      - cookbook/compiler_cache.py
-      - cookbook/rust_cli.py
-      - cookbook/namespace_bridge.py
-      - cookbook/request_merge.py
-      - cookbook/generate.py
-      - cookbook/ci.py
-      - tests/test_namespace_bridge.py
-      - tests/test_recipe_cargo_paths.py
       - tests/test_source_config.py
       - .github/workflows/windows-bootstrap.yml
   workflow_dispatch: {}
@@ -50,13 +46,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Set up exact Python and GNU Make
+      - name: Set up exact Python and Mise
         uses: ./setup
         with:
           tools: python
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Verify native ACL protection and Make execution
+      - name: Verify native ACL protection and task execution
         run: |
           python3 - <<'PY'
           import importlib.util
@@ -68,9 +64,7 @@ jobs:
           verification.protected_windows_acl(verification.windows_access(directory))
           print('Native owner and DACL validation passed')
           PY
-          make --version
-      - name: Verify nested native Cargo recipe paths
-        run: python3 -m unittest discover -s tests -p test_recipe_cargo_paths.py -v
+          mise --version
       - name: Verify bounded TOML source identities
         run: python3 -m unittest discover -s tests -p test_source_config.py -v
       - name: Verify generic exact Tools source and installed SDK guards
@@ -83,5 +77,4 @@ jobs:
           python3 -m unittest discover -s tests -p test_sdk_bootstrap_transport.py -v
           python3 -m unittest discover -s tests -p test_sdk_bootstrap_child.py -v
           python3 -m unittest discover -s tests -p test_pinned_tools.py -v
-      - name: Verify legacy and Cookbook namespace authority before merge
-        run: python3 -m unittest discover -s tests -p test_namespace_bridge.py -v
+          python3 -m unittest discover -s tests -p test_private_directory.py -v

@@ -335,7 +335,7 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'not bound to the recovery project/revision'):
                 pg.validate_manifest(drifting)
 
-@unittest.skipUnless(os.environ.get('TOOLS_TEST_POSTGRES') == '1', 'make check requires the real isolated PostgreSQL control')
+@unittest.skipUnless(os.environ.get('TOOLS_TEST_POSTGRES') == '1', 'mise run check requires the real isolated PostgreSQL control')
 class PostgreSQLRestoreIntegration(unittest.TestCase):
     def test_real_custom_dump_restores_rows_and_acl_and_cleans_up(self):
         self.restore_roundtrip('sampleapp')

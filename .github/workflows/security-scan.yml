@@ -26,6 +26,6 @@ jobs:
       uses: ./setup
       timeout-minutes: 5
     - name: Security Scan
-      run: make install vuln
+      run: mise run install && mise run vuln
       env:
         GH_TOKEN: ${{ github.token }}

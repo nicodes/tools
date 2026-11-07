@@ -24,6 +24,8 @@ class StandaloneToolsBootstrap(unittest.TestCase):
         self.root = Path(temporary.name)
         self.sdk = self.root/'Tools source with spaces'
         (self.sdk/'helpers').mkdir(parents=True)
+        for name in ['private_directory.py', 'verification.py', 'source_config.py']:
+            shutil.copyfile(ROOT/'helpers'/name, self.sdk/'helpers'/name)
         (self.sdk/'helpers/peer.py').write_text('VALUE="trusted-sibling"\n')
         (self.sdk/'helpers/probe.py').write_text(
             'import json,os,sys\nfrom pathlib import Path\nimport peer\n'

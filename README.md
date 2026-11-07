@@ -1,8 +1,8 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 3031649ca0a32a1712df44c95d8fc4b79e96a87d0792dcb73f5710fe0150c1c2 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a899064a6f180aa78bc525077e677284548f292f8594eef4605b0b1de666ad36 -->
 
 # tools
 
-A collection of reusable tools, GitHub Actions and recipes. Application source, domain algorithms, product policy and product assertions stay in their owning repositories.
+A collection of reusable tools and GitHub Actions. Recipes and their shared execution contract live in [Cookbook](https://github.com/nicodes/cookbook). Application source, domain algorithms, product policy and product assertions stay in their owning repositories.
 
 ## Rust libraries
 
@@ -15,7 +15,7 @@ The Cargo workspace contains:
 
 Reference the required package from this repository at a reviewed full commit in your application's Cargo dependencies. Historical Go module tags remain available. Product users install their application's published distribution directly.
 
-For development, install [mise](https://mise.jdx.dev/) and Docker, then run `mise install` and `mise run check`. The pinned Rust toolchain builds and tests the libraries and operator; Docker supplies owned disposable PostgreSQL recovery fixtures. `mise run test` runs unit and integration checks, `mise run build` builds the workspace, and `mise run clean` removes declared generated outputs. Make targets invoke the same implementations. Go remains a contributor tool for the locked upstream Caddy dependency; Tools contains no owned Go entry point for it. CI builds that upstream command directly, retains its dependency lock, runs the upstream race tests, and scans linked symbols. SDK verification includes signed-session security cases, database-budget contracts, metadata ambiguity refusal and private bundle export checks.
+For development, install [mise](https://mise.jdx.dev/) and Docker, then run `mise run setup` and `mise run check`. The pinned Rust toolchain builds and tests the libraries and operator; Docker supplies owned disposable PostgreSQL recovery fixtures. `mise run test` runs unit and integration checks, `mise run build` builds the workspace, and `mise run clean` removes declared generated outputs. Go remains a contributor tool for the locked upstream Caddy dependency; Tools contains no owned Go entry point for it. CI builds that upstream command directly, retains its dependency lock, runs the upstream race tests, and scans linked symbols. SDK verification includes signed-session security cases, database-budget contracts, metadata ambiguity refusal and private bundle export checks.
 
 ## CI helpers
 
@@ -23,7 +23,7 @@ For development, install [mise](https://mise.jdx.dev/) and Docker, then run `mis
 
 `python3 "$TOOLS_ROOT/helpers/site-contract.py" dist` checks actual exported HTML for language, title, description, viewport, a main landmark, image alternatives and basic control labels. It complements the product's browser, responsive-layout and performance checks.
 
-Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your product. It installs the tool versions in the product's `mise.toml` and exposes the reviewed helper directory as `TOOLS_ROOT`. Recipe Makefiles select the shared implementation; native projects can call helpers independently. The action supports Linux, macOS and Windows on x86_64 and arm64 and verifies the pinned Mise executable. Windows setup also installs a checksum-verified GNU Make executable without executing package installation hooks.
+Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your product. It installs the tool versions in the product's `mise.toml` and exposes the reviewed helper directory as `TOOLS_ROOT`. Canonical recipe Mise tasks select the shared implementation; native projects can call helpers independently. The action supports Linux, macOS and Windows on x86_64 and arm64 and verifies the pinned Mise executable. First-party task execution uses Mise on every supported platform; native external build protocols retain their owning tool requirements.
 
 Check out this repository at a reviewed full commit to use `helpers/integration-identity.py`. Run it from the product checkout with `EXPECTED_HEAD` set to the exact pull request head. It records the actual tested integration commit and raw parents in `.artifacts/fleet-integration.json`, refusing a checkout that does not contain the requested PR head as its second parent. Upload that file from the same job that performs verification. The helper also supports exact `main` delivery identity for push and manual dispatch events.
 
@@ -40,9 +40,9 @@ Reusable dependency maintenance and security scanning live in tools. Security sc
 The optional `helpers/verification.py` wraps a command chosen by the product. It records the source and input digest, exact build outputs, public workflow identifiers and completed tests in `.artifacts/verification`. It installs no SDKs and defines no tasks. For example:
 
 ```sh
-python3 "$TOOLS_ROOT/helpers/verification.py" build --artifact dist -- make build
+python3 "$TOOLS_ROOT/helpers/verification.py" build --artifact dist -- mise run build
 python3 "$TOOLS_ROOT/helpers/verification.py" session --test unit -- \
-  python3 "$TOOLS_ROOT/helpers/verification.py" test --name unit --artifact dist -- make unit
+  python3 "$TOOLS_ROOT/helpers/verification.py" test --name unit --artifact dist -- mise run unit
 ```
 
 Every required test must complete within the same session. Stale receipts, changed source inputs, linked artifacts and conflicting production build variants or revision inputs are refused. Declare relevant environment variable names with `--environment` and revision variable names with `--revision-environment`; their values contribute to the input digest and are never written to receipts. Local edits can be checked, and receipts identify whether tracked source was clean.
@@ -121,7 +121,7 @@ jobs:
       tools-ref: FULL_40_CHARACTER_COMMIT
       binary: example
       prepared-assets: dist
-      check-command: make check
+      check-command: mise run check
       bump: ${{ inputs.bump }}
 ```
 
@@ -131,89 +131,18 @@ Publication requires an explicit dispatch from `main`. It refuses existing tags/
 
 Website exports can declare product byte limits with `helpers/site-contract.py OUTPUT --budget scripts/site-budget.toml`. The TOML requires `max_total_bytes` and `max_file_bytes` for the complete export, `max_html_gzip_bytes` per page and `max_javascript_gzip_bytes` for all JavaScript. These reproducible byte checks complement browser acceptance; they do not claim network timing.
 
+## Exact installed tools
 
-## Cookbook building blocks
+Native tasks can use `helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- COMMAND ARGUMENTS` to select only the actual SDK executables needed by that stage. The helper reads their exact caller-owned Mise versions, refuses an absent install or an executable outside that install, disables implicit installation and preserves source/execution identity. Package backend options stay in the caller's original Mise configuration. Platform tools that have no declared SDK requirement remain native prerequisites.
 
-The cookbook owns reusable automation implementations. `cookbook/common.mk` supplies the shared Make command interface to native recipe implementations. Its default target displays help; `build` runs compilation/packaging followed by output validation, while `test` runs the implemented lint, unit, integration, E2E and security groups without invoking setup or a product build. Optional development and database commands exist only when a recipe implements them. Recipe adoption is incremental; existing independently pinned interfaces remain available.
+For a native project that explicitly depends on Tools, the shared bootstrap renderer emits one literal immutable Tools source entrypoint. Its `[vars]` data is `tools_contract = 1` and one full `tools_ref`. Explicit preparation creates `.artifacts/tools/<full-SHA>`; a supplied `TOOLS_ROOT` is accepted only after the exact repository origin, commit, owning Git root and clean source are verified. Execution refuses a missing source and never fetches it. Bootstrap and SDK Python execution are isolated from caller Python paths. A requested pinned Python bootstrap uses the exact caller version and verifies the actual interpreter before loading SDK code.
 
-The setup action accepts an optional `tools` input containing space-separated tool identifiers, such as `python rust`, to install only those tools at the versions declared by the caller. Leaving it empty preserves installation of all declared tools.
+Cookbook consumers bind Cookbook independently. Their `COOKBOOK_ROOT` and `.artifacts/cookbook/<full-SHA>` identify recipe code; Cookbook's own reviewed immutable dependency supplies `TOOLS_ROOT`. The two origins are never aliases. A native helper consumer does not become a recipe consumer.
 
-For a closed-manifest addon package:
+The generic `docker-ci` action prepares its disposable Docker builder and existing compiler caches when invoked. The caller owns whether it needs Docker; this action reads no recipe manifest. Its native mirror, buildx, cache keys and resource bounds are retained.
 
-```sh
-python3 "$TOOLS_ROOT/helpers/addon-package.py" build \
-  --source addon --manifest package.files --archive dist/addon.zip
-python3 "$TOOLS_ROOT/helpers/addon-package.py" verify \
-  --manifest package.files --archive dist/addon.zip
-```
+The generic authenticated image archive implementation checks closed tags, config IDs, RootFS layers and complete archive bytes before deriving a no-op, load or scoped repair. Existing aliases, digests and containers stay protected. Its caller supplies the already-admitted complete image set and retains the single total deadline; no recipe or product policy is discovered.
 
-The manifest contains sorted, unique package-relative filenames. Packaging preserves their bytes and rejects unlisted files, traversal, source/archive symlinks and duplicate archive entries. Build validates the candidate archive before replacing the destination.
+Source-policy SDK preparation is available through `helpers/source_policy.py setup`; it uses the caller's exact pinned Python and existing hash-locked parser requirements. Read-only checks consume that prepared SDK and refuse stale identity. Recipe declaration selection belongs to Cookbook.
 
-`helpers/merge-candidate.py snapshot` records the pull request head, current main base, synthetic merge commit and exact tree. Its `verify` operation requires the same current identities and clean-source build/test proof. It refuses stale, conflicting, closed or draft candidates. The helper validates candidate identity; credentialed merge orchestration separately owns required job completion and merge authority.
-
-
-`cookbook/generate.py --root PROJECT --revision FULL_COMMIT` generates a small pinned `Makefile` from `cookbook.toml`. Before setup, bare `make` works offline and lists the available interface. `make setup` fetches that exact cookbook source; other commands never fetch it implicitly. CI can check generated content with `--check`. Mise remains the caller's SDK pin authority.
-
-The `godot-addon` adapter fixes package source to `addon/` and the closed file manifest to `package.files`. Callers declare the public `dist/@owner_package.zip` identity, native test entrypoints, required source paths and generated cleanup paths. It implements native formatting with the caller-pinned `gdformat`, archive packaging and checksum validation, fresh test-session evidence and tracked-source security checks. Integration and E2E groups require the existing build to match current source inputs and artifact hashes. Test failures invalidate the aggregate success receipt. Product assertions and fixtures stay in the caller's tests.
-
-A `godot-suite` test entry names a native test directory, an exact assertion prefix in `sentinel` and a per-test `timeout`. The shared runner discovers `*_test.gd` files, runs each in an isolated home and requires one exact `<sentinel> <test filename without extension>` line, a clean exit and no engine failure messages. Missing suites, missing/duplicate assertions and exceeded deadlines fail. Direct `godot` entries instead name one test file and its complete sentinel.
-
-Addon ZIP output is deterministic across checkout timestamps. `helpers/addon-package.py checksum --archive ARCHIVE` validates its exact one-line `.sha256` sidecar; `verify --checksums SIDECAR` also checks that sidecar without rewriting it. `helpers/source-secrets.py` scans tracked text for high-confidence credentials and reports fingerprints without printing values. Deliberate credential fixtures require reviewed exact-file hashes and reasons; this source check complements dependency and product security tests.
-
-
-The reusable `cookbook-validation.yml` workflow runs the selected recipe with `mode: fast` or `mode: full`. Fast validation checks the pinned generated Make entrypoint, source/configuration, documentation history policy and tracked-source credentials, without downloading Godot. Full validation calls `make setup`, `make build` and `make test`, then verifies complete current-run source and artifact evidence. Both the caller source and cookbook use exact commits. Godot addons and React Native applications use the complete host gate. Rust CLIs additionally require their declared native platform matrix. Godot games use separate build, unit shard and auxiliary capability jobs, then join complete current-run evidence before issuing full acceptance.
-
-`cookbook-addon-release.yml` admits a source-bound publication plan, runs full read-only validation, and publishes accepted bytes in a separate job. Recipe data preserves each addon's version convention, job budgets, protected environment, archive roles and any explicitly declared evidence assets. The publisher rechecks source, tree, cookbook, workflow execution, complete build scope and evidence hashes before claiming the immutable tag, verifying uploaded draft assets and publishing. Explicit retries recover checksum-bound existing bytes without rebuilding; same-source resumes require byte equality. API-key and OIDC registry jobs remain separate. `cookbook-addon-recovery.yml` handles an existing tagged release with read-only repository access and OIDC; it cannot rebuild or create a GitHub release. Source checks receive no publication credentials.
-
-
-Generate recipe entrypoints together with `cookbook/generate.py --root PROJECT --revision FULL_COMMIT --workflows`; CI checks their exact generated contents. Callers contain event bindings, permissions and pinned reusable workflow references. The recipe workflow retains full PR validation until the repository variable `COOKBOOK_REQUEST_MERGE` is set to `enabled` after the main-branch request workflow is verified. It then runs source checks on PR updates, cancels superseded runs, and reserves complete builds/tests for requested merges and final main validation.
-
-Run **Request merge** from `main` with a PR number. The shared controller snapshots the exact head, base, candidate tree and already-accepted cookbook pin. Read-only validation runs the real Make gate. Finalization checks actual job completion and same-run test proof, rechecks the current PR head/base, and asks GitHub to merge with the expected head. It verifies the resulting tree/base before explicitly dispatching CI for the exact final source. Candidate artifacts are not relabeled as the final main commit. The `Full validation` status is specific to the tested PR head. Repository protection and plan availability govern other manual merge paths; the workflow enforces the merges it performs.
-
-Native test entries can use `cwd` and bounded filename `pattern` data. `python-unittest` runs native discovery and refuses zero completed cases; `node-test` expands declared regular test files without shell interpretation. Recipe-specific native runners plug into the same owned-source dispatch. Reviewed Godot engine/template checksum pins may use SHA-256 or SHA-512, preserving their existing exact identities. Native SDK activation disables implicit installation during build/test; setup remains explicit.
-
-Authored project declarations use TOML. Explicit preparation produces hash-bound ignored JSON only where a pinned executable or addon package protocol requires it; validation refuses stale or foreign projections. Receipts, API payloads and native Compose output keep their protocol formats.
-
-The four recipe adapters reject unknown, inapplicable and retired settings before running product programs. Application projects use `app/`, Compose uses `deploy/compose.yml`, and release input definitions use `deploy/release.toml`. Rust CLIs have a primary `cli` component at root `Cargo.toml`, release shipping output in `.artifacts/build/<binary>`, and optional UI source `app/` with output `.artifacts/ui`. The SDK derives artifact identity and named binary bindings; caller-selected identity replacements and package-manager audit waivers are rejected. Godot import timing follows declared build inputs, authored-file preservation always applies, and authenticated image state selects reuse, load or scoped repair. Native assertions, target matrices, platform requirements and bounded job/step budgets remain explicit.
-
-The addon adapter prepares locked Node/browser dependencies and hash-locked Python environments only during `make setup`. Package verification compares the closed archive with current source, optional installed files and declared script UID policy. Native Godot tests use bounded execution, isolated user configuration and exact assertion markers or positive assertion counters. Fixture exports run during `make build`; integration and browser tests consume verified outputs without exporting again. Post-test screenshots, installed-tree records and candidate provenance have a separate evidence scope, so they do not change the accepted build identity.
-
-The Rust, React Native and Godot game adapters share SDK, UI, image and packaging helpers. Native platform and Godot shard receipts are partial evidence; only the exact complete declared matrix together with successful host checks can authorize a merge. Platform payloads bind source, cookbook, run, attempt, runner and archive hashes. Product assertions and fixtures stay with their owning components. Application delivery composition calls independently pinned Komizo publication and deployment automation after same-run full validation; source validation receives no delivery secrets. Windows bootstrap selects the reviewed native Mise executable for the actual architecture; it does not substitute a different platform or bypass protected output checks.
-
-`cookbook-cli-identity.yml` selects a typed native CLI release identity. Complete native and host validation precede publication. Generated release callers retain their own attestation step so existing installer signer workflow identities remain valid. Shared publication verifies the closed platform payload and immutable version/tag/source before uploading a draft; no release is published during ordinary CI.
-
-`cookbook/source_policy.py` explicitly prepares a copied Python environment from the hash-locked parser requirements during setup. Source lint uses that prepared environment without installing dependencies and retains Compose, scoped environment and host-only secret assertions. The parser runs in isolation from caller Python paths.
-
-Application delivery keeps the source repository’s authenticated `cd.yml` caller. That caller runs final-source validation once before invoking independently pinned Komizo publication and delivery. Recipe CI omits a duplicate main push build; requested merges dispatch the production caller for the exact final revision. Existing combined delivery jobs retain their original total deadline and release metadata body checks.
-
-Shared compiler caching selects only declared Cargo targets and registry/git dependencies, with keys bound to SDKs, native target, source locks and build options. Successful saves enforce size/file-count bounds and never restore verification or release receipts. Image recipe jobs use a disposable mirror-aware Docker builder with explicit web, layer and Go compiler caches.
-
-## Recipe capabilities and source ownership
-
-The maintained adapters are `rust-cli`, `react-native`, `godot-game` and `godot-addon`. A CLI can include a declared browser UI; an application can include a declared API or database. These remain capabilities of the selected recipe. `cookbook.toml` selects native components, owned assertion programs, fixtures, outputs and CI topology; it is bounded data rather than an additional shell task graph. `mise.toml` supplies SDK pins.
-
-Consecutive native checks can share execution settings in one literal case group:
-
-```toml
-[[tests.unit]]
-runner = "python"
-cwd = "."
-timeout = 180
-cases = [
-  {name = "serialization", path = "tests/serialization.py"},
-  {name = "validation", path = "tests/validation.py"},
-  {name = "compatibility", path = "tests/compatibility.py"},
-]
-```
-
-Groups expand in place into the same ordered native entries. Shared settings are `runner`, `cwd`, `timeout`, `policy` and `python_environment`; cases retain their literal names, paths and arguments. Cases cannot override shared settings or contain nested groups. Existing individual declarations remain supported, and all ownership, assertion and deadline checks apply after expansion.
-
-Declare overrides when a capability needs them. CI defaults to `ubuntu-24.04` and 30 minutes; a Godot auxiliary gate inherits its parent runner while retaining its explicit deadline. Godot imports run during setup, or during build when declared extensions or preparation require build inputs. Static delivery automatically includes its mandatory configuration and release manifest in accepted artifacts. The raw recipe file remains part of configuration and cache identity.
-
-Build immediately stages declared native executable variants before another feature variant can overwrite a shared compiler output. Nonshipping image variants use a separate source- and image-ID-bound fixture packet outside the closed shipping release directory. Browser journeys consume accepted image variants; fixtures are prepared during setup or build. Product programs own loader mutations, data semantics, renderer behavior and assertions.
-
-Godot exports can select explicit debug versus release configurations and caller-owned runtime configuration. Debug-only export features are isolated from release exports. The shared configuration encoder validates bounded JSON data; application hostnames, routes and policy remain caller-owned. Engine/template checksums, compiler/source identities and complete browser/shard coverage stay explicit.
-
-An optional `[operations]` table selects a tracked native declaration and generates pinned Komizo workflow callers. The declaration preserves actual runners, total and step deadlines, protected environments, schedules, native assertions and explicit opt-ins. It does not define application behavior in Tools. Source/deployed audits and artifact validation are separate scopes; an artifact audit declares its setup and build phases explicitly. Deployment, paid checks, backups and restoration retain their independent authorization.
-
-Dependency policy version 2 uses cheap source checks to request the trusted full-validation workflow for an exact bot head and base. It does not treat a cheap check as complete acceptance. The requested merge controller preserves repository protection, verifies the full candidate and separately validates final `main` source. An application’s generated production caller retains its existing authenticated workflow identity.
+The optional operator source supports a separately reviewed generic `trusted-workflow-request-v1` contract in policy v5. It binds the actual trusted source repository and revision, the exact protected-main request workflow path and hash, current head/base and required CI producer identity before requesting complete validation. A request grants no merge or delivery authority. Ordinary v3/v4 integration policies remain supported; the retired Cookbook-specific request protocol requires a new explicit review. These source changes do not update an installed operator, its credentials or protected policy.

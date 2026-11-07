@@ -7,6 +7,11 @@ import re
 import shutil
 import subprocess
 import tempfile
+import importlib.util
+
+_spec = importlib.util.spec_from_file_location('_godot_export_import', Path(__file__).with_name('godot_import.py'))
+godot_import = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(godot_import)
 
 
 def checked(command, timeout=600):
@@ -132,16 +137,19 @@ def export(project, presets, binary='godot', run=None, *, import_arguments=(), t
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(body)
         config = copied / 'project.godot'
-        original = config.read_bytes()
+        authored = godot_import._Settings(config)
+        original = authored.original
         bootstrap = re.sub(rb'(?m)^theme/custom="[^"\r\n]*"$', b'theme/custom=""', original)
         command = [binary, '--headless', '--editor', '--quit', '--path', str(copied), '--import', *import_arguments]
         if bootstrap != original:
             try:
-                config.write_bytes(bootstrap)
-                execute(command, True)
+                authored.write(bootstrap)
+                with godot_import.serial_import(copied):
+                    execute(command, True)
             finally:
-                config.write_bytes(original)
-        execute(command, True)
+                authored.restore()
+        with godot_import.serial_import(copied):
+            execute(command, True)
         for preset, output, kind in normalized:
             output.parent.mkdir(parents=True, exist_ok=True)
             execute([binary, '--headless', '--path', str(copied), '--export-' + kind, preset, str(output)])

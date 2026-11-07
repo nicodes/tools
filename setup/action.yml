@@ -12,16 +12,41 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Select an existing compatible Windows bootstrap host
+      id: windows_host
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      run: '& "$env:GITHUB_ACTION_PATH/../helpers/bootstrap-python.ps1"'
+    - name: Bootstrap the Windows private-directory interpreter
+      id: windows_python
+      if: runner.os == 'Windows' && steps.windows_host.outputs.found != 'true'
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+      with:
+        python-version: '3.13.11'
+        check-latest: false
     - name: Select reviewed SDK binary
       id: mise
       shell: bash
       env:
         SDK_OS: ${{ runner.os }}
         SDK_ARCH: ${{ runner.arch }}
+        BOOTSTRAP_PYTHON: ${{ steps.windows_host.outputs.python-path || steps.windows_python.outputs.python-path || 'python3' }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
       run: |
-        python3 "$GITHUB_ACTION_PATH/../helpers/mise-platform.py" --os "$SDK_OS" --arch "$SDK_ARCH" >> "$GITHUB_OUTPUT"
-        python3 -c 'import sys; print("bootstrap-python=" + str(sys.version_info < (3, 11)).lower())' >> "$GITHUB_OUTPUT"
+        if [[ "$SDK_OS" == Windows && "$BOOTSTRAP_PYTHON" == python3 ]]; then
+          echo 'Windows bootstrap requires the verified direct host or trusted fallback interpreter' >&2
+          exit 1
+        fi
+        "$BOOTSTRAP_PYTHON" -I -B "$GITHUB_ACTION_PATH/../helpers/mise-platform.py" --os "$SDK_OS" --arch "$SDK_ARCH" >> "$GITHUB_OUTPUT"
+        "$BOOTSTRAP_PYTHON" -I -B -c 'import sys; print("bootstrap-python=" + str(sys.version_info < (3, 11)).lower())' >> "$GITHUB_OUTPUT"
     - name: Bootstrap the SDK configuration parser
+      id: python
       if: steps.mise.outputs.bootstrap-python == 'true'
       uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
       with:
@@ -33,24 +58,31 @@ runs:
       env:
         CALLER_DIRECTORY: ${{ inputs.directory }}
         CALLER_TOOLS: ${{ inputs.tools }}
-      run: python3 "$GITHUB_ACTION_PATH/../helpers/select-tools.py" --directory "$CALLER_DIRECTORY" --tools "$CALLER_TOOLS"
+        BOOTSTRAP_PYTHON: ${{ steps.windows_host.outputs.python-path || steps.windows_python.outputs.python-path || steps.python.outputs.python-path || 'python3' }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      run: '"$BOOTSTRAP_PYTHON" -I -B "$GITHUB_ACTION_PATH/../helpers/select-tools.py" --directory "$CALLER_DIRECTORY" --tools "$CALLER_TOOLS"'
+    - name: Prepare the private artifact parent before SDK installers
+      shell: bash
+      env:
+        CALLER_DIRECTORY: ${{ inputs.directory }}
+        BOOTSTRAP_PYTHON: ${{ steps.windows_host.outputs.python-path || steps.windows_python.outputs.python-path || steps.python.outputs.python-path || 'python3' }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      run: '"$BOOTSTRAP_PYTHON" -I -B "$GITHUB_ACTION_PATH/../helpers/private_directory.py" prepare --directory "$CALLER_DIRECTORY"'
     - name: "Set up tools"
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       env:
         MISE_AUTO_INSTALL: 'false'
         MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
       with:
         version: ${{ steps.mise.outputs.version }}
         working_directory: ${{ inputs.directory }}
         install_args: ${{ inputs.tools }}
         sha256: ${{ steps.mise.outputs.sha256 }}
-    - name: Prepare the reviewed Windows Make task runner
-      if: runner.os == 'Windows'
-      shell: pwsh
-      env:
-        MISE_AUTO_INSTALL: 'false'
-        MISE_EXEC_AUTO_INSTALL: 'false'
-      run: python3 "$env:GITHUB_ACTION_PATH/../helpers/make-setup.py"
     - name: Select reviewed CI helpers
       shell: bash
       env:
@@ -60,4 +92,4 @@ runs:
         set -euo pipefail
         [[ "$TOOLS_SOURCE" =~ ^[a-f0-9]{40}$ ]] || { echo 'Pin tools/setup to a full source commit' >&2; exit 1; }
         printf 'TOOLS_ROOT=%s\n' "$(cd "$TOOLS_ACTION/.." && pwd -P)" >> "$GITHUB_ENV"
-        printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' >> "$GITHUB_ENV"
+        printf '%s\n' 'MISE_AUTO_INSTALL=false' 'MISE_EXEC_AUTO_INSTALL=false' 'MISE_TASK_RUN_AUTO_INSTALL=false' >> "$GITHUB_ENV"

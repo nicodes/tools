@@ -22,6 +22,8 @@ class ExportIsolation(unittest.TestCase):
                 copied = Path(command[command.index('--path')+1]); calls.append(command)
                 (copied/'asset.import').write_bytes(b'engine normalization')
                 if len(calls) == 1: self.assertIn(b'theme/custom=""', (copied/'project.godot').read_bytes())
+                elif '--import' in command:
+                    self.assertEqual((copied/'project.godot').read_bytes(), config + b'\n[editor]\nimport/use_multiple_threads=false\n')
                 else: self.assertEqual((copied/'project.godot').read_bytes(), config)
                 if '--export-release' in command: Path(command[-1]).write_bytes(b'export')
             helper.export(project, [('Web', output)], run=run)
