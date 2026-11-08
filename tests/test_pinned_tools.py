@@ -179,6 +179,8 @@ class OwnedRustupExecution(unittest.TestCase):
         self.rustup_queries = []
 
     def mise(self, arguments, root, environment):
+        if arguments[:2] == ['which', '--tool=rust@1.94.0']:
+            return str(self.proxy / (arguments[2] + self.suffix))
         self.assertEqual(root, self.root)
         self.assertEqual(environment['MISE_TASK_RUN_AUTO_INSTALL'], 'false')
         if arguments == ['where', 'rust@1.94.0']:
@@ -285,6 +287,8 @@ class OwnedRustupExecution(unittest.TestCase):
         queries = []
 
         def lookup(arguments, root, environment):
+            if arguments[:2] == ['which', '--tool=rust@1.94.0']:
+                return str(runtime / (arguments[2] + self.suffix))
             self.assertEqual(root, self.root)
             queries.append(arguments)
             if arguments == ['where', 'rust@1.94.0']:

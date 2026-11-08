@@ -9,12 +9,15 @@ name: Windows SDK bootstrap
       - helpers/sdk_identity.py
       - helpers/sdk-bootstrap.py
       - helpers/pinned-tools.py
+      - helpers/rust_install_context.py
       - helpers/private_directory.py
       - helpers/bootstrap-python.ps1
       - helpers/source_policy.py
       - tests/test_sdk_identity.py
       - tests/test_sdk_bootstrap.py
       - tests/test_pinned_tools.py
+      - tests/test_rust_runtime_context.py
+      - tests/test_rust_install_context.py
       - tests/test_private_directory.py
       - tests/native_shell.py
       - tests/test_native_shell.py
@@ -77,4 +80,6 @@ jobs:
           python3 -m unittest discover -s tests -p test_sdk_bootstrap_transport.py -v
           python3 -m unittest discover -s tests -p test_sdk_bootstrap_child.py -v
           python3 -m unittest discover -s tests -p test_pinned_tools.py -v
+          python3 -m unittest discover -s tests -p test_rust_runtime_context.py -v
+          python3 -m unittest discover -s tests -p test_rust_install_context.py -v
           python3 -m unittest discover -s tests -p test_private_directory.py -v

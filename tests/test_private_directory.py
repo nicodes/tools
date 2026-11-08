@@ -82,7 +82,7 @@ class PrivateDirectoryControls(unittest.TestCase):
         run = data['tasks']['install']['run']
         self.assertEqual(run[:3], ['mise install python',
             'python3 -I -B helpers/pinned-tools.py exec --tool python=python3 -- python3 -I -B helpers/private_directory.py prepare',
-            'mise install'])
+            'python3 -I -B helpers/rust_install_context.py -- mise install'])
         self.assertEqual(data['tasks']['setup']['run'], [{'task': 'install'}])
         for name in ['MISE_AUTO_INSTALL', 'MISE_EXEC_AUTO_INSTALL', 'MISE_TASK_RUN_AUTO_INSTALL']:
             self.assertEqual(data['env'][name], 'false')

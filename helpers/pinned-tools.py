@@ -41,6 +41,13 @@ def pins(root):
 
 
 def query(arguments, root, environment):
+    if arguments[:2] == ['env', '--json']:
+        # `mise env` installs missing argument versions even with auto-install
+        # disabled. Exec honors those settings; the absolute interpreter avoids
+        # lazy command-provider lookup, and fresh-env prevents inherited cache.
+        arguments = ['exec', '--no-deps', '--fresh-env', *arguments[2:], '--',
+                     sys.executable, '-I', '-B', '-c',
+                     'import json,os; print(json.dumps(dict(os.environ)))']
     result = subprocess.run(['mise', *arguments], cwd=root, env=environment,
                             text=True, capture_output=True, timeout=30)
     if result.returncode or len(result.stdout.encode()) > MAX_ENVIRONMENT:
@@ -58,6 +65,27 @@ def rustup_query(arguments, root, environment):
 
 def owned_entrypoint(path, directory):
     return path is not None and Path(path).parent.resolve() == directory
+
+
+def rust_proxy(root, selector, executables, environment, lookup):
+    # The recorded installation can remain an external Rustup directory even
+    # when explicit homes select Mise's managed runtime. Ask the exact provider,
+    # never PATH, to identify that runtime under the same query context.
+    directory = None
+    for executable in dict.fromkeys(['rustc', 'rustup', *executables]):
+        text = lookup(['which', '--tool=' + selector, executable], root, environment).strip()
+        if not text or '\n' in text or '\0' in text:
+            raise ValueError('Rust provider must return one exact installed SDK executable')
+        path = Path(text)
+        names = {executable, executable + '.exe'} if os.name == 'nt' else {executable}
+        if not path.is_absolute() or not path.is_file() or path.name not in names:
+            message = 'required owned Rustup proxy is not prepared' if executable == 'rustup' else 'required executable is absent from its exact installed SDK: ' + executable
+            raise ValueError(message)
+        parent = path.parent.resolve()
+        if directory is not None and parent != directory:
+            raise ValueError('Rust provider returned mixed installed SDK proxy roots')
+        directory = parent
+    return directory
 
 
 def rustup_activation(root, proxy, version, executables, environment, lookup):
@@ -109,7 +137,8 @@ def rustup_activation(root, proxy, version, executables, environment, lookup):
 def activation(root, required, environment=None, *, lookup=query, rustup_lookup=rustup_query):
     root = Path(root).resolve()
     inherited = dict(os.environ if environment is None else environment)
-    base = {**inherited, **DISABLED}
+    base = {**inherited, **DISABLED,
+            'MISE_ENABLE_TOOLS': ','.join(dict.fromkeys(tool for tool, _ in required))}
     declared = pins(root)
     installs, selectors, versions = {}, {}, {}
     for tool, _ in required:
@@ -135,13 +164,21 @@ def activation(root, required, environment=None, *, lookup=query, rustup_lookup=
                                            or '\0' in k or '\0' in v for k, v in values.items()):
         raise ValueError('SDK activation must return bounded string environment data')
     result = {**base, **values, **DISABLED}
+    # Exec's selection and nested-dispatch metadata belong to this query only.
+    # Native commands retain the caller's own settings and execution context.
+    for key in ['MISE_ENABLE_TOOLS', '__MISE_DIFF', '__MISE_ENV_CACHE_KEY', '__MISE_TASK_TOOL_ARGS']:
+        if key in inherited:
+            result[key] = inherited[key]
+        else:
+            result.pop(key, None)
     for key, value in inherited.items():
         if key.startswith('GITHUB_') or key in {'GH_TOKEN', 'GITHUB_TOKEN', 'TOOLS_VERIFICATION_SESSION'}:
             if result.get(key) != value:
                 raise ValueError('SDK activation must preserve source and execution identity')
     manager = None
     if 'rust' in installs:
-        installs['rust'] = installs['rust'].resolve()
+        installs['rust'] = rust_proxy(root, selectors['rust'],
+            [executable for tool, executable in required if tool == 'rust'], base, lookup)
         result, native, manager = rustup_activation(root, installs['rust'], versions['rust'],
             [executable for tool, executable in required if tool == 'rust'], result, rustup_lookup)
         proxy = installs['rust']
