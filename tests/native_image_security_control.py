@@ -7,22 +7,26 @@ exact fixture tags. All disposable data belongs to the explicit temp directory.
 """
 import argparse
 import datetime
+import gzip
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS / 'helpers'))
-from image_security_report import image_scan_findings
+from image_security_report import filesystem_scan_findings, image_scan_findings
 from image_scan_context import regular
 import container_runtime as runtime
 import oci_archive
 import image_scan_fixture as fixture
+import filesystem_scan_context
 
 SCANNER = fixture.SCANNER
 VERSION = '0.70.0'
@@ -54,6 +58,44 @@ def scanner_identity():
 def file_digest(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+
+def filesystem_controls(root, directory, cache, scanner, source):
+    """Exercise the actual pinned FS encoder for clean bytes and a known secret."""
+    for name,body in [('data',b'accepted static filesystem bytes\n'),
+                      ('secret',b'token: ghp_'+hashlib.sha256(b'synthetic FS sensitivity control').hexdigest()[:36].encode()+b'\n')]:
+        output=root/('fs-'+name);output.mkdir();tree=output/'tree';tree.mkdir()
+        (tree/'index.txt').write_bytes(body);(tree/'index.txt').chmod(0o644)
+        incoming=output/'static.tar.gz';raw=io.BytesIO()
+        with tarfile.open(fileobj=raw,mode='w',format=tarfile.USTAR_FORMAT) as archive:
+            entry=tarfile.TarInfo('index.txt');entry.size=len(body);entry.mode=0o644;archive.addfile(entry,io.BytesIO(body))
+        incoming.write_bytes(gzip.compress(raw.getvalue(),mtime=0))
+        artifact={'kind':'archive','digest':'sha256:'+file_digest(incoming),'size_bytes':incoming.stat().st_size,
+            'media_type':filesystem_scan_context.registry.STATIC_LAYER}
+        artifact['reference']='ghcr.io/example/native-fs@'+filesystem_scan_context.registry.digest(
+            filesystem_scan_context.registry.artifact_manifest(artifact['digest'],artifact['size_bytes']))
+        inventory=filesystem_scan_context.archive_inventory(incoming,artifact)
+        started=datetime.datetime.now(datetime.timezone.utc).isoformat()
+        base=['run','--rm','--pull=never','--network=none','-v',str(tree)+':/inputs/static:ro',
+            '-v',str(cache)+':/cache','-v',str(output)+':/reports',SCANNER,'fs','--quiet','--skip-version-check',
+            '--cache-dir','/cache','--skip-db-update','--skip-java-db-update','--offline-scan','--timeout','30s']
+        podman([*base,'--scanners','vuln,secret','--format','json','--output','/reports/security.json','/inputs/static'],timeout=90)
+        podman([*base,'--format','cyclonedx','--output','/reports/sbom.json','/inputs/static'],timeout=90)
+        context={'source':source,'release_digest':'sha256:'+hashlib.sha256(source.encode()).hexdigest(),
+            'artifact':artifact,'target':'/inputs/static','scanner':scanner,'started_at':started,
+            'finished_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'before':inventory,
+            'after':{'index.txt':{'sha256':file_digest(tree/'index.txt'),'size':(tree/'index.txt').stat().st_size,
+                'mode':(tree/'index.txt').stat().st_mode&0o777}}}
+        report=json.loads((output/'security.json').read_text());sbom=json.loads((output/'sbom.json').read_text())
+        findings=filesystem_scan_findings(report,sbom,context,incoming)
+        if name=='data':assert findings==[] and 'Results' not in report,'clean FS encoder context differs'
+        else:assert any(item.get('RuleID')=='github-pat' for item in findings),'static known secret was not blocked'
+        retained=directory/'native-evidence'/('fs-'+name);retained.mkdir(parents=True,exist_ok=True)
+        for filename in ['security.json','sbom.json','static.tar.gz']:
+            target=retained/filename
+            if target.exists():regular(target,32<<20);target.unlink()
+            with target.open('xb') as stream:stream.write((output/filename).read_bytes())
+        (retained/'context.json').write_text(json.dumps(context,sort_keys=True)+'\n')
 
 
 
@@ -139,6 +181,7 @@ def run(directory):
                              'archive_bytes':incoming.stat().st_size,'report_size':report['Metadata']['Size'],
                              'results_omitted':'Results' not in report,'security_sha256':file_digest(output/'security.json'),
                              'sbom_sha256':file_digest(output/'sbom.json')}
+        filesystem_controls(root,directory,cache,scanner,source)
         if file_digest(database) != prepared['database_sha256']: raise ValueError('offline controls changed prepared database')
         (directory/'native-control.json').write_text(json.dumps({'version':1,'scanner':scanner,'cases':proof,
             'network':'none','pull':'never','builds':False,'containers_started_from_fixture_images':False},indent=2)+'\n')

@@ -261,20 +261,6 @@ def podman(*args, input=None, timeout=60):
     return result.stdout.strip()
 
 
-def application_images(manifest, pull=False):
-    """Resolve only already-validated project/revision-bound application images."""
-    validate_manifest(manifest)
-    images = {}
-    for component, recorded in manifest['images'].items():
-        if pull:
-            podman('pull', '--quiet', recorded['reference'], timeout=180)
-        inspected = json.loads(podman('image', 'inspect', recorded['image_id']))
-        if len(inspected) != 1 or inspected[0]['Id'] != recorded['image_id']:
-            raise ValueError('application image differs from authenticated recovery metadata')
-        images[component] = inspected[0]['Id']
-    return images
-
-
 def package_capture(capture, destination, metadata):
     """Package private completed staging, not a live application volume."""
     if capture.is_symlink() or not capture.is_dir():

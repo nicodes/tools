@@ -42,6 +42,12 @@ def image_scan_findings(report, sbom, *, context, input_archive=None, data_archi
     return blocking_findings(report)
 
 
+def filesystem_scan_findings(report, sbom, context, input_archive):
+    """Admit the real filesystem report without inventing an image identity."""
+    from filesystem_scan_context import validate
+    return validate(report, sbom, context, input_archive)
+
+
 if __name__ == "__main__":
     data = json.loads(Path(sys.argv[1]).read_text())
     blocked = blocking_findings(data)

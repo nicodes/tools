@@ -320,14 +320,19 @@ class PostgreSQLRestoreIntegration(unittest.TestCase):
         image = json.loads(pg.podman('image', 'inspect', ENGINE))[0]['Id']
         name = 'tools-pg-source-'+os.urandom(8).hex()
         uid = os.getuid() or 65534
-        source_id = pg.podman('run', '-d', '--name', name, '--network=none', '--read-only', '--user', f'{uid}:{uid}',
+        launched = pg.native_runtime().run(['run', '--pull=never', '-d', '--name', name, '--network=none', '--read-only',
+                              *pg.native_runtime().bind_mount_user_namespace(), '--user', f'{uid}:{uid}',
                               '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--memory=256m',
                               '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
                               '--tmpfs', f'/var/run/postgresql:rw,uid={uid},gid={uid},mode=0770,size=8m',
                               '--tmpfs', f'/var/lib/postgresql:rw,uid={uid},gid={uid},mode=0700,size=128m',
                               '--env', 'POSTGRES_HOST_AUTH_METHOD=trust', '--env', 'POSTGRES_USER=sampleapp_owner',
                               '--env', 'POSTGRES_DB=sampleapp', '--env', 'PGDATA=/var/lib/postgresql/data', image,
-                              'postgres', '-c', 'listen_addresses=127.0.0.1')
+                              'postgres', '-c', 'listen_addresses=127.0.0.1'], capture_output=True, timeout=60)
+        # This creation uses only synthetic public fixture data and pull=never.
+        # Retain the native setup error without exposing recovery credentials.
+        self.assertEqual(launched.returncode, 0, launched.stderr.decode(errors='replace')[:4096])
+        source_id = launched.stdout.decode().strip()
         self.addCleanup(lambda: pg.podman('rm', '-f', '-v', source_id))
         for _ in range(100):
             try:
@@ -351,7 +356,8 @@ GRANT EXECUTE ON FUNCTION private_count() TO sampleapp_runtime;
             if project != 'sampleapp':
                 manifest.update(project=project, role_namespace='sampleapp')
                 for component in ('api', 'gate'):
-                    manifest['images'][component]['reference'] = f'ghcr.io/example/{project}-{component}:{REVISION}'
+                    manifest['images'][component]['reference'] = f'ghcr.io/example/{project}-{component}@sha256:{"d"*64}'
+            bind_deployment(manifest)
             # Stream bytes rather than relying on Podman's archive-copy support
             # for a running read-only container with a tmpfs source file.
             with (source/'database.dump').open('wb') as output:

@@ -21,9 +21,9 @@ class BrowserFixtureLifetime(unittest.TestCase):
     def early_failure(self, configured):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); commands = root / 'bin'; commands.mkdir()
-            self.command(commands, 'podman', 'raise SystemExit(42)\n')
+            self.command(commands, 'openssl', 'raise SystemExit(42)\n')
             environment = {**os.environ, 'PATH': str(commands) + os.pathsep + os.environ['PATH'],
-                'GATE_IMAGE': 'fixture:test', 'GODOT_BROWSER_REPORTS': 'reports', 'BROWSER_TEST_MODE': 'canonical'}
+                'GATE_URL': 'http://127.0.0.1:1', 'GODOT_BROWSER_REPORTS': 'reports', 'BROWSER_TEST_MODE': 'canonical'}
             for key in ['RUNNER_TEMP', 'TMPDIR', 'GATE_CACHE_IMAGE', 'BROWSER_RUNTIME_IMAGE', 'BROWSER_ROUTE_CYCLES', 'BROWSER_SOAK_SECONDS']:
                 environment.pop(key, None)
             if configured:
@@ -31,7 +31,7 @@ class BrowserFixtureLifetime(unittest.TestCase):
             else:
                 environment['MKTEMP_ARGS'] = str(root / 'mktemp-args')
                 self.command(commands, 'mktemp', 'import os,sys\nfrom pathlib import Path\n'
-                    'Path(os.environ["MKTEMP_ARGS"]).write_text("\\n".join(sys.argv[1:])+"\\n")\nprint("unused-tls-directory")\n')
+                    'Path(os.environ["MKTEMP_ARGS"]).write_text("\\n".join(sys.argv[1:])+"\\n")\nPath("unused-tls-directory").mkdir(mode=0o700)\nprint("unused-tls-directory")\n')
             result = subprocess.run(['bash', str(HARNESS)], cwd=root, env=environment, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 42, result.stderr)
             if configured:
@@ -43,7 +43,7 @@ class BrowserFixtureLifetime(unittest.TestCase):
     def test_default_tls_template_uses_the_bounded_fixture_directory(self): self.early_failure(False)
     def test_configured_native_temporary_directory_preserves_spaces(self): self.early_failure(True)
 
-    def run_child_fixture(self, status, native_url=False, cache=False):
+    def run_child_fixture(self, status, native_url=True, cache=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); commands = root / 'bin'; commands.mkdir()
             temporary = root / 'temporary files'; temporary.mkdir()
@@ -78,13 +78,12 @@ else:
  record(['journey',sys.argv[1]]);raise SystemExit(int(os.environ['JOURNEY_STATUS']))
 ''')
             environment = {**os.environ, 'PATH': str(commands) + os.pathsep + os.environ['PATH'],
-                'GATE_IMAGE': 'fixture:test', 'RUNNER_TEMP': str(temporary), 'GODOT_BROWSER_REPORTS': 'reports with spaces',
+                'GATE_URL': 'http://127.0.0.1:1', 'RUNNER_TEMP': str(temporary), 'GODOT_BROWSER_REPORTS': 'reports with spaces',
                 'GODOT_BROWSER_HOSTNAME': 'game.example.test', 'GODOT_BROWSER_TLS_PROXY': 'fixture-proxy.mjs',
                 'GODOT_BROWSER_RUNNER': 'journey.mjs', 'GODOT_BROWSER_CACHE_RUNNER': 'cache.mjs',
                 'GODOT_BROWSER_STARTUP_RUNNER': 'startup.mjs', 'BROWSER': 'webkit', 'BROWSER_TEST_MODE': 'canonical',
                 'CALLS': str(root / 'calls.jsonl'), 'JOURNEY_STATUS': str(status)}
             if native_url:
-                environment.pop('GATE_IMAGE')
                 environment['GATE_URL']='http://127.0.0.1:1'
                 if cache:environment['GATE_CACHE_URL']='http://127.0.0.1:2'
             for key in ['GATE_CACHE_IMAGE', 'BROWSER_RUNTIME_IMAGE', 'BROWSER_ROUTE_CYCLES', 'BROWSER_SOAK_SECONDS', 'BROWSER_STARTUP']:

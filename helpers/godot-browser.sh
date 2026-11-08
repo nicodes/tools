@@ -12,9 +12,7 @@ loopback_address() {
   echo 'Browser fixture URL must be a bounded loopback HTTP listener' >&2
   return 1
 }
-if [[ -z ${GATE_URL:-} ]]; then
-  : "${GATE_IMAGE:?Set GATE_URL to the owned native fixture or GATE_IMAGE to a diagnostic fixture}"
-fi
+: "${GATE_URL:?Set GATE_URL to the owned native fixture}"
 if [[ -z ${BROWSER_TEST_MODE:-} && ( ${BROWSER_ROUTE_CYCLES:-0} != 0 || ${BROWSER_SOAK_SECONDS:-0} != 0 ) ]]; then
   echo "Retention workload requires explicit BROWSER_TEST_MODE" >&2
   exit 1
@@ -48,9 +46,7 @@ fi
 mkdir -p "$GODOT_BROWSER_REPORTS"
 tls_dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/godot-browser-tls.XXXXXX")
 proxy_pid=''
-cache_gate_id=''
 switch_file=''
-gate_id=''
 cache_address=''
 # shellcheck disable=SC2329
 cleanup() {
@@ -58,33 +54,16 @@ cleanup() {
     kill "$proxy_pid" 2>/dev/null || true
     wait "$proxy_pid" 2>/dev/null || true
   fi
-  rm -f "$tls_dir/key.pem" "$tls_dir/cert.pem" "$tls_dir/port"
+  rm -f "$tls_dir/key.pem" "$tls_dir/cert.pem" "$tls_dir/port" "$tls_dir/registry-auth.json"
   rmdir "$tls_dir" 2>/dev/null || true
-  if [[ -n "$gate_id" ]]; then
-    podman --remote=false logs "$gate_id" > "$GODOT_BROWSER_REPORTS/gate.log" 2>&1
-    podman --remote=false rm --force "$gate_id" >/dev/null
-  fi
-  if [[ -n "$cache_gate_id" ]]; then podman --remote=false rm --force "$cache_gate_id" >/dev/null; fi
   if [[ -n "$switch_file" ]]; then rm -f "$switch_file"; fi
 }
 trap cleanup EXIT
-if [[ -n ${GATE_URL:-} ]]; then
-  address=$(loopback_address "$GATE_URL")
-else
-  gate_id=$(podman --remote=false run --pull=never --detach --read-only --user 1000:1000 --cap-drop ALL \
-  --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-  --sysctl net.ipv4.ip_unprivileged_port_start=0 \
-  --publish 127.0.0.1::80 "$GATE_IMAGE")
-  address=$(podman --remote=false port "$gate_id" 80/tcp)
-fi
+printf '{"auths":{}}\n' > "$tls_dir/registry-auth.json"
+chmod 600 "$tls_dir/registry-auth.json"
+address=$(loopback_address "$GATE_URL")
 if [[ -n ${GATE_CACHE_URL:-} ]]; then
-  : "${GATE_URL:?Native cache fixture URLs require a native primary fixture}"
   cache_address=$(loopback_address "$GATE_CACHE_URL")
-elif [[ -n ${GATE_CACHE_IMAGE:-} ]]; then
-  cache_gate_id=$(podman --remote=false run --pull=never --detach --read-only --user 1000:1000 --cap-drop ALL \
-    --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-    --sysctl net.ipv4.ip_unprivileged_port_start=0 --publish 127.0.0.1::80 "$GATE_CACHE_IMAGE")
-  cache_address=$(podman --remote=false port "$cache_gate_id" 80/tcp)
 fi
 if [[ -n "$cache_address" ]]; then
   export CACHE_NEXT_PORT="${cache_address##*:}" CACHE_FIRST_PORT="${address##*:}"
@@ -124,7 +103,7 @@ for _attempt in {1..30}; do
         done
         user_namespace=()
         if [[ $(id -u) != 0 ]]; then user_namespace=(--userns=keep-id); fi
-        podman --remote=false run --pull=never --rm --init "${user_namespace[@]}" --network host --shm-size=1g --user "$(id -u):$(id -g)" \
+        podman --remote=false run --authfile "$tls_dir/registry-auth.json" --pull=never --rm --init "${user_namespace[@]}" --network host --shm-size=1g --user "$(id -u):$(id -g)" \
           -e HOME=/tmp -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
           -e GATE_TLS_PORT -e GATE_TLS_SPKI -e BROWSER -e BROWSER_SOAK_SECONDS -e BROWSER_ROUTE_CYCLES \
           -e BROWSER_TEST_MODE -e EXPECTED_SOURCE_COMMIT -e EXPECTED_RELEASE_ID -e EXPECTED_DESCRIPTOR_DIGEST -e GATE_DESCRIPTOR_FILE \
