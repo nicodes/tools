@@ -368,7 +368,7 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
                    '--network=none', '--read-only', *native_runtime().bind_mount_user_namespace(), '--user', f'{uid}:{uid}', '--cap-drop=ALL',
                    '--security-opt=no-new-privileges:true', '--memory=256m', '--cpus=1', '--pids-limit=128',
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
-                   '--tmpfs', f'/var/run/postgresql:rw,noexec,nosuid,uid={uid},gid={uid},mode=0770,size=8m',
+                   '--tmpfs', '/var/run/postgresql:rw,noexec,nosuid,mode=1777,size=8m',
                    '--mount', f'type=bind,src={data},dst=/var/lib/postgresql/data',
                    '--mount', f'type=bind,src={dump},dst=/recovery/database.dump,readonly',
                    '--env-file', str(environment), engine['image_id'],

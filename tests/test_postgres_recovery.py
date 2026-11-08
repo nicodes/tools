@@ -324,8 +324,8 @@ class PostgreSQLRestoreIntegration(unittest.TestCase):
                               *pg.native_runtime().bind_mount_user_namespace(), '--user', f'{uid}:{uid}',
                               '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--memory=256m',
                               '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
-                              '--tmpfs', f'/var/run/postgresql:rw,uid={uid},gid={uid},mode=0770,size=8m',
-                              '--tmpfs', f'/var/lib/postgresql:rw,uid={uid},gid={uid},mode=0700,size=128m',
+                              '--tmpfs', '/var/run/postgresql:rw,mode=1777,size=8m',
+                              '--tmpfs', '/var/lib/postgresql:rw,mode=1777,size=128m',
                               '--env', 'POSTGRES_HOST_AUTH_METHOD=trust', '--env', 'POSTGRES_USER=sampleapp_owner',
                               '--env', 'POSTGRES_DB=sampleapp', '--env', 'PGDATA=/var/lib/postgresql/data', image,
                               'postgres', '-c', 'listen_addresses=127.0.0.1'], capture_output=True, timeout=60)
