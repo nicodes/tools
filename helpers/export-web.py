@@ -25,8 +25,14 @@ def inventory(directory):
     return result
 
 
+def reject_dotenv(app):
+    if next(Path(app).glob('.env*'), None) is not None:
+        raise ValueError('dotenv inputs are not supported; supply the selected process environment')
+
+
 @contextmanager
 def compiler_cache(app, output_name, root):
+    reject_dotenv(app)
     root = Path(root).absolute()
     if root.is_symlink():
         raise ValueError('compiler cache root must not be a symlink')
@@ -38,11 +44,6 @@ def compiler_cache(app, output_name, root):
                            'babel.config.js', 'babel.config.cjs', 'app.json', 'app.config.js',
                            'app.config.ts', 'tsconfig.json', 'tailwind.config.js', 'tailwind.config.cjs',
                            'postcss.config.js', 'postcss.config.cjs') if (app/name).is_file()}
-    for dotenv in app.glob('.env*'):
-        if dotenv.is_symlink():
-            raise ValueError('dotenv compiler input must not be a symlink')
-        if dotenv.is_file():
-            inputs[dotenv.name] = hashlib.sha256(dotenv.read_bytes()).hexdigest()
     declared = os.environ.get('FLEET_WEB_CACHE_ENV', '').split()
     if any(not re.fullmatch(r'[A-Z][A-Z0-9_]*', name) for name in declared):
         raise ValueError('cache environment declarations must be variable names')
@@ -50,6 +51,7 @@ def compiler_cache(app, output_name, root):
                    if key.startswith(('EXPO_', 'ENGINEERING_E2E_')) or
                    key in ('NODE_ENV', 'BABEL_ENV')}
     environment.update({name: os.environ.get(name) for name in declared})
+    environment['EXPO_NO_DOTENV'] = '1'
     toolchains = [path for path in [app.parent/'mise.toml', app.parent/'.mise.toml']
                   if path.exists() or path.is_symlink()]
     if len(toolchains) > 1:
@@ -57,7 +59,7 @@ def compiler_cache(app, output_name, root):
     for path in toolchains:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 1 << 20:
             raise ValueError('compiler SDK configuration must be bounded and regular')
-    identity = {'format': 2, 'output': output_name, 'inputs': inputs,
+    identity = {'format': 3, 'output': output_name, 'inputs': inputs,
                 'environment': environment,
                 'toolchain': hashlib.sha256(toolchains[0].read_bytes()).hexdigest() if toolchains else None}
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
@@ -92,19 +94,26 @@ def compiler_cache(app, output_name, root):
 
 def export(app, output_name, timeout=900, command=None, cache_root=None):
     app = Path(app).resolve(strict=True)
+    reject_dotenv(app)
     if not isinstance(output_name, str) or not re.fullmatch(r'dist(?:-[a-z0-9][a-z0-9-]{0,63})?', output_name):
         raise ValueError('output must be dist or a bounded dist-* variant inside the app')
+    cache_root = cache_root or os.environ.get('FLEET_WEB_CACHE')
+    command = list(command) if command else ['bun', 'x', '--no-install', 'expo', 'export',
+        '--platform', 'web', '--output-dir', output_name, *([] if cache_root else ['--clear'])]
+    if Path(command[0]).name in {'bun', 'bun.exe'}:
+        if any(value.startswith(('--env-file', '--no-env-file=')) for value in command[1:]):
+            raise ValueError('Bun dotenv command inputs are not supported')
+        if '--no-env-file' not in command[1:]:
+            command.insert(1, '--no-env-file')
     output = app / output_name
     if output.is_symlink():
         raise ValueError('export output must not be a symlink')
     if output.exists():
         shutil.rmtree(output)
-    cache_root = cache_root or os.environ.get('FLEET_WEB_CACHE')
     context = compiler_cache(app, output_name, cache_root) if cache_root else nullcontext({})
     with context as cache_environment:
-        process = subprocess.Popen(command or ['bun', 'x', '--no-install', 'expo', 'export',
-            '--platform', 'web', '--output-dir', output_name, *([] if cache_root else ['--clear'])], cwd=app,
-            env={**os.environ, 'CI': '1', **cache_environment}, start_new_session=True)
+        process = subprocess.Popen(command, cwd=app,
+            env={**os.environ, 'CI': '1', **cache_environment, 'EXPO_NO_DOTENV': '1'}, start_new_session=True)
         try:
             status = process.wait(timeout=timeout)
         finally:
