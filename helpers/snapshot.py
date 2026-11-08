@@ -109,12 +109,10 @@ def restore(archive, target, expected=None, backend='pocketbase'):
             'files': files, 'databases': databases}
 
 
-_runtime_spec = importlib.util.spec_from_file_location('_tools_snapshot_runtime', Path(__file__).with_name('container_runtime.py'))
-runtime = importlib.util.module_from_spec(_runtime_spec)
-_runtime_spec.loader.exec_module(runtime)
-
-
 def podman(*args):
+    spec = importlib.util.spec_from_file_location('_tools_snapshot_runtime', Path(__file__).with_name('container_runtime.py'))
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
     return runtime.output(list(args), timeout=30).strip()
 
 
@@ -252,6 +250,15 @@ def snapshot(container, mount, destination, exclude_auxiliary=False, probe_port=
         return final
 
 
+def deployment_receipt(manifest):
+    deployment = manifest.get('deployment')
+    if deployment is None:
+        return None
+    release = deployment['release']
+    return {'application': release['application'], 'source': release['source'],
+            'release_digest': deployment['release_digest'], 'provider': deployment['provider']}
+
+
 def seal(directory, recipient):
     """Encrypt the verified snapshot to a public recovery certificate."""
     archive = directory / 'data.tar.gz'
@@ -261,6 +268,12 @@ def seal(directory, recipient):
         raise ValueError('unsupported recovery backend')
     if sha256(archive) != evidence['archive_sha256']:
         raise ValueError('snapshot changed after verification')
+    deployment = None
+    if backend == 'postgresql':
+        manifest = postgres_helper().validate_manifest(evidence.get('postgresql'))
+        if manifest['engine']['reference'] != evidence['image_reference'] or manifest['engine']['image_id'] != evidence['image_id']:
+            raise ValueError('sealed PostgreSQL engine differs from authenticated metadata')
+        deployment = deployment_receipt(manifest)
     output = directory / 'offhost'
     output.mkdir(mode=0o700)
     ciphertext = output / 'snapshot.cms'
@@ -277,6 +290,8 @@ def seal(directory, recipient):
                         '-in', str(envelope), '-out', str(ciphertext), str(recipient)], check=True, timeout=600)
     receipt = {key: evidence[key] for key in ['archive_sha256', 'image_id', 'image_reference', 'verified_at']}
     receipt['backend'] = backend
+    if deployment is not None:
+        receipt['deployment'] = deployment
     receipt['format'] = 1
     receipt['ciphertext_sha256'] = sha256(ciphertext)
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
@@ -318,6 +333,8 @@ def unseal(directory, key, target):
         if backend == 'postgresql' and (result['postgresql']['engine']['image_id'] != evidence['image_id'] or
                                        result['postgresql']['engine']['reference'] != evidence['image_reference']):
             raise ValueError('PostgreSQL engine differs from authenticated recovery metadata')
+        if backend == 'postgresql' and receipt.get('deployment') != deployment_receipt(result['postgresql']):
+            raise ValueError('recovery deployment or provider differs from the authenticated envelope')
         result.update({key: evidence[key] for key in ['image_id', 'image_reference', 'verified_at']})
         return result
 

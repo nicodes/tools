@@ -25,6 +25,23 @@ ENGINE = 'docker.io/library/postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab274
 REVISION = 'a'*40
 
 
+def bind_deployment(manifest):
+    manifest['images']['postgres']={'reference':manifest['engine']['reference'],'image_id':manifest['engine']['image_id']}
+    artifacts={name:{'kind':'image','reference':image['reference'],'digest':image['reference'].rsplit('@',1)[1],
+                     'config_digest':image['image_id'],'platform':'linux/amd64'} for name,image in manifest['images'].items()}
+    release={'kind':'komizo.release','version':1,'application':manifest['project'],
+        'source':{'repository':'example/'+manifest['project'],'repository_id':'123','revision':manifest['revision']},
+        'artifacts':artifacts,'workload':{'services':{name:{'artifact':name} for name in artifacts}}}
+    release['providers']={'cookbook_revision':'a'*40,'tools_revision':'b'*40,'core_revision':'c'*40}
+    manifest['deployment']={'release':release,'release_digest':'sha256:'+__import__('hashlib').sha256(pg.canonical(release)).hexdigest(),
+        'provider':{'cookbook_revision':'a'*40,'tools_revision':'b'*40,'core_revision':'c'*40}}
+    return manifest
+
+
+def metadata(manifest):
+    return {key:manifest[key] for key in ['project','revision','engine','roles','images','deployment','role_namespace'] if key in manifest}
+
+
 def payload(root, dump=b'PGDMPfixture', engine_id='sha256:'+'b'*64):
     root.mkdir(mode=0o700)
     (root/'database.dump').write_bytes(dump)
@@ -36,7 +53,7 @@ def payload(root, dump=b'PGDMPfixture', engine_id='sha256:'+'b'*64):
         'format': pg.FORMAT, 'project': 'sampleapp', 'revision': REVISION, 'database': 'sampleapp',
         'engine': {'reference': ENGINE, 'image_id': engine_id, 'major': 18},
         'roles': ['sampleapp_owner', 'sampleapp_runtime'],
-        'images': {name: {'reference': f'ghcr.io/nicodes/sampleapp-{name}:{REVISION}', 'image_id': 'sha256:'+'c'*64}
+        'images': {name: {'reference': f'ghcr.io/nicodes/sampleapp-{name}@sha256:{"d"*64}', 'image_id': 'sha256:'+'c'*64}
                    for name in ['api', 'gate']},
         # The parser validates this declaration; only a product capture test
         # can establish that its producer actually held the stated snapshot.
@@ -44,6 +61,7 @@ def payload(root, dump=b'PGDMPfixture', engine_id='sha256:'+'b'*64):
         'files': {str(file.relative_to(root)): {'size': file.stat().st_size, 'sha256': pg.checksum(file)}
                   for file in root.rglob('*') if file.is_file()},
     }
+    bind_deployment(manifest)
     (root/pg.MANIFEST).write_text(json.dumps(manifest))
     return manifest
 
@@ -62,8 +80,8 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
             (capture/pg.MANIFEST).unlink()
             report = {**manifest['capture'], 'database': manifest['database'], 'major': 18, 'files': manifest['files']}
             (capture/'capture.json').write_text(json.dumps(report))
-            metadata = {key: manifest[key] for key in ['project', 'revision', 'engine', 'roles', 'images']}
-            output = pg.package_capture(capture, root/'package', metadata)
+            selected_metadata = metadata(manifest)
+            output = pg.package_capture(capture, root/'package', selected_metadata)
             evidence = json.loads((output/'verification.json').read_text())
             self.assertEqual(evidence['backend'], 'postgresql')
             self.assertEqual(evidence['database_restore'], 'not_run')
@@ -71,7 +89,7 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
             self.assertTrue((capture/'database.dump').is_file())
             (capture/'files'/'original.png').write_text('changed after capture')
             with self.assertRaisesRegex(ValueError, 'changed'):
-                pg.package_capture(capture, root/'rejected', metadata)
+                pg.package_capture(capture, root/'rejected', selected_metadata)
             self.assertFalse((root/'rejected').exists())
 
     def test_renamed_project_retains_only_its_explicit_role_namespace(self):
@@ -80,16 +98,17 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
             manifest = payload(root/'capture')
             manifest['project'] = 'newapp'
             for name in ('api', 'gate'):
-                manifest['images'][name]['reference'] = f'ghcr.io/example/newapp-{name}:{REVISION}'
+                manifest['images'][name]['reference'] = f'ghcr.io/example/newapp-{name}@sha256:{"d"*64}'
             with self.assertRaisesRegex(ValueError, 'application roles'):
                 pg.validate_manifest(manifest)
             manifest['role_namespace'] = 'sampleapp'
+            bind_deployment(manifest)
             self.assertEqual(pg.validate_manifest(manifest, 'newapp', REVISION), manifest)
             (root/'capture'/pg.MANIFEST).unlink()
             report = {**manifest['capture'], 'database': manifest['database'], 'major': 18, 'files': manifest['files']}
             (root/'capture/capture.json').write_text(json.dumps(report))
-            metadata = {key: manifest[key] for key in ('project', 'revision', 'engine', 'roles', 'images', 'role_namespace')}
-            result = pg.package_capture(root/'capture', root/'package', metadata)
+            selected_metadata = metadata(manifest)
+            result = pg.package_capture(root/'capture', root/'package', selected_metadata)
             packed = json.loads((result/'verification.json').read_text())['postgresql']
             self.assertEqual(packed['role_namespace'], 'sampleapp')
             self.assertEqual(packed['roles'], ['sampleapp_owner', 'sampleapp_runtime'])
@@ -102,8 +121,8 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
                 with self.subTest(roles=roles), self.assertRaisesRegex(ValueError, 'application roles'):
                     pg.validate_manifest({**packed, 'roles': roles})
             wrong_images = copy.deepcopy(packed)
-            wrong_images['images']['api']['reference'] = f'ghcr.io/example/sampleapp-api:{REVISION}'
-            with self.assertRaisesRegex(ValueError, 'application image'):
+            wrong_images['images']['api']['reference'] = f'ghcr.io/example/sampleapp-api@sha256:{"d"*64}'
+            with self.assertRaisesRegex(ValueError, 'recovery image|recovery images'):
                 pg.validate_manifest(wrong_images)
 
     def test_complete_inventory_and_explicit_backend_without_fake_integrity(self):
@@ -154,15 +173,16 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             sampleapp = payload(Path(directory)/'sampleapp')
             pg.validate_manifest(sampleapp)
-            self.assertEqual(sampleapp['images']['api']['reference'], f'ghcr.io/nicodes/sampleapp-api:{REVISION}')
+            self.assertEqual(sampleapp['images']['api']['reference'], f'ghcr.io/nicodes/sampleapp-api@sha256:{"d"*64}')
             sampleaddon = copy.deepcopy(sampleapp)
             sampleaddon.update(project='sampleaddon', database='sampleaddon', roles=['sampleaddon_owner', 'sampleaddon_runtime'])
             for name in ['api', 'gate']:
-                sampleaddon['images'][name]['reference'] = f'ghcr.io/example-games/sampleaddon-{name}:{REVISION}'
+                sampleaddon['images'][name]['reference'] = f'ghcr.io/example-games/sampleaddon-{name}@sha256:{"d"*64}'
+            bind_deployment(sampleaddon)
             pg.validate_manifest(sampleaddon)
             wrong_org = copy.deepcopy(sampleaddon)
-            wrong_org['images']['api']['reference'] = f'ghcr.io/nicodes/sampleaddon-api:{REVISION}'
-            with self.assertRaisesRegex(ValueError, 'application image'):
+            wrong_org['images']['api']['reference'] = f'ghcr.io/nicodes/sampleaddon-api@sha256:{"d"*64}'
+            with self.assertRaisesRegex(ValueError, 'recovery image|recovery images'):
                 pg.validate_manifest(wrong_org)
             unknown = copy.deepcopy(sampleapp)
             unknown['project'] = '../unknown'
@@ -184,7 +204,7 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root/'payload'; manifest = payload(source)
             archive = root/'data.tar.gz'; archive_payload(source, archive)
-            evidence = {'archive_sha256': snapshot.sha256(archive), 'backend': 'postgresql',
+            evidence = {'archive_sha256': snapshot.sha256(archive), 'backend': 'postgresql', 'postgresql': manifest,
                         'image_id': manifest['engine']['image_id'], 'image_reference': ENGINE,
                         'verified_at': manifest['capture']['completed_at']}
             (root/'verification.json').write_text(json.dumps(evidence))
@@ -198,6 +218,12 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
             self.assertEqual(result['backend'], 'postgresql')
             self.assertEqual(result['database_restore'], 'not_run')
             receipt = json.loads((encrypted/'receipt.json').read_text())
+            self.assertEqual(receipt['deployment'],snapshot.deployment_receipt(manifest))
+            changed=copy.deepcopy(receipt);changed['deployment']['provider']['core_revision']='f'*40
+            (encrypted/'receipt.json').write_text(json.dumps(changed))
+            empty=root/'tamper-target';empty.mkdir()
+            with self.assertRaisesRegex(ValueError,'deployment or provider'):
+                snapshot.unseal(encrypted,key,empty)
             receipt['backend'] = 'pocketbase'
             (encrypted/'receipt.json').write_text(json.dumps(receipt))
             with self.assertRaisesRegex(ValueError, 'backend'):
@@ -217,123 +243,69 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
             target = root/'restored'; target.mkdir()
             with self.assertRaises(ValueError): snapshot.restore(archive, target, backend='postgresql')
 
-    def host_local_manifest(self, root):
-        manifest = payload(root)
-        manifest['revision'] = 'host-local:inapi-fold'
-        manifest['images']['api']['reference'] = 'ghcr.io/nicodes/sampleapp-api:inapi-fold'
-        manifest['images']['gate']['reference'] = 'ghcr.io/nicodes/sampleapp-gate:' + 'e'*40
-        return manifest
-
-    def test_host_local_transition_binds_each_component_tag_truthfully(self):
+    def test_native_images_need_no_gate_and_follow_the_whole_frozen_descriptor(self):
         with tempfile.TemporaryDirectory() as directory:
-            manifest = self.host_local_manifest(Path(directory)/'payload')
+            manifest=payload(Path(directory)/'payload')
+            del manifest['images']['gate'];bind_deployment(manifest)
+            self.assertEqual(set(pg.validate_manifest(manifest)['images']),{'api','postgres'})
+            for component in ['api','postgres']:
+                changed=copy.deepcopy(manifest);changed['images'][component]['image_id']='sha256:'+'f'*64
+                with self.assertRaisesRegex(ValueError,'differ from the exact deployment'):pg.validate_manifest(changed)
+            changed=copy.deepcopy(manifest);changed['images']['foreign']={'reference':'ghcr.io/foreign/example@sha256:'+'f'*64,'image_id':'sha256:'+'e'*64}
+            with self.assertRaises(ValueError):pg.validate_manifest(changed)
+
+    def test_retired_source_tags_host_local_revisions_and_unbound_engine_refuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest=payload(Path(directory)/'payload')
+            changes=[lambda value:value.update(revision='host-local:transition'),
+                lambda value:value.update(format='nicodes-postgresql-logical-v1'),
+                lambda value:value['images']['api'].update(reference='ghcr.io/example/app-api:'+REVISION),
+                lambda value:value['engine'].update(reference='ghcr.io/foreign/engine@sha256:'+'f'*64),
+                lambda value:value.pop('deployment')]
+            for change in changes:
+                changed=copy.deepcopy(manifest);change(changed)
+                with self.assertRaises(ValueError):pg.validate_manifest(changed)
+
+    def test_descriptor_digest_source_and_exact_recipe_provider_revisions_are_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest=payload(Path(directory)/'payload')
+            for change in [lambda value:value['deployment'].update(release_digest='sha256:'+'0'*64),
+                lambda value:value['deployment']['release'].update(application='foreign'),
+                lambda value:value['deployment']['release']['source'].update(revision='d'*40),
+                lambda value:value['deployment']['provider'].update(tools_revision='main'),
+                lambda value:value['deployment']['provider'].update(tools_revision='d'*40),
+                lambda value:value['deployment']['provider'].update(command='arbitrary')]:
+                changed=copy.deepcopy(manifest);change(changed)
+                with self.assertRaises(ValueError):pg.validate_manifest(changed)
+
+    def test_static_archive_payload_and_immutable_manifest_identities_survive_packaging(self):
+        import hashlib
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);manifest=payload(root/'capture')
+            release=manifest['deployment']['release']
+            payload_digest='sha256:'+'e'*64;size=123
+            static_manifest={'schemaVersion':2,'mediaType':'application/vnd.oci.image.manifest.v1+json',
+                'artifactType':'application/vnd.komizo.static.v1',
+                'config':{'mediaType':'application/vnd.oci.empty.v1+json','digest':'sha256:'+hashlib.sha256(b'{}').hexdigest(),'size':2},
+                'layers':[{'mediaType':'application/vnd.komizo.static.v1.tar+gzip','digest':payload_digest,'size':size}]}
+            artifact={'kind':'archive','reference':'ghcr.io/example/static@sha256:'+hashlib.sha256(pg.canonical(static_manifest)).hexdigest(),
+                'digest':payload_digest,'size_bytes':size,'media_type':'application/vnd.komizo.static.v1.tar+gzip'}
+            release['artifacts']['web']=artifact;manifest['deployment']['release_digest']='sha256:'+hashlib.sha256(pg.canonical(release)).hexdigest()
             pg.validate_manifest(manifest)
-            pg.validate_manifest(manifest, 'sampleapp', 'host-local:inapi-fold')
-            with self.assertRaisesRegex(ValueError, 'revision mismatch'):
-                pg.validate_manifest(manifest, 'sampleapp', REVISION)
+            changed=copy.deepcopy(manifest);changed['deployment']['release']['artifacts']['web']['digest']='sha256:'+'f'*64
+            changed['deployment']['release_digest']='sha256:'+hashlib.sha256(pg.canonical(changed['deployment']['release'])).hexdigest()
+            with self.assertRaisesRegex(ValueError,'static reference'):pg.validate_manifest(changed)
+            (root/'capture'/pg.MANIFEST).write_text(json.dumps(manifest))
+            archive=root/'data.tar.gz';archive_payload(root/'capture',archive);target=root/'target';target.mkdir()
+            restored=snapshot.restore(archive,target,backend='postgresql')
+            self.assertEqual(restored['postgresql']['deployment'],manifest['deployment'])
 
-    def test_mixed_hex_rollout_binds_each_component(self):
-        # sampleconsole #181: the gate may roll on a different 40-hex tag than the
-        # api; the api tag still anchors the single manifest revision.
+    def test_generic_database_only_controls_need_no_application_or_registry_artifact(self):
         with tempfile.TemporaryDirectory() as directory:
-            manifest = payload(Path(directory)/'payload')
-            manifest['images']['gate']['reference'] = 'ghcr.io/nicodes/sampleapp-gate:' + 'f'*40
-            pg.validate_manifest(manifest)
-
-    def test_host_local_capture_packages_and_verifies(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); capture = root/'capture'
-            manifest = self.host_local_manifest(capture)
-            (capture/pg.MANIFEST).unlink()
-            report = {**manifest['capture'], 'database': manifest['database'], 'major': 18, 'files': manifest['files']}
-            (capture/'capture.json').write_text(json.dumps(report))
-            metadata = {key: manifest[key] for key in ['project', 'revision', 'engine', 'roles', 'images']}
-            output = pg.package_capture(capture, root/'package', metadata)
-            evidence = json.loads((output/'verification.json').read_text())
-            self.assertEqual(evidence['backend'], 'postgresql')
-
-    def test_host_local_and_mixed_binding_stay_strict(self):
-        with tempfile.TemporaryDirectory() as directory:
-            host = self.host_local_manifest(Path(directory)/'payload')
-            refusals = [
-                # Owner, product and component binding never relax.
-                lambda m: m['images']['api'].update(reference='ghcr.io/attacker/sampleapp-api:inapi-fold'),
-                lambda m: m['images']['api'].update(reference='ghcr.io/nicodes/samplestore-api:inapi-fold'),
-                lambda m: m['images']['api'].update(reference='ghcr.io/nicodes/sampleapp-gate:inapi-fold'),
-                # The api tag must anchor the recorded host-local revision.
-                lambda m: m['images']['api'].update(reference='ghcr.io/nicodes/sampleapp-api:other-fold'),
-                # Tags stay within the podman tag charset even in transition mode.
-                lambda m: m['images']['gate'].update(reference='ghcr.io/nicodes/sampleapp-gate:-bad'),
-                lambda m: m['images']['gate'].update(reference='ghcr.io/nicodes/sampleapp-gate:has/slash'),
-                # The revision itself must be a 40-hex SHA or host-local:<tag>.
-                lambda m: m.update(revision='host-local:'),
-                lambda m: m.update(revision='host-local'),
-                lambda m: m.update(revision='latest'),
-            ]
-            for mutate in refusals:
-                value = copy.deepcopy(host); mutate(value)
-                with self.assertRaisesRegex(ValueError, 'application image|project or revision'):
-                    pg.validate_manifest(value)
-            # Release mode keeps immutable 40-hex tags; 'latest' stays refused.
-            release = copy.deepcopy(host)
-            release['revision'] = REVISION
-            release['images']['api']['reference'] = f'ghcr.io/nicodes/sampleapp-api:{REVISION}'
-            release['images']['gate']['reference'] = 'ghcr.io/nicodes/sampleapp-gate:latest'
-            with self.assertRaisesRegex(ValueError, 'application image'):
-                pg.validate_manifest(release)
-            # The api tag must equal the hex revision, not just any hex tag.
-            release['images']['gate']['reference'] = f'ghcr.io/nicodes/sampleapp-gate:{REVISION}'
-            release['images']['api']['reference'] = 'ghcr.io/nicodes/sampleapp-api:' + 'b'*40
-            with self.assertRaisesRegex(ValueError, 'application image'):
-                pg.validate_manifest(release)
-
-
-    def test_service_named_api_side_binds_and_anchors_like_api(self):
-        # Projects may deploy the API side under a service-named image; the
-        # binding, anchoring and mixed-recording rules match api exactly.
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory); source = root/'payload'; manifest = payload(source)
-            manifest['images'] = {
-                'service': {'reference': f'ghcr.io/nicodes/sampleapp-service:{REVISION}', 'image_id': 'sha256:'+'c'*64},
-                'gate': {'reference': 'ghcr.io/nicodes/sampleapp-gate:' + 'f'*40, 'image_id': 'sha256:'+'c'*64},
-            }
-            (source/pg.MANIFEST).write_text(json.dumps(manifest))
-            pg.validate_manifest(manifest)
-            pg.validate_payload(source)
-            drifting = copy.deepcopy(manifest)
-            drifting['images']['service']['reference'] = 'ghcr.io/nicodes/sampleapp-service:' + 'd'*40
-            with self.assertRaisesRegex(ValueError, 'not bound to the recovery project/revision'):
-                pg.validate_manifest(drifting)
-
-    def test_service_binding_stays_strict(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manifest = payload(Path(directory)/'payload')
-            manifest['images'] = {
-                'service': {'reference': f'ghcr.io/nicodes/sampleapp-service:{REVISION}', 'image_id': 'sha256:'+'c'*64},
-                'gate': {'reference': f'ghcr.io/nicodes/sampleapp-gate:{REVISION}', 'image_id': 'sha256:'+'c'*64},
-            }
-            for mutate in [
-                lambda m: m['images'].update(api=dict(m['images']['service'])),
-                lambda m: m['images'].update(worker=dict(m['images']['service'])),
-                lambda m: m['images']['service'].update(reference='ghcr.io/attacker/sampleapp-service:'+REVISION),
-                lambda m: m['images']['service'].update(reference='ghcr.io/nicodes/sampleapp-api:'+REVISION),
-            ]:
-                value = copy.deepcopy(manifest); mutate(value)
-                with self.assertRaises(ValueError): pg.validate_manifest(value)
-
-    def test_host_local_service_tag_anchors_the_recorded_tag(self):
-        with tempfile.TemporaryDirectory() as directory:
-            manifest = self.host_local_manifest(Path(directory)/'payload')
-            manifest['images'] = {
-                'service': {'reference': 'ghcr.io/nicodes/sampleapp-service:inapi-fold', 'image_id': 'sha256:'+'c'*64},
-                'gate': manifest['images']['gate'],
-            }
-            pg.validate_manifest(manifest)
-            pg.validate_manifest(manifest, 'sampleapp', 'host-local:inapi-fold')
-            drifting = copy.deepcopy(manifest)
-            drifting['images']['service']['reference'] = 'ghcr.io/nicodes/sampleapp-service:other-fold'
-            with self.assertRaisesRegex(ValueError, 'not bound to the recovery project/revision'):
-                pg.validate_manifest(drifting)
+            manifest=payload(Path(directory)/'payload');manifest['images']={};manifest.pop('deployment')
+            self.assertEqual(pg.validate_manifest(manifest)['images'],{})
+            manifest['engine']['reference']='ghcr.io/foreign/engine@sha256:'+'f'*64
+            with self.assertRaises(ValueError):pg.validate_manifest(manifest)
 
 @unittest.skipUnless(os.environ.get('TOOLS_TEST_POSTGRES') == '1', 'mise run check requires the real isolated PostgreSQL control')
 class PostgreSQLRestoreIntegration(unittest.TestCase):
@@ -383,7 +355,7 @@ GRANT EXECUTE ON FUNCTION private_count() TO sampleapp_runtime;
             # Stream bytes rather than relying on Podman's archive-copy support
             # for a running read-only container with a tmpfs source file.
             with (source/'database.dump').open('wb') as output:
-                copied = pg.runtime.run(['exec', source_id, 'cat', '/tmp/database.dump'],
+                copied = pg.native_runtime().run(['exec', source_id, 'cat', '/tmp/database.dump'],
                                         stdout=output, stderr=subprocess.PIPE, timeout=30)
             self.assertEqual(copied.returncode, 0, 'could not stream the synthetic custom dump')
             manifest['files']['database.dump'] = {'size': (source/'database.dump').stat().st_size,

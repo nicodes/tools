@@ -287,10 +287,11 @@ def load_image(path, expected_reference=None, expected_config=None, *, environme
         runtime.run(['load', '--input', str(path)], environment=environment, authfile=authfile,
                     timeout=remaining(deadline), check=True)
         archive.unchanged()
-        if expected_reference:
+        if expected_reference and '@sha256:' not in expected_reference:
             runtime.run(['tag', archive.metadata['config_digest'], expected_reference],
                         environment=environment, authfile=authfile, timeout=remaining(deadline), check=True)
-        selected = expected_reference or archive.metadata['config_digest']
+        selected = (expected_reference if expected_reference and '@sha256:' not in expected_reference
+                    else archive.metadata['config_digest'])
         image = runtime.inspect_images([selected], environment=environment, authfile=authfile,
                                        timeout=remaining(deadline))[0]
         if (image['Id'] != archive.metadata['config_digest']

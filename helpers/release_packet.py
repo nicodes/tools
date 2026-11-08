@@ -75,12 +75,17 @@ def hash_file(path, deadline):
 
 def release(document, application=None, environment=None):
     required = {'kind', 'version', 'application', 'source', 'artifacts', 'workload'}
-    if (not isinstance(document, dict) or not required <= set(document) <= required | {'stateful_contract'}
+    if (not isinstance(document, dict) or not required <= set(document) <= required | {'stateful_contract', 'providers'}
             or document.get('kind') != 'komizo.release' or type(document.get('version')) is not int
             or document['version'] != 1 or not isinstance(document.get('application'), str)
             or not NAME.fullmatch(document['application'])
             or (application is not None and document['application'] != application)):
         raise ValueError('release has an invalid application or contract identity')
+    if 'providers' in document:
+        providers = document['providers']
+        if (not isinstance(providers, dict) or set(providers) != {'cookbook_revision', 'tools_revision', 'core_revision'}
+                or any(not isinstance(value, str) or not COMMIT.fullmatch(value) for value in providers.values())):
+            raise ValueError('release providers require all three exact source revisions')
     source = document['source']
     if (not isinstance(source, dict) or set(source) != {'repository', 'repository_id', 'revision'}
             or not isinstance(source['repository'], str)

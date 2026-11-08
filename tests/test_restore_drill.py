@@ -68,7 +68,8 @@ class RestoreBoundaries(unittest.TestCase):
             self.assertEqual(manifest['database'], 'oldapp')
             self.assertEqual(manifest['role_namespace'], 'oldapp')
             self.assertEqual(manifest['roles'], ['oldapp_runtime'])
-            self.assertIn('/newapp-api:', manifest['images']['api']['reference'])
+            self.assertEqual(manifest['images'], {})
+            self.assertEqual(json.loads((result/'verification.json').read_text())['application_restore'], 'not_run')
             for name, invalid in [('database', 'oldapp\nPGDATA=/escape'), ('role_namespace', '../oldapp')]:
                 source_config.write(config_file, {**config, name: invalid})
                 with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'PostgreSQL identity'):

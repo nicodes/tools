@@ -21,14 +21,14 @@ import tempfile
 import tarfile
 import time
 
-FORMAT = 'nicodes-postgresql-logical-v1'
+FORMAT = 'postgresql-logical-v2'
 MANIFEST = 'postgresql.json'
 MAX_MANIFEST = 16 * 1024**2
 MAX_FILES = 100000
 MAX_BYTES = 16 * 1024**3
 HEX_REVISION = re.compile(r'[a-f0-9]{40}')
-IMAGE_TAG = re.compile(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}')
-HOST_LOCAL_REVISION = re.compile(r'host-local:([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127})')
+DIGEST = re.compile(r'sha256:[a-f0-9]{64}\Z')
+COMPONENT = re.compile(r'[a-z][a-z0-9-]{0,62}\Z')
 
 
 def unique_object(pairs):
@@ -52,15 +52,91 @@ def safe_path(name):
     return not path.is_absolute() and '..' not in path.parts and str(path) == name
 
 
+def immutable_reference(value):
+    if not isinstance(value,str) or len(value)>512:
+        return False
+    match=re.fullmatch(r'([a-z0-9][a-z0-9.-]*(?::[1-9][0-9]{0,4})?)/(?:[a-z0-9]+(?:[._-][a-z0-9]+)*/)*[a-z0-9]+(?:[._-][a-z0-9]+)*@sha256:[a-f0-9]{64}',value)
+    if not match or '..' in match[1]:
+        return False
+    return ':' not in match[1] or int(match[1].rsplit(':',1)[1])<=65535
+
+
+def canonical(value):
+    return json.dumps(value,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False).encode()
+
+
+def validate_deployment(value, project, revision, images, engine):
+    """Bind generic data recovery to exact source/descriptor/provider bytes.
+
+    Workload semantics and application probes remain owned by the descriptor's
+    pinned native compiler and product adapter. This reader never executes them.
+    """
+    if (not isinstance(value,dict) or set(value)!={'release','release_digest','provider'}
+            or not isinstance(value['release_digest'],str) or not DIGEST.fullmatch(value['release_digest'])
+            or not isinstance(value['provider'],dict)
+            or set(value['provider'])!={'cookbook_revision','tools_revision','core_revision'}
+            or any(not isinstance(item,str) or not HEX_REVISION.fullmatch(item) for item in value['provider'].values())):
+        raise ValueError('recovery deployment requires exact descriptor and provider identities')
+    release=value['release']
+    required={'kind','version','application','source','artifacts','workload'}
+    if (not isinstance(release,dict) or not required<=set(release)<=required|{'stateful_contract','providers'}
+            or release['kind']!='komizo.release' or type(release['version']) is not int or release['version']!=1
+            or release['application']!=project or not isinstance(release['workload'],dict)
+            or not isinstance(release['source'],dict) or set(release['source'])!={'repository','repository_id','revision'}
+            or release['source']['revision']!=revision
+            or not isinstance(release['source']['repository'],str)
+            or not re.fullmatch(r'[A-Za-z0-9-]+/[A-Za-z0-9_.-]+',release['source']['repository'])
+            or release['source']['repository'].split('/')[1] in {'.','..'}
+            or not isinstance(release['source']['repository_id'],str)
+            or not re.fullmatch('[1-9][0-9]{0,19}',release['source']['repository_id'])):
+        raise ValueError('recovery deployment is not bound to the project and exact source')
+    if release.get('providers')!=value['provider']:
+        raise ValueError('recovery provider differs from its descriptor-bound source')
+    raw=canonical(release)
+    if len(raw)>4<<20 or 'sha256:'+hashlib.sha256(raw).hexdigest()!=value['release_digest']:
+        raise ValueError('recovery deployment differs from its immutable descriptor digest')
+    artifacts=release['artifacts'];expected={};engines=[]
+    if not isinstance(artifacts,dict) or not 1<=len(artifacts)<=32:
+        raise ValueError('recovery deployment has no closed bounded artifact set')
+    for name,artifact in artifacts.items():
+        if (not isinstance(name,str) or not COMPONENT.fullmatch(name) or not isinstance(artifact,dict)
+                or not immutable_reference(artifact.get('reference'))):
+            raise ValueError('recovery artifact requires a logical name and immutable reference')
+        if artifact.get('kind')=='image':
+            if (set(artifact)!={'kind','reference','digest','config_digest','platform'}
+                    or artifact['reference'].rsplit('@',1)[1]!=artifact['digest']
+                    or not isinstance(artifact['config_digest'],str) or not DIGEST.fullmatch(artifact['config_digest'])
+                    or artifact['platform'] not in {'linux/amd64','linux/arm64'}):
+                raise ValueError('recovery image differs from its exact OCI identity')
+            expected[name]={'reference':artifact['reference'],'image_id':artifact['config_digest']}
+            engines.append(expected[name])
+        elif artifact.get('kind')=='archive':
+            if (set(artifact)!={'kind','reference','digest','size_bytes','media_type'}
+                    or not isinstance(artifact['digest'],str) or not DIGEST.fullmatch(artifact['digest'])
+                    or type(artifact['size_bytes']) is not int or not 0<artifact['size_bytes']<=MAX_BYTES
+                    or artifact['media_type']!='application/vnd.komizo.static.v1.tar+gzip'):
+                raise ValueError('recovery static archive has no immutable payload identity')
+            manifest={'schemaVersion':2,'mediaType':'application/vnd.oci.image.manifest.v1+json',
+                'artifactType':'application/vnd.komizo.static.v1',
+                'config':{'mediaType':'application/vnd.oci.empty.v1+json','digest':'sha256:'+hashlib.sha256(b'{}').hexdigest(),'size':2},
+                'layers':[{'mediaType':artifact['media_type'],'digest':artifact['digest'],'size':artifact['size_bytes']}]}
+            if artifact['reference'].rsplit('@',1)[1]!='sha256:'+hashlib.sha256(canonical(manifest)).hexdigest():
+                raise ValueError('recovery static reference differs from its exact payload')
+        else:
+            raise ValueError('recovery deployment contains an unsupported artifact kind')
+    if images!=expected or {'reference':engine['reference'],'image_id':engine['image_id']} not in engines:
+        raise ValueError('recovery images or database engine differ from the exact deployment')
+    return value
+
+
 def validate_manifest(value, expected_project=None, expected_revision=None):
     required = {'format', 'project', 'revision', 'database', 'engine', 'roles', 'images', 'capture', 'files'}
-    if not isinstance(value, dict) or set(value) not in (required, required | {'role_namespace'}) or value['format'] != FORMAT:
+    if not isinstance(value, dict) or not required<=set(value)<=required|{'role_namespace','deployment'} or value['format'] != FORMAT:
         raise ValueError('unknown or incomplete PostgreSQL recovery manifest')
     project, revision = value['project'], value['revision']
-    host_local = HOST_LOCAL_REVISION.fullmatch(revision) if isinstance(revision, str) else None
-    if (not isinstance(project, str) or not re.fullmatch(r'[a-z][a-z0-9-]*', project) or not isinstance(revision, str)
-            or (not HEX_REVISION.fullmatch(revision) and host_local is None)):
-        raise ValueError('invalid PostgreSQL recovery project or revision')
+    if (not isinstance(project,str) or not COMPONENT.fullmatch(project)
+            or not isinstance(revision,str) or not HEX_REVISION.fullmatch(revision)):
+        raise ValueError('invalid PostgreSQL recovery project or exact source revision')
     if expected_project is not None and project != expected_project:
         raise ValueError('PostgreSQL recovery project mismatch')
     if expected_revision is not None and revision != expected_revision:
@@ -70,8 +146,8 @@ def validate_manifest(value, expected_project=None, expected_revision=None):
     engine = value['engine']
     if not isinstance(engine, dict) or set(engine) != {'reference', 'image_id', 'major'}:
         raise ValueError('invalid PostgreSQL engine declaration')
-    if not isinstance(engine['reference'], str) or not re.fullmatch(r'docker\.io/library/postgres@sha256:[a-f0-9]{64}', engine['reference']):
-        raise ValueError('PostgreSQL recovery requires an immutable official engine reference')
+    if not isinstance(engine['reference'], str) or not immutable_reference(engine['reference']):
+        raise ValueError('PostgreSQL recovery requires an immutable engine reference')
     if not isinstance(engine['image_id'], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', engine['image_id']):
         raise ValueError('invalid PostgreSQL engine image identity')
     if type(engine['major']) is not int or engine['major'] != 18:
@@ -89,35 +165,16 @@ def validate_manifest(value, expected_project=None, expected_revision=None):
             for role in roles) or len(set(roles)) != len(roles):
         raise ValueError('invalid PostgreSQL application roles')
     images = value['images']
-    # The API-side component deploys as `api` or `service` depending on the
-    # project's release-pipeline naming; both spellings bind and anchor
-    # identically, and the gate is always required beside exactly one of them.
-    if not isinstance(images, dict) or set(images) not in ({'api', 'gate'}, {'service', 'gate'}):
-        raise ValueError('PostgreSQL recovery requires API and frontend image identities')
-    # The API-side component's tag always anchors the manifest revision: equal
-    # to it for a release (40-hex) revision, or to the recorded tag in
-    # host-local mode. Hex+shared remains strict equality; otherwise each
-    # component binds its own recorded tag, keeping mixed rollouts and the
-    # host-local release-tag transition truthful. The sha256 image_id stays
-    # the pinned identity.
-    anchor = revision if host_local is None else host_local[1]
-    tag_pattern = IMAGE_TAG if host_local is not None else HEX_REVISION
-    namespace = None
-    for component, image in images.items():
-        reference = image.get('reference', '') if isinstance(image, dict) else ''
-        match = re.fullmatch(r'([a-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9/._-]*)/' + re.escape(project) + '-' + re.escape(component) + r':([^:]+)', reference)
-        if not match or (namespace is not None and match[1] != namespace):
-            raise ValueError('application image namespace differs within the authenticated manifest')
-        namespace = match[1]
-        prefix = f'{namespace}/{project}-{component}:'
-        if (not isinstance(image, dict) or set(image) != {'reference', 'image_id'}
-                or not isinstance(image.get('reference'), str) or not image['reference'].startswith(prefix)):
-            raise ValueError('application image is not bound to the recovery project/revision')
-        tag = image['reference'][len(prefix):]
-        if not tag_pattern.fullmatch(tag) or (component != 'gate' and tag != anchor):
-            raise ValueError('application image is not bound to the recovery project/revision')
-        if not isinstance(image['image_id'], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image['image_id']):
-            raise ValueError('invalid application image identity')
+    if (not isinstance(images,dict) or len(images)>32
+            or any(not isinstance(name,str) or not COMPONENT.fullmatch(name) or not isinstance(image,dict)
+                   or set(image)!={'reference','image_id'} or not immutable_reference(image['reference'])
+                   or not isinstance(image['image_id'],str) or not DIGEST.fullmatch(image['image_id'])
+                   for name,image in images.items())):
+        raise ValueError('invalid immutable recovery image set')
+    if 'deployment' in value:
+        validate_deployment(value['deployment'],project,revision,images,engine)
+    elif images or not re.fullmatch(r'docker\.io/library/postgres@sha256:[a-f0-9]{64}',engine['reference']):
+        raise ValueError('application recovery requires its exact deployment descriptor and providers')
     capture = value['capture']
     if not isinstance(capture, dict) or set(capture) != {'snapshot_id', 'reclamation_fenced', 'completed_at'}:
         raise ValueError('incomplete PostgreSQL capture declaration')
@@ -175,12 +232,20 @@ def validate_payload(root, extracted_files=None, expected_project=None, expected
     return manifest
 
 
-_runtime_spec = importlib.util.spec_from_file_location('_tools_pg_runtime', Path(__file__).with_name('container_runtime.py'))
-runtime = importlib.util.module_from_spec(_runtime_spec)
-_runtime_spec.loader.exec_module(runtime)
+_runtime = None
+
+
+def native_runtime():
+    global _runtime
+    if _runtime is None:
+        spec = importlib.util.spec_from_file_location('_tools_pg_runtime', Path(__file__).with_name('container_runtime.py'))
+        _runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_runtime)
+    return _runtime
 
 
 def podman(*args, input=None, timeout=60):
+    runtime = native_runtime()
     try:
         result = runtime.run(list(args), input=input, text=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -203,7 +268,7 @@ def application_images(manifest, pull=False):
     for component, recorded in manifest['images'].items():
         if pull:
             podman('pull', '--quiet', recorded['reference'], timeout=180)
-        inspected = json.loads(podman('image', 'inspect', recorded['reference']))
+        inspected = json.loads(podman('image', 'inspect', recorded['image_id']))
         if len(inspected) != 1 or inspected[0]['Id'] != recorded['image_id']:
             raise ValueError('application image differs from authenticated recovery metadata')
         images[component] = inspected[0]['Id']
@@ -220,7 +285,7 @@ def package_capture(capture, destination, metadata):
     report = json.loads(report_path.read_text(), object_pairs_hook=unique_object)
     if not isinstance(report, dict) or set(report) != {'snapshot_id', 'reclamation_fenced', 'completed_at', 'database', 'major', 'files'}:
         raise ValueError('unknown completed capture report')
-    if not isinstance(metadata, dict) or set(metadata) not in ({'project', 'revision', 'engine', 'roles', 'images'}, {'project', 'revision', 'engine', 'roles', 'images', 'role_namespace'}):
+    if not isinstance(metadata, dict) or not {'project','revision','engine','roles','images'}<=set(metadata)<={'project','revision','engine','roles','images','role_namespace','deployment'}:
         raise ValueError('invalid recovery image metadata')
     manifest = validate_manifest({**metadata, 'format': FORMAT, 'database': report['database'],
                                   'capture': {key: report[key] for key in ['snapshot_id', 'reclamation_fenced', 'completed_at']},
@@ -286,7 +351,7 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
     engine = manifest['engine']
     if pull:
         podman('pull', '--quiet', engine['reference'], timeout=180)
-    inspected = json.loads(podman('image', 'inspect', engine['reference']))
+    inspected = json.loads(podman('image', 'inspect', engine['image_id']))
     if len(inspected) != 1 or inspected[0]['Id'] != engine['image_id']:
         raise ValueError('restored PostgreSQL engine differs from authenticated metadata')
     uid = os.getuid() or 65534
@@ -314,7 +379,7 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
         try:
             started = True
             podman('run', '--pull=never', '-d', '--name', name, '--label', 'nicodes.restore='+name,
-                   '--network=none', '--read-only', *runtime.bind_mount_user_namespace(), '--user', f'{uid}:{uid}', '--cap-drop=ALL',
+                   '--network=none', '--read-only', *native_runtime().bind_mount_user_namespace(), '--user', f'{uid}:{uid}', '--cap-drop=ALL',
                    '--security-opt=no-new-privileges:true', '--memory=256m', '--cpus=1', '--pids-limit=128',
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
                    '--tmpfs', f'/var/run/postgresql:rw,noexec,nosuid,uid={uid},gid={uid},mode=0770,size=8m',

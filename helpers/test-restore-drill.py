@@ -113,12 +113,9 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
         'snapshot_id': 'AAAA-BBBB-1', 'reclamation_fenced': True,
         'completed_at': datetime.now(timezone.utc).isoformat(),
         'database': database, 'major': major, 'files': files}))
-    images = {}
-    for component in ('api', 'gate'):
-        reference = f'{config["image_base"]}-{component}:{revision}'
-        images[component] = {'reference': reference,
-                             'image_id': json.loads(restore.podman('image', 'inspect', reference))[0]['Id']}
-    metadata = {'project': project, 'revision': revision, 'roles': [config['runtime_role']], 'images': images,
+    # This generic fixture claims a real database/dump round-trip only. Native
+    # descriptor-bound application restoration belongs to the product recipe.
+    metadata = {'project': project, 'revision': revision, 'roles': [config['runtime_role']], 'images': {},
                 'engine': {'reference': engine_reference, 'image_id': engine['Id'], 'major': major}}
     if 'role_namespace' in config:
         metadata['role_namespace'] = config['role_namespace']

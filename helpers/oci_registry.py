@@ -103,7 +103,7 @@ def _blob(reader, expected, length):
 
 
 class Registry:
-    def __init__(self, registry, repository, *, username='', password='', timeout=900):
+    def __init__(self, registry, repository, *, username='', password='', timeout=900, actions=('pull', 'push')):
         reference(registry + '/' + repository + '@sha256:' + '0' * 64)
         if (bool(username) != bool(password) or not isinstance(username, str)
                 or not isinstance(password, str) or ':' in username
@@ -111,6 +111,11 @@ class Registry:
                 or len(username) > 256 or len(password) > 32768
                 or type(timeout) is not int or not 1 <= timeout <= 2400):
             raise RegistryError('registry authority or deadline is invalid')
+        if (not isinstance(actions, (list, tuple)) or not actions
+                or any(action not in {'pull', 'push'} for action in actions)
+                or len(set(actions)) != len(actions)):
+            raise RegistryError('registry permission scope is invalid')
+        self._actions = tuple(actions)
         self.registry = registry
         self.repository = repository
         self._username = username
@@ -181,7 +186,7 @@ class Registry:
             raise RegistryError('registry authentication challenge is invalid')
         realm = urllib.parse.urlsplit(fields['realm'])
         expected = urllib.parse.urlsplit('https://' + self.registry)
-        scope = 'repository:' + self.repository + ':pull,push'
+        scope = 'repository:' + self.repository + ':' + ','.join(self._actions)
         advertised = fields.get('scope', scope).split(':')
         if (realm.scheme != 'https' or realm.hostname != expected.hostname
                 or (realm.port or 443) != (expected.port or 443)
