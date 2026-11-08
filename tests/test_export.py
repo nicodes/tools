@@ -92,7 +92,7 @@ class CompilerCacheBoundaries(unittest.TestCase):
                     raise RuntimeError('compile failed')
             self.assertFalse((namespace/'state.json').exists())
 
-    def test_declared_product_modes_and_dotenv_select_fresh_namespaces(self):
+    def test_declared_product_modes_select_fresh_namespaces_and_dotenv_is_refused(self):
         import os
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as root:
@@ -105,8 +105,74 @@ class CompilerCacheBoundaries(unittest.TestCase):
                     with module.compiler_cache(app, 'dist', cache) as env:
                         self.assertNotEqual(env['TMPDIR'], production)
                 (app/'.env.production').write_text('EXPO_PUBLIC_API_URL=https://new.invalid')
-                with module.compiler_cache(app, 'dist', cache) as env:
-                    self.assertNotEqual(env['TMPDIR'], production)
+                with self.assertRaisesRegex(ValueError, 'dotenv inputs are not supported'):
+                    with module.compiler_cache(app, 'dist', cache): pass
+                (app/'.env.production').unlink()
                 with patch.dict(os.environ, {'FLEET_WEB_CACHE_ENV': 'bad-name'}):
                     with self.assertRaisesRegex(ValueError, 'variable names'):
                         with module.compiler_cache(app, 'dist', cache): pass
+
+
+class InjectedExportEnvironment(unittest.TestCase):
+    def test_dotenv_is_refused_before_reading_deleting_outputs_or_creating_cache(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory)/'app'; app.mkdir()
+            (app/'.env.example.local').write_text('PUBLIC_FLAG=fixture-only\n')
+            output = app/'dist'; output.mkdir(); (output/'index.html').write_text('retained')
+            cache = Path(directory)/'cache'
+            with patch.object(Path, 'read_bytes', side_effect=AssertionError('dotenv content read')), \
+                    patch.object(module.subprocess, 'Popen', side_effect=AssertionError('compiler executed')):
+                with self.assertRaisesRegex(ValueError, 'dotenv inputs are not supported'):
+                    module.export(app, 'dist', cache_root=cache)
+                with self.assertRaisesRegex(ValueError, 'dotenv inputs are not supported'):
+                    with module.compiler_cache(app, 'dist', cache): pass
+            self.assertFalse(cache.exists())
+            self.assertEqual((output/'index.html').read_text(), 'retained')
+
+    def test_dangling_dotenv_link_is_not_a_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory)
+            (app/'.env').symlink_to(app/'absent')
+            with self.assertRaisesRegex(ValueError, 'dotenv inputs are not supported'):
+                module.export(app, 'dist')
+
+    def test_default_bun_argv_and_actual_child_environment_disable_dotenv(self):
+        import json
+        import os
+        from unittest.mock import patch
+        original = module.subprocess.Popen
+        observed = []
+        child = ("import json,os; from pathlib import Path; p=Path('dist'); p.mkdir(); "
+                 "(p/'index.html').write_text('ok'); (p/'app.js').write_text('ok'); "
+                 "(p/'child.json').write_text(json.dumps({'dotenv':os.environ['EXPO_NO_DOTENV']}))")
+        def launch(command, **kwargs):
+            observed.append(command)
+            return original([sys.executable, '-c', child], **kwargs)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.dict(os.environ, {'EXPO_NO_DOTENV':'0'}, clear=True), \
+                patch.object(module.subprocess, 'Popen', side_effect=launch):
+            module.export(directory, 'dist')
+            self.assertEqual(observed[0][:5], ['bun','--no-env-file','x','--no-install','expo'])
+            self.assertEqual(json.loads((Path(directory)/'dist/child.json').read_text()), {'dotenv':'1'})
+
+    def test_explicit_bun_command_cannot_enable_a_dotenv_file(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(module.subprocess, 'Popen', side_effect=AssertionError('compiler executed')):
+            for argument in ['--env-file', '--env-file=outside', '--no-env-file=false']:
+                with self.subTest(argument=argument), self.assertRaisesRegex(ValueError, 'Bun dotenv command'):
+                    module.export(directory, 'dist', command=['bun',argument,'x','expo'])
+
+    def test_effective_no_dotenv_flag_selects_one_cache_namespace(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as directory:
+            app = Path(directory)/'app'; app.mkdir()
+            cache = Path(directory)/'cache'
+            with patch.dict(os.environ, {'EXPO_NO_DOTENV':'0'}, clear=True):
+                with module.compiler_cache(app, 'dist', cache) as environment:
+                    before = environment['TMPDIR']
+            with patch.dict(os.environ, {'EXPO_NO_DOTENV':'1'}, clear=True):
+                with module.compiler_cache(app, 'dist', cache) as environment:
+                    self.assertEqual(environment['TMPDIR'], before)
