@@ -1,4 +1,4 @@
-"""OCI archive admission, owned cache repair and bounded native execution."""
+"""OCI admission and non-destructive source alias imports in bounded execution."""
 import copy
 import hashlib
 import io
@@ -30,10 +30,12 @@ class ImageImportCacheControls(unittest.TestCase):
             self.expected[reference] = fixture.descriptor(fixture.encoded(config), fixture.CONFIG)['digest']
             self.archives.append(self.archive(str(number) + '.oci.tar', reference))
         self.calls, self.containers, self.inspect_errors = [], {}, {}
+        self.container_states = {}
         self.listing = [self.row(ref, identity) for ref, identity in self.expected.items()]
         self.listing.append(self.row('registry.example/other/preserved:stable', 'sha256:' + 'f' * 64))
         self.inspected = {ref: {'Id': identity, 'RootFS': {'Layers': self.configs[ref]['rootfs']['diff_ids']}} for ref, identity in self.expected.items()}
         self.after_load = copy.deepcopy(self.inspected)
+        self.known_images = {row['Id']: copy.deepcopy(row) for row in self.inspected.values()}
         self.clock, self.elapsed_per_call = 0, 0
 
     @staticmethod
@@ -52,11 +54,35 @@ class ImageImportCacheControls(unittest.TestCase):
         self.calls.append((command, options)); self.clock += self.elapsed_per_call
         if command[1:3] == ['image','ls']: output = '\n'.join(json.dumps(row) for row in self.listing)
         elif command[1:3] == ['container','ls']: output = self.containers.get(command[-1].removeprefix('ancestor='), '')
+        elif command[1:3] == ['container','inspect']:
+            identity = command[-1]
+            image = next(image for image, containers in self.containers.items() if identity in containers.splitlines())
+            output = json.dumps([{'Id':identity, 'Image':image,
+                                  'State':self.container_states.get(identity, {'Status':'configured','Running':False})}])
         elif command[1:3] == ['image','inspect']:
-            if command[-1] in self.inspect_errors: raise subprocess.CalledProcessError(1, command, stderr=self.inspect_errors[command[-1]])
-            output = json.dumps([self.inspected[command[-1]]])
+            reference = command[-1]
+            if reference in self.inspect_errors:
+                raise subprocess.CalledProcessError(1, command, stderr=self.inspect_errors[reference])
+            if reference in self.inspected:
+                value = copy.deepcopy(self.inspected[reference])
+            else:
+                value = copy.deepcopy(self.known_images.get(reference, {'Id':reference,'RootFS':{'Layers':[]}}))
+            identity = cache.runtime.config_digest(value['Id'])
+            matching = [row for row in self.listing if cache.runtime.config_digest(row['ID']) == identity]
+            value['RepoTags'] = [row['Repository']+':'+row['Tag'] for row in matching if row['Tag'] != '<none>']
+            value['RepoDigests'] = sorted({digest for row in matching for digest in row['RepoDigests']})
+            output = json.dumps([value])
         elif command[1:3] == ['image','load']:
-            self.inspected = copy.deepcopy(self.after_load); output = ''
+            for reference, identity in self.expected.items():
+                for row in self.listing:
+                    if row['Repository']+':'+row['Tag'] == reference and row['ID'] != identity:
+                        if row['RepoDigests']:
+                            self.listing.append({'Repository':'<none>','Tag':'<none>','ID':row['ID'],
+                                                 'RepoDigests':row['RepoDigests'][:]})
+                        row['ID'], row['RepoDigests'] = identity, []
+                if not any(row['Repository']+':'+row['Tag'] == reference for row in self.listing):
+                    self.listing.append(self.row(reference,identity))
+            self.inspected.update(copy.deepcopy(self.after_load)); output = ''
         else: output = ''
         return subprocess.CompletedProcess(command, 0, stdout=output)
 
@@ -78,14 +104,21 @@ class ImageImportCacheControls(unittest.TestCase):
         self.assertEqual(self.calls,[])
         self.refused(expected={})
 
-    def test_owned_repair_removes_only_declared_refs_deepest_first_then_loads_originals(self):
-        self.inspected[self.refs[0]]['RootFS']['Layers'] = []
+    def test_stale_owned_alias_loads_originals_without_deleting_objects(self):
+        self.listing[0]['ID'] = 'sha256:'+'c'*64
         self.assertEqual(set(self.reload()), set(self.expected))
         mutations = self.mutations()
-        self.assertEqual(mutations[0], ['podman','image','rm','--no-prune','--',*reversed(self.refs)])
-        self.assertEqual([row for row in mutations if row[2] == 'load'], [['podman','image','load','--input',str(self.root / row['path'])] for row in self.archives])
-        self.assertFalse(any(value in command for command, _ in self.calls for value in ['--force','-f','prune','build','create','start']))
-        self.assertTrue(all(options['cwd'] == self.root and options['env']['PATH'] == '/synthetic/native-only' and 'CONTAINER_HOST' not in options['env'] for _, options in self.calls))
+        self.assertEqual([row for row in mutations if row[2] == 'load'],
+                         [['podman','image','load','--input',str(self.root / row['path'])] for row in self.archives])
+        self.assertFalse(any(value in command for command, _ in self.calls
+                             for value in ['rm','rmi','--force','-f','prune','build','create','start']))
+        self.assertTrue(all(options['cwd'] == self.root and options['env']['PATH'] == '/synthetic/native-only'
+                            and 'CONTAINER_HOST' not in options['env'] for _, options in self.calls))
+
+    def test_content_address_with_wrong_rootfs_refuses_before_effects(self):
+        self.inspected[self.refs[0]]['RootFS']['Layers'] = []
+        with self.assertRaisesRegex(ValueError,'RootFS disagree'): self.reload()
+        self.assertEqual(self.mutations(), [])
 
     def test_healthy_exact_cache_is_reverified_without_mutation(self):
         self.assertEqual(set(self.reload()), set(self.expected)); self.assertEqual(self.mutations(), [])
@@ -97,21 +130,53 @@ class ImageImportCacheControls(unittest.TestCase):
         before = copy.deepcopy((self.listing,self.containers,self.inspected))
         self.reload(); self.assertEqual(self.mutations(), []); self.assertEqual(before,(self.listing,self.containers,self.inspected))
 
-    def test_mutating_plans_protect_alias_digest_and_containers_for_prior_and_incoming_ids(self):
+    def test_import_preserves_alias_digest_and_containers_for_prior_and_incoming_ids(self):
         original = copy.deepcopy((self.listing,self.inspected))
-        for plan in ['missing','rootfs','prior']:
-            for blocker in ['alias','digest','container','incoming-alias','incoming-container']:
-                with self.subTest(plan=plan,blocker=blocker):
+        for plan in ['missing','prior']:
+            for borrowed in ['alias','digest','container','incoming-alias','incoming-container']:
+                with self.subTest(plan=plan,borrowed=borrowed):
                     self.calls.clear(); self.containers = {}; self.listing,self.inspected = copy.deepcopy(original)
                     if plan == 'missing': self.listing.pop(2)
-                    elif plan == 'rootfs': self.inspected[self.refs[0]]['RootFS']['Layers'] = []
-                    else: self.listing[0]['ID'] = 'sha256:' + 'c' * 64
-                    identity = self.expected[self.refs[0]] if blocker.startswith('incoming-') else self.listing[0]['ID']
-                    if blocker.endswith('alias'): self.listing.insert(0,self.row('registry.example/other/alias:stable',identity))
-                    elif blocker == 'digest': self.listing[0]['RepoDigests'] = ['registry.example/component@sha256:' + 'd' * 64]
-                    else: self.containers[identity] = 'created-never-started\n'
-                    with self.assertRaises(ValueError): self.reload()
-                    self.assertEqual(self.mutations(), [])
+                    else: self.listing[0]['ID'] = 'sha256:'+'c'*64
+                    identity = self.expected[self.refs[0]] if borrowed.startswith('incoming-') else self.listing[0]['ID']
+                    if borrowed.endswith('alias'):
+                        self.listing.insert(0,self.row('registry.example/other/alias:stable',identity))
+                    elif borrowed == 'digest':
+                        self.listing[0]['RepoDigests'] = ['registry.example/component@sha256:'+'d'*64]
+                    else: self.containers[identity] = '1'*64+'\n'
+                    before_containers = copy.deepcopy(self.containers)
+                    before_aliases = {(row['Repository']+':'+row['Tag'],row['ID']) for row in self.listing
+                                      if row['Repository']+':'+row['Tag'] not in self.expected}
+                    before_digests = {(row['ID'],digest) for row in self.listing for digest in row['RepoDigests']}
+                    self.assertEqual(set(self.reload()),set(self.expected))
+                    self.assertEqual(self.containers,before_containers)
+                    self.assertTrue(before_aliases <= {(row['Repository']+':'+row['Tag'],row['ID']) for row in self.listing})
+                    self.assertTrue(before_digests <= {(row['ID'],digest) for row in self.listing for digest in row['RepoDigests']})
+                    self.assertFalse(any(row[2]=='rm' for row in self.mutations()))
+
+    def test_import_postconditions_detect_lost_borrowed_alias_or_container_change(self):
+        for borrowed in ['alias','digest','container']:
+            with self.subTest(borrowed=borrowed):
+                self.setUp()
+                self.listing[0]['ID'] = 'sha256:'+'c'*64
+                identity = self.listing[0]['ID']
+                alias = 'registry.example/other/borrowed:fixture'
+                self.listing.append(self.row(alias,identity,'sha256:'+'d'*64))
+                self.containers[identity] = '1'*64+'\n'
+                original = self.execute
+                changed = False
+                def corrupt(command,**options):
+                    nonlocal changed
+                    result = original(command,**options)
+                    if command[2:4] == ['image','load'] and not changed:
+                        changed = True
+                        if borrowed == 'alias': self.listing = [row for row in self.listing if row['Repository']+':'+row['Tag'] != alias]
+                        elif borrowed == 'digest':
+                            for row in self.listing: row['RepoDigests'] = []
+                        else: self.container_states['1'*64] = {'Status':'running','Running':True}
+                    return result
+                with patch.object(self,'execute',side_effect=corrupt), self.assertRaisesRegex(ValueError,'borrowed'):
+                    self.reload()
 
     def test_missing_or_partial_cache_loads_without_removal(self):
         for rows in [[],self.listing[:1]]:
@@ -175,9 +240,10 @@ class ImageImportCacheControls(unittest.TestCase):
         prior={ref:'sha256:'+hashlib.sha256(('prior '+ref).encode()).hexdigest() for ref in self.refs}
         self.listing=[self.row(ref,value) for ref,value in prior.items()]
         self.reload()
-        first=next(index for index,(row,_) in enumerate(self.calls) if row[1:3]==['image','rm'])
+        first=next(index for index,(row,_) in enumerate(self.calls) if row[1:3]==['image','load'])
         checked={row[-1] for row,_ in self.calls[:first] if row[1:3]==['container','ls']}
-        self.assertEqual(checked,{'ancestor='+value for value in {*prior.values(),*self.expected.values()}})
+        self.assertEqual(checked,{'ancestor='+value for value in prior.values()})
+        self.assertFalse(any(row[2]=='rm' for row in self.mutations()))
 
     def test_ambiguous_existing_tag_refuses_before_mutation(self):
         self.listing.append(self.row(self.refs[0],'sha256:'+'c'*64))
@@ -196,6 +262,7 @@ class ImageImportCacheControls(unittest.TestCase):
     def test_reloaded_config_and_rootfs_must_both_match(self):
         self.listing=[]
         for key,value in [('Id','sha256:'+'e'*64),('RootFS',{'Layers':[]})]:
+            self.listing=[]
             old=self.after_load[self.refs[0]][key]; self.after_load[self.refs[0]][key]=value
             with self.assertRaisesRegex(ValueError,'imported image differs'): self.reload()
             self.after_load[self.refs[0]][key]=old

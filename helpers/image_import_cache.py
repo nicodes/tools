@@ -1,4 +1,4 @@
-"""Reuse or repair a closed, accepted image set from authenticated store state."""
+"""Reuse or import a closed image set without deleting native store objects."""
 import hashlib
 import json
 import importlib.util
@@ -82,12 +82,12 @@ def archive_images(path, expected, deadline):
 
 
 def reload(root, source, archives, expected, environment, timeout=600):
-    """Admit every archive and cache reference before deriving reuse/load/repair.
+    """Admit every archive and cache reference before deriving reuse or import.
 
     The caller owns source/configuration/build-proof admission and supplies the
     complete declared image set. This helper independently closes the archive
     tag/config/layer set, protects aliases and containers, and retains one total
-    deadline across validation, cache inspection, repair, load and verification.
+    deadline across validation, cache inspection, load and verification.
     """
     if type(timeout) is not int or not 1 <= timeout <= 600:
         raise ValueError('accepted image reload requires its original bounded deadline')
@@ -151,7 +151,7 @@ def reload(root, source, archives, expected, environment, timeout=600):
                 raise ValueError('existing source tag has ambiguous cache image IDs')
             present[reference] = row['ID']
         rows.append((row, reference))
-    def inspect(reference):
+    def inspect(reference, detailed=False):
         values = json.loads(execute(['image', 'inspect', reference]), object_pairs_hook=unique_object)
         if isinstance(values, list) and len(values) == 1 and isinstance(values[0], dict):
             values[0]['Id'] = runtime.config_digest(values[0].get('Id'))
@@ -163,33 +163,55 @@ def reload(root, source, archives, expected, environment, timeout=600):
                 or any(not isinstance(layer, str) or not DIGEST.fullmatch(layer)
                        for layer in values[0]['RootFS']['Layers'])):
             raise ValueError('Podman image inspection has no immutable config ID and RootFS')
-        return {'id': values[0]['Id'], 'rootfs': values[0]['RootFS']['Layers']}
+        result = {'id': values[0]['Id'], 'rootfs': values[0]['RootFS']['Layers']}
+        if detailed:
+            for source, target in [('RepoTags', 'tags'), ('RepoDigests', 'digests')]:
+                entries = values[0].get(source)
+                if not isinstance(entries, list) or any(not isinstance(item, str) for item in entries):
+                    raise ValueError('native image inspection omits reference ownership')
+                result[target] = set(entries)
+        return result
 
-    repair = any(identity != expected[reference] for reference, identity in present.items())
+    stale = any(identity != expected[reference] for reference, identity in present.items())
     for reference, identity in present.items():
         if identity != expected[reference]:
             continue
-        # Unknown storage/inspection failures do not authorize deletion. Only
-        # independently observed config/rootfs differences derive scoped repair.
+        # A matching content address with different data is storage corruption,
+        # not permission to remove objects or attempt a global store repair.
         observed = inspect(reference)
         if observed['id'] != identity:
             raise ValueError('source tag changed during image cache admission')
         if observed != admitted[reference]:
-            repair = True
+            raise ValueError('content-addressed cache config and RootFS disagree; native storage requires operator inspection')
 
-    mutating = repair or set(present) != set(expected)
+    mutating = stale or set(present) != set(expected)
+    protected_images, protected_containers = {}, {}
+    def container(identity):
+        values = json.loads(execute(['container', 'inspect', identity]), object_pairs_hook=unique_object)
+        if (not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict)
+                or values[0].get('Id') != identity or not isinstance(values[0].get('State'), dict)):
+            raise ValueError('borrowed container identity is incomplete')
+        return {'id': identity, 'image': runtime.config_digest(values[0].get('Image')),
+                'state': values[0]['State']}
+
     if mutating:
-        # A verified no-op leaves borrowed aliases and containers unchanged.
-        # Any load/repair still protects BOTH prior and incoming image IDs.
-        targets = set(expected.values()) | set(present.values())
-        for row, reference in rows:
-            repository, tag = row['Repository'], row['Tag']
-            if row['ID'] in targets and (row['RepoDigests']
-                    or (reference not in expected and (repository, tag) != ('<none>', '<none>'))):
-                raise ValueError('accepted cache image has an out-of-scope alias or digest')
+        # Imports change only admitted source aliases. Every existing config,
+        # other alias, registry identity and container remains in native storage.
+        targets = (set(expected.values()) | set(present.values())) & {row['ID'] for row, _ in rows}
+        accepted = {row['id']: row['rootfs'] for row in admitted.values()}
         for identity in sorted(targets):
-            if execute(['container', 'ls', '--all', '--quiet', '--filter', 'ancestor=' + identity]).strip():
-                raise ValueError('accepted cache image is used by an existing container')
+            observed = inspect(identity, detailed=True)
+            if (observed['id'] != identity
+                    or identity in accepted and observed['rootfs'] != accepted[identity]):
+                raise ValueError('native content-addressed storage disagrees with the accepted image')
+            protected_images[identity] = {'rootfs': observed['rootfs'],
+                                          'tags': observed['tags'] - set(expected),
+                                          'digests': observed['digests']}
+            for selected in execute(['container', 'ls', '--all', '--quiet', '--no-trunc',
+                                     '--filter', 'ancestor=' + identity]).splitlines():
+                if not re.fullmatch('[a-f0-9]{64}', selected):
+                    raise ValueError('borrowed container requires its full native identity')
+                protected_containers[selected] = container(selected)
 
     def unchanged(path):
         relative(root, path.relative_to(root).as_posix(), exists=True)
@@ -200,18 +222,24 @@ def reload(root, source, archives, expected, environment, timeout=600):
 
     for path in paths:
         unchanged(path)
-    if repair and present:
-        ordered = sorted(present, key=lambda ref: (-len(admitted[ref]['rootfs']), ref))
-        execute(['image', 'rm', '--no-prune', '--', *ordered])
     if mutating:
         for path in paths:
             unchanged(path)
             execute(['image', 'load', '--input', str(path)], cap=600)
+            unchanged(path)
             values = archive_images(path, expected, deadline)
             for reference, value in values.items():
                 execute(['image', 'tag', value['id'], reference])
     for reference, wanted in admitted.items():
         if inspect(reference) != wanted:
             raise ValueError('imported image differs from its accepted config ID or RootFS')
+    for identity, wanted in protected_images.items():
+        actual = inspect(identity, detailed=True)
+        if (actual['id'] != identity or actual['rootfs'] != wanted['rootfs']
+                or not wanted['tags'] <= actual['tags'] or not wanted['digests'] <= actual['digests']):
+            raise ValueError('native import changed a borrowed image or registry reference')
+    for identity, wanted in protected_containers.items():
+        if container(identity) != wanted:
+            raise ValueError('native import changed a borrowed container')
     remaining(deadline)
     return admitted
