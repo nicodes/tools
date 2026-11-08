@@ -72,6 +72,16 @@ runs:
         MISE_EXEC_AUTO_INSTALL: 'false'
         MISE_TASK_RUN_AUTO_INSTALL: 'false'
       run: '"$BOOTSTRAP_PYTHON" -I -B "$GITHUB_ACTION_PATH/../helpers/private_directory.py" prepare --directory "$CALLER_DIRECTORY"'
+    - name: Select stable Rust homes before explicit SDK installation
+      shell: bash
+      env:
+        CALLER_DIRECTORY: ${{ inputs.directory }}
+        CALLER_TOOLS: ${{ inputs.tools }}
+        BOOTSTRAP_PYTHON: ${{ steps.windows_host.outputs.python-path || steps.windows_python.outputs.python-path || steps.python.outputs.python-path || 'python3' }}
+        MISE_AUTO_INSTALL: 'false'
+        MISE_EXEC_AUTO_INSTALL: 'false'
+        MISE_TASK_RUN_AUTO_INSTALL: 'false'
+      run: '"$BOOTSTRAP_PYTHON" -I -B "$GITHUB_ACTION_PATH/../helpers/rust_install_context.py" --directory "$CALLER_DIRECTORY" --tools "$CALLER_TOOLS" --github-env'
     - name: "Set up tools"
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       env:

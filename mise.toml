@@ -22,7 +22,7 @@ task.run_auto_install = false
 
 [tasks.install]
 raw = true
-run = ["mise install python", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 -- python3 -I -B helpers/private_directory.py prepare", "mise install", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'python3 helpers/source_policy.py setup'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'rustup component add --toolchain 1.94.0 rustfmt clippy'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'cargo fetch --locked'"]
+run = ["mise install python", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 -- python3 -I -B helpers/private_directory.py prepare", "python3 -I -B helpers/rust_install_context.py -- mise install", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'python3 helpers/source_policy.py setup'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'rustup component add --toolchain 1.94.0 rustfmt clippy'", "python3 -I -B helpers/pinned-tools.py exec --tool python=python3 --tool rust=cargo --tool rust=rustc -- bash -euc 'cargo fetch --locked'"]
 
 [tasks.lint]
 raw = true

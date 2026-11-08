@@ -38,8 +38,9 @@ jobs:
         persist-credentials: false
     - name: Prepare the private artifact parent before SDK installers
       timeout-minutes: 1
-      run: >-
+      run: |
         python3 -I -B -c 'import runpy,sys; sys.version_info >= (3,11) or sys.exit("Private SDK preparation requires host Python 3.11 or newer"); sys.argv=["helpers/private_directory.py","prepare"]; runpy.run_path(sys.argv[0],run_name="__main__")'
+        python3 -I -B helpers/rust_install_context.py --github-env
     - name: Set up tools
       uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
       with:
