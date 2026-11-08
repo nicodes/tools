@@ -60,6 +60,12 @@ class NativeRuntime(unittest.TestCase):
             with self.assertRaises(ValueError):
                 runtime.command(args, {})
 
+    def test_container_program_options_are_not_registry_authority(self):
+        arguments=['exec','a'*64,'pg_restore','--username=restore_owner','--dbname=synthetic','/recovery/database.dump']
+        argv,_=runtime.command(arguments,{})
+        self.assertEqual(argv,['podman','--remote=false',*arguments])
+        self.assertNotIn('--authfile',argv)
+
     def test_native_image_config_identity_is_normalized_without_manifest_confusion(self):
         image = {'Id': 'a' * 64, 'Digest': 'sha256:' + 'b' * 64,
                  'Os': 'linux', 'Architecture': 'arm64', 'Config': {'Labels': None},

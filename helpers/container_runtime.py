@@ -102,7 +102,7 @@ def command(arguments, environment=None, *, authfile=None):
     # Do not permit a caller to add another auth source or a credential in argv.
     args = list(arguments)
     forbidden = {'--authfile', '--creds', '--username', '--password', '--identity-token'}
-    if any(value.split('=', 1)[0] in forbidden for value in args):
+    if args[0] in AUTH_COMMANDS and any(value.split('=', 1)[0] in forbidden for value in args):
         raise ValueError('registry authority is selected separately from command arguments')
     if args[0] in AUTH_COMMANDS:
         args[1:1] = ['--authfile', str(selected)]
