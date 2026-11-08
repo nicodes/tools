@@ -2,10 +2,10 @@
 # Require every Caddy stage and the final shipping stage to use a version and digest.
 set -euo pipefail
 
-dockerfile="${1:?Pass an explicit Dockerfile}"
+containerfile="${1:?Pass an explicit Containerfile}"
 
-# Docker permits an optional --platform before the image and an optional
-# `AS <name>` after it. Docker Hub's official image may also be written as
+# Containerfile syntax permits an optional --platform before the image and an optional
+# `AS <name>` after it. The official image may also be written as
 # caddy, library/caddy, or docker.io/library/caddy.
 pinned_image_re='^(docker\.io/)?(library/)?caddy:[0-9]+\.[0-9]+\.[0-9]+-[a-zA-Z0-9][a-zA-Z0-9.-]*@sha256:[0-9a-f]{64}$'
 
@@ -14,7 +14,7 @@ fail() {
   exit 1
 }
 
-[ -f "$dockerfile" ] || fail "$dockerfile does not exist."
+[ -f "$containerfile" ] || fail "$containerfile does not exist."
 
 # parse_from sets from_image and from_pinned for one complete FROM line.
 parse_from() {
@@ -27,11 +27,11 @@ parse_from() {
     i=$((i + 1))
   done
   from_image="${words[$i]:-}"
-  [ -n "$from_image" ] || fail "incomplete FROM in $dockerfile: '$line'."
+  [ -n "$from_image" ] || fail "incomplete FROM in $containerfile: '$line'."
   [ "$from_image" != "\\" ] && [ "$from_image" != '`' ] \
-    || fail "multiline FROM is not allowed in $dockerfile: '$line'."
+    || fail "multiline FROM is not allowed in $containerfile: '$line'."
   [[ "$from_image" != *'$'* ]] \
-    || fail "variable-expanded FROM images are not allowed in $dockerfile: '$line'."
+    || fail "variable-expanded FROM images are not allowed in $containerfile: '$line'."
   i=$((i + 1))
 
   from_pinned=0
@@ -61,23 +61,23 @@ while IFS= read -r line; do
   if [ "${first_word,,}" = "from" ]; then
     from_lines+=("$line")
   fi
-done < "$dockerfile"
+done < "$containerfile"
 
 # Rule 1: reject every unpinned Caddy FROM.
 for from_line in "${from_lines[@]}"; do
   parse_from "$from_line"
   if is_caddy_image "$from_image" && [ "$from_pinned" -ne 1 ]; then
-    fail "unpinned Caddy FROM in $dockerfile: '$from_line' -- must be caddy:<semver>-<variant>@sha256:<digest>."
+    fail "unpinned Caddy FROM in $containerfile: '$from_line' -- must be caddy:<semver>-<variant>@sha256:<digest>."
   fi
 done
 
 # Rule 2: the final stage must be a pinned Caddy. This also rejects a
-# Dockerfile with no Caddy FROM at all, since its last stage then cannot
+# A build file with no Caddy FROM at all, since its last stage then cannot
 # be one.
-[ "${#from_lines[@]}" -gt 0 ] || fail "$dockerfile has no FROM line at all."
+[ "${#from_lines[@]}" -gt 0 ] || fail "$containerfile has no FROM line at all."
 last_from="${from_lines[$((${#from_lines[@]} - 1))]}"
 parse_from "$last_from"
 is_caddy_image "$from_image" && [ "$from_pinned" -eq 1 ] \
-  || fail "the final stage of $dockerfile is not a pinned Caddy image: '$last_from'."
+  || fail "the final stage of $containerfile is not a pinned Caddy image: '$last_from'."
 
-echo "$dockerfile: every Caddy FROM is pinned and the final stage is the pinned Caddy."
+echo "$containerfile: every Caddy FROM is pinned and the final stage is the pinned Caddy."

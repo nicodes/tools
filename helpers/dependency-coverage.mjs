@@ -8,7 +8,7 @@ export function verifyDependencyCoverage(config, files, bunWorkflow) {
   assert.ok(Array.isArray(config.updates), 'Dependabot update coverage is required');
   const required = new Map([
     ['github-actions', new Set(['/'])],
-    ['docker', new Set(['/deploy/images', ...files.filter(file => /(^|[/.])Dockerfile$/.test(file)).map(file => path.posix.dirname(file) === '.' ? '/' : '/' + path.posix.dirname(file))])],
+    ['docker', new Set(['/deploy/images', ...files.filter(file => /(^|[/.])(?:Containerfile|Dockerfile)$/.test(file)).map(file => path.posix.dirname(file) === '.' ? '/' : '/' + path.posix.dirname(file))])],
     ['gomod', new Set(files.filter(file => /(^|\/)go\.mod$/.test(file))
       .map(file => path.posix.dirname(file) === '.' ? '/' : '/' + path.posix.dirname(file)))],
   ]);

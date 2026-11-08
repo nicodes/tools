@@ -48,12 +48,13 @@ class StandaloneSourceContract(unittest.TestCase):
         self.assertEqual(data['tasks']['check']['run'],
                          [{'task':name} for name in ['lint','unit','build','vuln','integration']])
 
-    def test_generic_Docker_action_does_not_read_recipe_capability_or_source(self):
-        action = (ROOT/'docker-ci/action.yml').read_text()
+    def test_generic_Podman_action_does_not_read_recipe_capability_or_source(self):
+        action = (ROOT/'podman-ci/action.yml').read_text()
         self.assertNotIn('cookbook.toml',action)
         self.assertNotIn('GODOT_ENTRY',action)
-        self.assertIn('ci-registry-mirror.sh',action)
-        self.assertIn('docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069',action)
+        self.assertIn('ci-container-runtime.sh',action)
+        self.assertNotIn('buildx',action)
+        self.assertIn('TOOLS_IMAGE_CACHE',action)
 
 
 @unittest.skipUnless(shutil.which('mise'), 'existing Mise is required for native task scheduling')

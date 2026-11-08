@@ -27,7 +27,7 @@ MAX_MANIFEST = 16 * 1024**2
 MAX_FILES = 100000
 MAX_BYTES = 16 * 1024**3
 HEX_REVISION = re.compile(r'[a-f0-9]{40}')
-DOCKER_TAG = re.compile(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}')
+IMAGE_TAG = re.compile(r'[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}')
 HOST_LOCAL_REVISION = re.compile(r'host-local:([a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127})')
 
 
@@ -70,7 +70,7 @@ def validate_manifest(value, expected_project=None, expected_revision=None):
     engine = value['engine']
     if not isinstance(engine, dict) or set(engine) != {'reference', 'image_id', 'major'}:
         raise ValueError('invalid PostgreSQL engine declaration')
-    if not isinstance(engine['reference'], str) or not re.fullmatch(r'(?:docker\.io/library/)?postgres@sha256:[a-f0-9]{64}', engine['reference']):
+    if not isinstance(engine['reference'], str) or not re.fullmatch(r'docker\.io/library/postgres@sha256:[a-f0-9]{64}', engine['reference']):
         raise ValueError('PostgreSQL recovery requires an immutable official engine reference')
     if not isinstance(engine['image_id'], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', engine['image_id']):
         raise ValueError('invalid PostgreSQL engine image identity')
@@ -101,7 +101,7 @@ def validate_manifest(value, expected_project=None, expected_revision=None):
     # host-local release-tag transition truthful. The sha256 image_id stays
     # the pinned identity.
     anchor = revision if host_local is None else host_local[1]
-    tag_pattern = DOCKER_TAG if host_local is not None else HEX_REVISION
+    tag_pattern = IMAGE_TAG if host_local is not None else HEX_REVISION
     namespace = None
     for component, image in images.items():
         reference = image.get('reference', '') if isinstance(image, dict) else ''
@@ -175,17 +175,24 @@ def validate_payload(root, extracted_files=None, expected_project=None, expected
     return manifest
 
 
-def docker(*args, input=None, timeout=60):
-    environment = {key: value for key, value in os.environ.items()
-                   if key not in {'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'}}
+_runtime_spec = importlib.util.spec_from_file_location('_tools_pg_runtime', Path(__file__).with_name('container_runtime.py'))
+runtime = importlib.util.module_from_spec(_runtime_spec)
+_runtime_spec.loader.exec_module(runtime)
+
+
+def podman(*args, input=None, timeout=60):
     try:
-        result = subprocess.run(['docker', '--host', 'unix:///var/run/docker.sock', *args], input=input,
-                                text=True, capture_output=True, timeout=timeout, env=environment)
+        result = runtime.run(list(args), input=input, text=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f'isolated PostgreSQL {args[0]} timed out') from None
     if result.returncode:
         # Never disclose SQL output, dump contents, arguments or clone passwords.
         raise RuntimeError(f'isolated PostgreSQL {args[0]} failed')
+    if args[:2] == ('image', 'inspect'):
+        values = json.loads(result.stdout)
+        for value in values:
+            value['Id'] = runtime.config_digest(value.get('Id'))
+        return json.dumps(values)
     return result.stdout.strip()
 
 
@@ -195,8 +202,8 @@ def application_images(manifest, pull=False):
     images = {}
     for component, recorded in manifest['images'].items():
         if pull:
-            docker('pull', '--quiet', recorded['reference'], timeout=180)
-        inspected = json.loads(docker('image', 'inspect', recorded['reference']))
+            podman('pull', '--quiet', recorded['reference'], timeout=180)
+        inspected = json.loads(podman('image', 'inspect', recorded['reference']))
         if len(inspected) != 1 or inspected[0]['Id'] != recorded['image_id']:
             raise ValueError('application image differs from authenticated recovery metadata')
         images[component] = inspected[0]['Id']
@@ -278,8 +285,8 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
     manifest = validate_payload(payload, expected_project=project, expected_revision=revision)
     engine = manifest['engine']
     if pull:
-        docker('pull', '--quiet', engine['reference'], timeout=180)
-    inspected = json.loads(docker('image', 'inspect', engine['reference']))
+        podman('pull', '--quiet', engine['reference'], timeout=180)
+    inspected = json.loads(podman('image', 'inspect', engine['reference']))
     if len(inspected) != 1 or inspected[0]['Id'] != engine['image_id']:
         raise ValueError('restored PostgreSQL engine differs from authenticated metadata')
     uid = os.getuid() or 65534
@@ -287,7 +294,7 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
     with tempfile.TemporaryDirectory(prefix=project+'-pg-restore-') as directory:
         work = Path(directory)
         if any(character in str(work) for character in ',\r\n'):
-            raise ValueError('restore temporary path is not safe for Docker mounts')
+            raise ValueError('restore temporary path is not safe for Podman mounts')
         if shutil.disk_usage(work).free < 2 * manifest['files']['database.dump']['size'] + 512 * 1024**2:
             raise ValueError('insufficient disk headroom for PostgreSQL restore')
         dump = work/'database.dump'
@@ -306,8 +313,8 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
         started = False
         try:
             started = True
-            docker('run', '-d', '--name', name, '--label', 'nicodes.restore='+name,
-                   '--network=none', '--read-only', '--user', f'{uid}:{uid}', '--cap-drop=ALL',
+            podman('run', '--pull=never', '-d', '--name', name, '--label', 'nicodes.restore='+name,
+                   '--network=none', '--read-only', *runtime.bind_mount_user_namespace(), '--user', f'{uid}:{uid}', '--cap-drop=ALL',
                    '--security-opt=no-new-privileges:true', '--memory=256m', '--cpus=1', '--pids-limit=128',
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
                    '--tmpfs', f'/var/run/postgresql:rw,noexec,nosuid,uid={uid},gid={uid},mode=0770,size=8m',
@@ -317,10 +324,10 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
                    'postgres', '-c', 'listen_addresses=127.0.0.1')
             deadline = time.monotonic()+min(timeout, 90)
             while True:
-                if not json.loads(docker('inspect', name))[0]['State']['Running']:
+                if not json.loads(podman('inspect', name))[0]['State']['Running']:
                     raise RuntimeError('isolated PostgreSQL exited before readiness')
                 try:
-                    docker('exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'restore_owner', '-d', manifest['database'])
+                    podman('exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'restore_owner', '-d', manifest['database'])
                     break
                 except RuntimeError:
                     if time.monotonic() >= deadline:
@@ -329,11 +336,11 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
             passwords = {role: secrets.token_hex(32) for role in manifest['roles']}
             sql = '\n'.join(f'CREATE ROLE "{role}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD \'{secret}\';'
                             for role, secret in passwords.items())
-            docker('exec', '-i', name, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'restore_owner', '-d', manifest['database'], input=sql)
-            docker('exec', name, 'pg_restore', '--exit-on-error', '--single-transaction', '--no-owner',
+            podman('exec', '-i', name, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'restore_owner', '-d', manifest['database'], input=sql)
+            podman('exec', name, 'pg_restore', '--exit-on-error', '--single-transaction', '--no-owner',
                    '--no-tablespaces', '--username=restore_owner', '--dbname='+manifest['database'],
                    '/recovery/database.dump', timeout=timeout)
-            major = docker('exec', name, 'psql', '-XAt', '-U', 'restore_owner', '-d', manifest['database'],
+            major = podman('exec', name, 'psql', '-XAt', '-U', 'restore_owner', '-d', manifest['database'],
                            '-c', 'SHOW server_version_num')
             if not major.isdigit() or int(major)//10000 != engine['major']:
                 raise ValueError('restored PostgreSQL major differs from manifest')
@@ -350,10 +357,10 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
                    'engine': engine['image_id'], 'manifest': manifest, 'database_restore': 'passed'}
         finally:
             if started:
-                owned = json.loads(docker('inspect', name))
+                owned = json.loads(podman('inspect', name))
                 if len(owned) != 1 or owned[0].get('Config', {}).get('Labels', {}).get('nicodes.restore') != name or not re.fullmatch(r'[a-f0-9]{64}', owned[0].get('Id', '')):
                     raise RuntimeError('cannot establish ownership for PostgreSQL restore cleanup')
-                docker('rm', '-f', '-v', owned[0]['Id'])
+                podman('rm', '-f', '-v', owned[0]['Id'])
 
 
 def main():

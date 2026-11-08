@@ -1,74 +1,63 @@
-"""Validate the trusted CD record used to select immutable rollback artifacts."""
-
+"""Validate a source-bound immutable release record from a successful trusted publication."""
 import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from oci_registry import digest
+from release_packet import document, release, read
+
 REPO = os.environ.get('GITHUB_REPOSITORY', '')
-SHA = re.compile(r'[0-9a-f]{40}')
-DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
+SHA = re.compile(r'[a-f0-9]{40}\Z')
+DIGEST = re.compile(r'sha256:[a-f0-9]{64}\Z')
 
 
 def validate_run(run):
-    if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', REPO):
-        raise ValueError('Exact caller repository identity is required')
+    if not re.fullmatch(r'[A-Za-z0-9-]+/[A-Za-z0-9_.-]+', REPO):
+        raise ValueError('exact caller repository identity is required')
     if (run.get('repository', {}).get('full_name') != REPO or run.get('head_repository', {}).get('full_name') != REPO
             or run.get('path') != '.github/workflows/cd.yml' or run.get('head_branch') != 'main'
-            or run.get('event') not in ('push', 'workflow_dispatch') or run.get('conclusion') != 'success'
+            or run.get('event') not in {'push', 'workflow_dispatch'} or run.get('conclusion') != 'success'
             or run.get('status') != 'completed' or not SHA.fullmatch(run.get('head_sha', ''))):
-        raise ValueError('Rollback requires a successful main-branch CD run from this repository')
+        raise ValueError('release selection requires a successful exact main CD run')
     return run['head_sha']
 
 
 def validate_record(record, run):
-    sha = validate_run(run)
-    if set(record) != {'repository', 'sha', 'run_id', 'release_id', 'gate_ref', 'config_ref'}:
-        raise ValueError('Unexpected release record fields')
-    if record.get('repository') != REPO or record.get('sha') != sha or record.get('run_id') != str(run['id']):
-        raise ValueError('Release record does not match its trusted workflow run')
-    for kind in ('gate', 'config'):
-        prefix = f'ghcr.io/{REPO}-{kind}@'
-        ref = record.get(kind + '_ref', '')
-        if not ref.startswith(prefix) or not DIGEST.fullmatch(ref[len(prefix):]):
-            raise ValueError('Invalid immutable image reference')
-    if not re.fullmatch(r'[0-9a-f]{64}', record.get('release_id', '')):
-        raise ValueError('Missing versioned release identity')
+    source = validate_run(run)
+    fields = {'kind', 'version', 'repository', 'source_revision', 'run_id', 'run_attempt', 'release_digest'}
+    if (not isinstance(record, dict) or set(record) != fields or record.get('kind') != 'komizo.release-record'
+            or type(record.get('version')) is not int or record['version'] != 1
+            or record['repository'] != REPO or record['source_revision'] != source
+            or record['run_id'] != str(run['id']) or record['run_attempt'] != str(run['run_attempt'])
+            or not isinstance(record['release_digest'], str) or not DIGEST.fullmatch(record['release_digest'])):
+        raise ValueError('release record differs from its trusted source run and attempt')
     return record
 
 
-def write_record():
-    sha = os.environ['GITHUB_SHA']
-    if os.environ['GITHUB_REPOSITORY'] != REPO or not SHA.fullmatch(sha):
-        raise ValueError('Unexpected publication identity')
-    manifest = json.loads(Path('release/release-manifest.json').read_text())
-    if manifest.get('source_commit') != sha:
-        raise ValueError('Verified manifest does not identify the published source revision')
-    record = {'repository': REPO, 'sha': sha, 'run_id': os.environ['GITHUB_RUN_ID'],
-              'release_id': manifest['release_id']}
-    for kind in ('gate', 'config'):
-        ref = f'ghcr.io/{REPO}-{kind}:{sha}'
-        digest_ref = subprocess.check_output(['docker', 'image', 'inspect', ref,
-            '--format', '{{index .RepoDigests 0}}'], text=True).strip()
-        record[kind + '_ref'] = digest_ref
-    synthetic_run = {'repository': {'full_name': REPO}, 'head_repository': {'full_name': REPO},
-        'path': '.github/workflows/cd.yml', 'head_branch': 'main', 'event': 'push',
-        'status': 'completed', 'conclusion': 'success', 'head_sha': sha, 'id': int(record['run_id'])}
-    validate_record(record, synthetic_run)
-    Path('release-record.json').write_text(json.dumps(record, indent=2) + '\n')
+def write_record(directory=Path('.artifacts/komizo-release'), output=Path('release-record.json')):
+    descriptor = document(directory / 'release.json')
+    raw = read(directory / 'release.json')
+    if raw != release(descriptor): raise ValueError('release record requires exact canonical descriptor bytes')
+    identity = digest(raw)
+    publication = document(directory / 'publication.json')
+    context = publication.get('execution_context', {})
+    if (descriptor['source']['repository'] != REPO or descriptor['source']['revision'] != os.environ['GITHUB_SHA']
+            or publication.get('release_digest') != identity
+            or any(context.get(key) != os.environ.get(key) for key in ['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'])):
+        raise ValueError('release record requires exact accepted publication source and bytes')
+    record = {'kind': 'komizo.release-record', 'version': 1, 'repository': REPO,
+              'source_revision': os.environ['GITHUB_SHA'], 'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'release_digest': identity}
+    with output.open('x') as stream:
+        os.fchmod(stream.fileno(), 0o600); json.dump(record, stream, sort_keys=True); stream.write('\n')
+    return record
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 1:
-        write_record()
+    if len(sys.argv) == 1: write_record()
     else:
-        run = json.loads(Path(sys.argv[1]).read_text())
-        sha = validate_run(run)
-        values = {'sha': sha}
-        if len(sys.argv) > 2:
-            values.update(validate_record(json.loads(Path(sys.argv[2]).read_text()), run))
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-            for key, value in values.items():
-                output.write(f'{key}={value}\n')
+        record = validate_record(document(Path(sys.argv[2])), document(Path(sys.argv[1])))
+        print(json.dumps(record, sort_keys=True))

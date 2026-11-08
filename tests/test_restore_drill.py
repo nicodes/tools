@@ -23,7 +23,7 @@ def fixture_config(project, postgres=False):
 
 
 class RestoreBoundaries(unittest.TestCase):
-    def test_disposable_dsn_environment_transport_never_places_credentials_in_docker_argv(self):
+    def test_disposable_dsn_environment_transport_never_places_credentials_in_podman_argv(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);dsn=root/'clone.url'
             dsn.write_text('postgresql://runtime:fixture-secret@127.0.0.1/database\n')
@@ -49,10 +49,10 @@ class RestoreBoundaries(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('restore_fixture', Path(__file__).parents[1]/'helpers/test-restore-drill.py')
         fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
         pg = fixture.load('postgres-recovery')
-        engine = 'postgres@sha256:' + 'b' * 64
+        engine = 'docker.io/library/postgres@sha256:' + 'b' * 64
         config = {**fixture_config('newapp', postgres=True), 'database': 'oldapp',
                   'role_namespace': 'oldapp', 'runtime_role': 'oldapp_runtime'}
-        def docker(*args, **kwargs):
+        def podman(*args, **kwargs):
             if args[:2] == ('image', 'inspect'):
                 return json.dumps([{'Id': 'sha256:' + 'b' * 64, 'Config': {'Env': ['PG_MAJOR=18']}}])
             return ''
@@ -60,9 +60,9 @@ class RestoreBoundaries(unittest.TestCase):
             root = Path(directory)
             config_file = root/'config.toml'; source_config.write(config_file, config)
             self.assertEqual(drill.load_config(config_file)['database'], 'oldapp')
-            with patch.object(fixture.os, 'getuid', return_value=1000), patch.object(fixture, 'docker_bytes', return_value=b'PGDMPfixture'):
+            with patch.object(fixture.os, 'getuid', return_value=1000), patch.object(fixture, 'podman_bytes', return_value=b'PGDMPfixture'):
                 result = fixture.postgres_fixture('newapp', 'a' * 40, engine,
-                    SimpleNamespace(docker=docker), SimpleNamespace(sha256=pg.checksum), pg, root, config=config)
+                    SimpleNamespace(podman=podman), SimpleNamespace(sha256=pg.checksum), pg, root, config=config)
             manifest = json.loads((result/'verification.json').read_text())['postgresql']
             self.assertEqual(manifest['project'], 'newapp')
             self.assertEqual(manifest['database'], 'oldapp')
@@ -93,16 +93,16 @@ class RestoreBoundaries(unittest.TestCase):
         receiver = SimpleNamespace(receive=lambda *_: None)
         def helper(name):
             return snapshot if name == 'snapshot' else receiver
-        with patch.object(drill, 'helper', helper), patch.object(drill, 'docker') as docker:
+        with patch.object(drill, 'helper', helper), patch.object(drill, 'podman') as podman:
             with self.assertRaisesRegex(ValueError, 'product'):
                 drill.drill('samplestore', Path('/unused'), Path('/unused'), pull=True, config=fixture_config('samplestore'))
-            docker.assert_not_called()
+            podman.assert_not_called()
         evidence['image_reference'] = 'ghcr.io/nicodes/samplestore-db:'+'a'*40
         calls = []
-        def docker(*args, **kwargs):
+        def podman(*args, **kwargs):
             calls.append(args)
             return json.dumps([{'Id': 'sha256:'+'c'*64}]) if args[:2] == ('image', 'inspect') else ''
-        with patch.object(drill, 'helper', helper), patch.object(drill, 'docker', docker):
+        with patch.object(drill, 'helper', helper), patch.object(drill, 'podman', podman):
             with self.assertRaisesRegex(ValueError, 'differs'):
                 drill.drill('samplestore', Path('/unused'), Path('/unused'), pull=True, config=fixture_config('samplestore'))
         self.assertEqual(calls, [('pull', '--quiet', evidence['image_reference']),
@@ -110,14 +110,14 @@ class RestoreBoundaries(unittest.TestCase):
 
     def test_timeout_and_failures_never_disclose_clone_credentials(self):
         secret = 'disposable-secret-that-must-not-appear'
-        with patch.object(drill.subprocess, 'run', side_effect=subprocess.TimeoutExpired(['docker', 'run', secret], 1)):
+        with patch.object(drill.subprocess, 'run', side_effect=subprocess.TimeoutExpired(['podman', 'run', secret], 1)):
             with self.assertRaises(RuntimeError) as raised:
-                drill.docker('run', secret)
+                drill.podman('run', secret)
             self.assertNotIn(secret, str(raised.exception))
             self.assertTrue(raised.exception.__suppress_context__)
         with patch.object(drill.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, secret, secret)):
             with self.assertRaises(RuntimeError) as raised:
-                drill.docker('run', secret)
+                drill.podman('run', secret)
             self.assertNotIn(secret, str(raised.exception))
 
     def test_new_product_backup_namespace_is_authenticated_before_any_pull(self):
@@ -127,16 +127,16 @@ class RestoreBoundaries(unittest.TestCase):
             evidence = {'image_reference': f'ghcr.io/nicodes/{project}-{component}:'+'a'*40, 'image_id':'sha256:'+'b'*64}
             snapshot = SimpleNamespace(unseal=lambda *_: evidence)
             receiver = SimpleNamespace(receive=lambda *_: None)
-            with patch.object(drill, 'helper', lambda name: snapshot if name == 'snapshot' else receiver), patch.object(drill,'docker') as docker:
+            with patch.object(drill, 'helper', lambda name: snapshot if name == 'snapshot' else receiver), patch.object(drill,'podman') as podman:
                 with self.assertRaisesRegex(ValueError,'product'):
                     drill.drill(project,Path('/unused'),Path('/unused'),pull=True,config=fixture_config(project))
-                docker.assert_not_called()
+                podman.assert_not_called()
             evidence['image_reference'] = f'ghcr.io/{owner}/{project}-{component}:'+'a'*40
             calls = []
-            def docker(*args, **kwargs):
+            def podman(*args, **kwargs):
                 calls.append(args)
                 return json.dumps([{'Id':'sha256:'+'c'*64}]) if args[:2] == ('image','inspect') else ''
-            with patch.object(drill,'helper',lambda name: snapshot if name == 'snapshot' else receiver), patch.object(drill,'docker',docker):
+            with patch.object(drill,'helper',lambda name: snapshot if name == 'snapshot' else receiver), patch.object(drill,'podman',podman):
                 with self.assertRaisesRegex(ValueError,'differs'):
                     drill.drill(project,Path('/unused'),Path('/unused'),pull=True,config=fixture_config(project))
             self.assertEqual(calls, [('pull','--quiet',evidence['image_reference']),('image','inspect',evidence['image_reference'])])
@@ -152,16 +152,16 @@ class PostgresRestoreBoundaries(unittest.TestCase):
     """The PostgreSQL drill authenticates the same things the PocketBase one does.
 
     Each case stops the drill BEFORE any container starts, so these run
-    without Docker; the end-to-end path is exercised by test-restore-drill.py
+    without Podman; the end-to-end path is exercised by test-restore-drill.py
     against the product's real images.
     """
 
-    def drill_with(self, evidence, project='sampleapp', docker=None):
+    def drill_with(self, evidence, project='sampleapp', podman=None):
         snapshot = SimpleNamespace(unseal=lambda *_: evidence)
         receiver = SimpleNamespace(receive=lambda *_: None)
         recovery = SimpleNamespace()
         helpers = {'snapshot': snapshot, 'receive-backup': receiver, 'postgres-recovery': recovery}
-        with patch.object(drill, 'helper', helpers.get), patch.object(drill, 'docker', docker or (lambda *a, **k: '')):
+        with patch.object(drill, 'helper', helpers.get), patch.object(drill, 'podman', podman or (lambda *a, **k: '')):
             return drill.drill(project, Path('/unused'), Path('/unused'), pull=True, config=fixture_config(project, postgres=True))
 
     def test_explicit_backend_declarations_are_validated(self):
@@ -198,9 +198,9 @@ class PostgresRestoreBoundaries(unittest.TestCase):
         # came from, so the drill refuses rather than running green.
         evidence = {'backend': 'postgresql', 'postgresql': postgres_manifest(api_id='sha256:'+'d'*64)}
         calls = []
-        def docker(*args, **kwargs):
+        def podman(*args, **kwargs):
             calls.append(args)
             return json.dumps([{'Id': 'sha256:'+'c'*64}]) if args[:2] == ('image', 'inspect') else ''
         with self.assertRaisesRegex(ValueError, 'differs from authenticated'):
-            self.drill_with(evidence, docker=docker)
+            self.drill_with(evidence, podman=podman)
         self.assertIn(('image', 'inspect', 'ghcr.io/nicodes/sampleapp-api:'+'a'*40), calls)

@@ -116,7 +116,7 @@ def main():
     body = ('The scheduled tool watch found these upstream releases.\n\n'
             '| Tool | Pinned | Available |\n|---|---|---|\n' +
             rows + inventory_note +
-            '\nUpdate `mise.toml` and every corresponding Go directive, Docker builder, '
+            '\nUpdate `mise.toml` and every corresponding Go directive, container builder, '
             'download URL, and binary checksum together. Obtain checksums from the upstream '
             'release and verify the actual downloaded bytes. Keep the Bun packageManager '
             'field and lockfile in sync.\n\n'

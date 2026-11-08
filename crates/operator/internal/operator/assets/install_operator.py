@@ -15,6 +15,10 @@ import tempfile
 PATHS = {'fleet_operator.py': '/usr/local/libexec/fleet/fleet_operator.py',
          'fleet_broker.py': '/usr/local/libexec/fleet/fleet_broker.py',
          'fleet_publisher.py': '/usr/local/libexec/fleet/fleet_publisher.py',
+         'oci_registry.py': '/usr/local/libexec/fleet/oci_registry.py',
+         'release_packet.py': '/usr/local/libexec/fleet/release_packet.py',
+         'oci_archive.py': '/usr/local/libexec/fleet/oci_archive.py',
+         'container_runtime.py': '/usr/local/libexec/fleet/container_runtime.py',
          'fleet-operator.service': '/etc/systemd/system/fleet-operator.service',
          'fleet-operator.socket': '/etc/systemd/system/fleet-operator.socket',
          'fleet-operator.conf': '/etc/tmpfiles.d/fleet-operator.conf'}

@@ -1,372 +1,102 @@
-"""Exercise release source/artifact/publisher binding through the real CLI."""
-import json
-import hashlib
+"""Exact source, private input hashes and every applicable test fence publication."""
+from contextlib import chdir
+import copy
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 HELPER = Path(__file__).resolve().parents[1] / 'helpers/release.py'
-_source_spec = importlib.util.spec_from_file_location('release_test_source_config', HELPER.with_name('source_config.py'))
-source_config = importlib.util.module_from_spec(_source_spec)
-_source_spec.loader.exec_module(source_config)
+spec = importlib.util.spec_from_file_location('native_release_binding', HELPER)
+release = importlib.util.module_from_spec(spec); spec.loader.exec_module(release)
 
 
-class ReleaseBinding(unittest.TestCase):
+class NativeReleaseBinding(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
-        self.release = self.root / '.artifacts/release'
-        self.release.mkdir(parents=True)
-        (self.release / 'images.tar.gz').write_bytes(b'fixture archive')
+        self.temporary = tempfile.TemporaryDirectory(); self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        (self.root / 'cookbook.toml').write_text('version = 1\n')
         (self.root / '.gitignore').write_text('.artifacts/\n')
-        (self.root / 'mise.toml').write_text('[tools]\npython = "3.13.11"\n')
-        (self.root/'deploy').mkdir()
-        declaration = {'version': 1, 'project': 'demo', 'image_base': 'ghcr.io/org/demo',
-                       'tests': ['unit','integration'],
-                       'inputs': {'artifacts':['.artifacts/release'], 'images':[],
-                                  'environment':['PRIVATE_BUILD_INPUT'], 'revision_environment':[]}}
-        source_config.write(self.root / 'deploy/release.toml', declaration)
-        for name in ('unit','integration'):
-            (self.root/(name+'.py')).write_text('pass\n')
-        self.git('init', '-q')
-        self.git('add', '.')
-        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'fixture')
-        self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
-        self.bin = self.root / '.artifacts/bin'
-        self.bin.mkdir()
-        docker = self.bin / 'docker'
-        docker.write_text("#!" + os.sys.executable + "\nimport json,os,sys\nfrom pathlib import Path\nwith Path(os.environ['DOCKER_CALLS']).open('a') as stream: stream.write(' '.join(sys.argv[1:])+chr(10))\nif sys.argv[1:3] == ['image','inspect']:\n print(json.dumps([{'Id':'sha256:'+'a'*64,'RepoTags':[ref]} for ref in sys.argv[3:]]))\n")
-        docker.chmod(0o755)
-        self.calls = self.root / '.artifacts/docker-calls'
-        self.context = {'GITHUB_SERVER_URL': 'https://github.com', 'GITHUB_REPOSITORY': 'org/demo',
-                        'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1',
-                        'PRIVATE_BUILD_INPUT': 'secret-must-never-be-recorded',
-                        'GITHUB_JOB': 'Build', 'GITHUB_SHA': self.sha}
-        self.produce_tests()
+        for command in [['init', '-q'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'source']]:
+            subprocess.run(['git', '-C', str(self.root), *command], check=True, capture_output=True)
+        self.source = subprocess.check_output(['git', '-C', str(self.root), 'rev-parse', 'HEAD'], text=True).strip()
+        self.context = {'GITHUB_SERVER_URL': 'https://github.com', 'GITHUB_REPOSITORY': 'example/product',
+                        'GITHUB_SHA': self.source, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2',
+                        'GITHUB_JOB': 'validate'}
+        self.definition = {'tests': ['unit', 'integration'], 'inputs': {'artifacts': [], 'images': [],
+                           'environment': ['PRIVATE_BUILD_INPUT'], 'revision_environment': []}}
+        self.environment = patch.dict(os.environ, self.context | {'PRIVATE_BUILD_INPUT': 'private input never serialized'})
+        self.environment.start(); self.addCleanup(self.environment.stop)
+        self.cwd = chdir(self.root); self.cwd.__enter__(); self.addCleanup(self.cwd.__exit__, None, None, None)
+        self.build = release.build_provenance(self.source, self.definition)
+        binding = release.source_binding()
+        self.test = {'version': 1, 'source_commit': self.source, 'tested_commit': self.source, **binding,
+                     'input_identity': self.build['input_identity'], 'execution_context': self.context,
+                     'test_receipts': {name: {'source_commit': self.source, 'input_identity': self.build['input_identity']}
+                                       for name in self.definition['tests']}}
+        self.directory = self.root / '.artifacts/verification'; self.directory.mkdir(parents=True)
+        self.write_test(self.test)
 
-    def test_file_path_import_uses_snapshot_sibling_without_pythonpath(self):
-        (self.root/'verification.py').write_text('raise RuntimeError("caller verification module must not load")\n')
-        script = """
-import importlib.util, json, sys
-spec = importlib.util.spec_from_file_location('adapter_release', sys.argv[1])
-release = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(release)
-proof = release.build_provenance(sys.argv[2])
-assert proof['source_commit'] == sys.argv[2]
-assert proof['tested_commit'] is None
-assert len(proof['input_identity']) == 64
-"""
-        for mode in ([], ['-I']):
-            with self.subTest(mode=mode):
-                result = subprocess.run([os.sys.executable, *mode, '-c', script, str(HELPER), self.sha],
-                                        cwd=self.root, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+    def write_test(self, value): (self.directory / 'test.json').write_text(json.dumps(value))
 
-    def git(self, *args):
-        return subprocess.run(['git', '-C', str(self.root), *args], check=True, text=True, capture_output=True)
-
-    def run_cli(self, operation, success=True, overrides=None, extra=()):
-        env = {key: value for key, value in os.environ.items() if not key.startswith('GITHUB_')}
-        env.update(self.context)
-        env.update(overrides or {})
-        env.update(PATH=str(self.bin)+os.pathsep+env['PATH'], DOCKER_CALLS=str(self.calls))
-        result = subprocess.run([os.sys.executable, str(HELPER), operation, '--project', 'demo',
-                                 '--image-base', 'ghcr.io/org/demo', '--revision', self.sha,
-                                 '--components', 'api', '--test-evidence-directory', '.artifacts/verification', *extra], cwd=self.root, env=env, text=True, capture_output=True)
-        self.assertEqual(result.returncode == 0, success, result.stderr)
-        return result
-
-    def produce_tests(self, success=True):
-        env = {key: value for key, value in os.environ.items() if not key.startswith('GITHUB_')}
-        env.update(self.context)
-        env['GITHUB_JOB'] = 'Test'
-        verifier=HELPER.with_name('verification.py')
-        calls=[[os.sys.executable,str(verifier),'test','--name',name,'--definition','deploy/release.toml',
-                '--',os.sys.executable,name+'.py'] for name in ('unit','integration')]
-        script='import subprocess;'+''.join('subprocess.run('+repr(call)+',check=True);' for call in calls)
-        result = subprocess.run([os.sys.executable,str(verifier),'session','--test','unit','--test','integration',
-                                 '--',os.sys.executable,'-c',script],
-                                cwd=self.root,env=env,text=True,capture_output=True)
-        self.assertEqual(result.returncode == 0, success, result.stderr)
-
-    def change_test_proof(self, change):
-        file = self.root / '.artifacts/verification/test.json'
-        data = json.loads(file.read_text())
-        change(data)
-        file.write_text(json.dumps(data))
-
-    def manifest(self):
-        return json.loads((self.release / 'release.json').read_text())
-
-    def change_manifest(self, change):
-        data = self.manifest()
-        change(data)
-        (self.release / 'release.json').write_text(json.dumps(data))
-
-    def assert_no_publication(self):
-        self.assertNotIn('load', self.calls.read_text())
-        self.assertNotIn('push', self.calls.read_text())
-
-    def test_record_binds_source_configuration_and_private_input_hash(self):
-        self.run_cli('record')
-        data = self.manifest()
-        proof = data['provenance']
-        self.assertEqual(proof['source_commit'], self.sha)
-        self.assertEqual(proof['source_tree'], self.git('rev-parse', 'HEAD^{tree}').stdout.strip())
+    def test_source_configuration_and_private_inputs_are_bound_without_fake_test_claim(self):
+        proof = self.build
+        self.assertEqual(proof['source_commit'], self.source)
+        self.assertEqual(proof['tested_commit'], None)
+        self.assertTrue(proof['tracked_source_clean'])
+        self.assertIn('cookbook.toml', proof['configuration_sha256'])
         self.assertEqual(len(proof['input_identity']), 64)
-        self.assertIsNone(proof['tested_commit'])
-        self.assertIn('mise.toml', proof['configuration_sha256'])
-        self.assertNotIn(self.context['PRIVATE_BUILD_INPUT'], json.dumps(data))
-        self.run_cli('publish')
-        receipt = json.loads((self.release / 'publication.json').read_text())
-        self.assertEqual(receipt['build_provenance'], proof)
-        self.assertEqual(receipt['tested_commit'], self.sha)
-        self.assertEqual(receipt['test_provenance']['tested_commit'], self.sha)
-        self.assertEqual(set(receipt['test_provenance']['test_receipts']), {'unit', 'integration'})
-        self.assertEqual(receipt['images'], data['images'])
-        self.assertEqual(receipt['publisher_context']['GITHUB_RUN_ID'], '123')
+        self.assertNotIn('private input never serialized', json.dumps(proof))
+        self.assertEqual(release.validate_provenance({'provenance': proof}, self.source), proof)
+        with patch.dict(os.environ, {'PRIVATE_BUILD_INPUT': 'different private input'}):
+            other = release.build_provenance(self.source, self.definition)
+        self.assertNotEqual(proof['input_identity'], other['input_identity'])
 
-    def test_stateful_contract_requires_clean_exact_source_and_survives_publication(self):
-        declaration = {'version': 1, 'schema': {'minimum': 1, 'maximum': 1, 'write': 1},
-                       'data_revision': 'records-v1', 'credential_revision': 'restricted-runtime-v1',
-                       'migrations': [{'identity': '001.sql', 'sha256': 'd'*64}], 'recovery_action': 'forward_only'}
-        path = self.root/'stateful.toml'
-        source_config.write(path, declaration)
-        self.git('add', 'stateful.toml')
-        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'stateful declaration')
-        self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
-        self.context['GITHUB_SHA'] = self.sha
-        self.produce_tests()
-        extra = ('--stateful-contract', 'stateful.toml')
-        self.run_cli('record', extra=extra)
-        expected = declaration | {'source_revision': self.sha}
-        self.assertEqual(self.manifest()['stateful_contract'], expected)
-        self.run_cli('publish', extra=extra)
-        self.assertEqual(json.loads((self.release/'publication.json').read_text())['stateful_contract'], expected)
-        self.calls.write_text('')
-        self.change_manifest(lambda data: data['stateful_contract'].update(credential_revision='changed-runtime-v2'))
-        self.run_cli('publish', False, extra=extra)
-        self.assert_no_publication()
-        self.run_cli('record', extra=extra)
-        self.calls.write_text('')
-        self.run_cli('publish', False)  # Old publishers cannot silently drop the contract.
-        self.assert_no_publication()
-        source_config.write(path, declaration | {'data_revision': 'modified-v2'})
-        self.run_cli('record', False, extra=extra)
+    def test_changed_source_tree_config_run_repository_and_dirty_source_refuse(self):
+        mutations = [('source_commit', 'a'*40), ('source_tree', 'a'*40), ('tracked_source_clean', False),
+                     ('input_identity', ''), ('configuration_sha256', {})]
+        for key, changed in mutations:
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                release.validate_provenance({'provenance': self.build | {key: changed}}, self.source)
+        for key in ['GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_SHA']:
+            proof = copy.deepcopy(self.build); proof['build_context'][key] = 'other'
+            with self.assertRaises(ValueError): release.validate_provenance({'provenance': proof}, self.source)
+        (self.root / 'cookbook.toml').write_text('version = 2\n')
+        with self.assertRaises(ValueError): release.validate_provenance({'provenance': self.build}, self.source)
 
-    def test_stateful_migration_paths_bind_actual_source_bytes_and_never_reach_host(self):
-        migration = self.root/'schema.sql'
-        migration.write_text('CREATE TABLE records(id INTEGER PRIMARY KEY);\n')
-        declaration = {'version': 1, 'schema': {'minimum': 1, 'maximum': 1, 'write': 1},
-            'data_revision': 'records-v1', 'credential_revision': 'restricted-runtime-v1',
-            'migrations': [{'identity': 'schema.sql', 'source_path': 'schema.sql',
-                           'sha256': hashlib.sha256(migration.read_bytes()).hexdigest()}],
-            'recovery_action': 'forward_only'}
-        path = self.root/'stateful.toml'
-        source_config.write(path, declaration)
-        self.git('add', 'schema.sql', 'stateful.toml')
-        self.git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'bound migration')
-        self.sha = self.git('rev-parse', 'HEAD').stdout.strip()
-        self.context['GITHUB_SHA'] = self.sha
-        self.produce_tests()
-        extra = ('--stateful-contract', 'stateful.toml')
-        self.run_cli('record', extra=extra)
-        contract = self.manifest()['stateful_contract']
-        self.assertEqual(contract['migrations'], [{'identity': 'schema.sql', 'sha256': declaration['migrations'][0]['sha256']}])
-        self.run_cli('publish', extra=extra)
-        self.calls.write_text('')
-        migration.write_text('DROP TABLE records;\n')
-        result = self.run_cli('record', False, extra=extra)
-        self.assertIn('checksum differs from source', result.stderr)
-        declaration['migrations'][0]['sha256'] = hashlib.sha256(migration.read_bytes()).hexdigest()
-        source_config.write(path, declaration)
-        result = self.run_cli('record', False, extra=extra)
-        self.assertIn('immutable checked-out Git blob', result.stderr)
-        for escaping in ('../schema.sql', '/schema.sql', 'api/../schema.sql'):
-            declaration['migrations'][0]['source_path'] = escaping
-            source_config.write(path, declaration)
-            self.run_cli('record', False, extra=extra)
-        declaration['migrations'][0]['source_path'] = 'linked.sql'
-        (self.root/'linked.sql').symlink_to(migration)
-        source_config.write(path, declaration)
-        self.run_cli('record', False, extra=extra)
-        self.assertEqual(self.calls.read_text(), '')
+    def test_complete_same_run_test_receipts_are_required(self):
+        self.assertEqual(release.validate_test_evidence(self.directory, self.source, 'validate', self.definition), self.test)
+        cases = [self.test | {'tested_commit': 'a'*40}, self.test | {'source_tree': 'a'*40},
+                 self.test | {'tracked_source_clean': False}, self.test | {'test_receipts': {}},
+                 self.test | {'input_identity': ''}]
+        for value in cases:
+            self.write_test(value)
+            with self.assertRaises(ValueError): release.validate_test_evidence(self.directory, self.source, 'validate', self.definition)
+        for key, value in [('GITHUB_REPOSITORY', 'foreign/product'), ('GITHUB_RUN_ID', '124'),
+                           ('GITHUB_SHA', 'b'*40), ('GITHUB_JOB', 'publish'), ('GITHUB_RUN_ATTEMPT', '3')]:
+            self.write_test(self.test | {'execution_context': self.context | {key: value}})
+            with self.assertRaises(ValueError): release.validate_test_evidence(self.directory, self.source, 'validate', self.definition)
 
-    def test_authenticated_pr_head_needs_actual_head_tests_in_the_same_context(self):
-        event = self.root / '.artifacts/event.json'
-        event.write_text(json.dumps({'pull_request': {'head': {'sha': self.sha},
-                                                     'base': {'sha': 'b'*40},
-                                                     'merge_commit_sha': 'c'*40}}))
-        self.context.update(GITHUB_SHA='c'*40, GITHUB_EVENT_NAME='pull_request', GITHUB_EVENT_PATH=str(event))
-        self.produce_tests()
-        self.run_cli('record')
-        self.run_cli('publish')
-        proof = json.loads((self.release / 'publication.json').read_text())
-        self.assertEqual(proof['tested_commit'], self.sha)
-        self.assertEqual(proof['test_provenance']['execution_context']['GITHUB_SHA'], 'c'*40)
-        self.change_test_proof(lambda proof: proof.update(source_commit='c'*40, tested_commit='c'*40))
-        self.calls.write_text('')
-        self.run_cli('publish', False)
-        self.assert_no_publication()
+    def test_missing_applicable_test_or_mismatched_input_receipt_never_establishes_acceptance(self):
+        for receipts in [{'unit': self.test['test_receipts']['unit']},
+                         self.test['test_receipts'] | {'integration': {'source_commit': self.source, 'input_identity': 'c'*64}}]:
+            self.write_test(self.test | {'test_receipts': receipts})
+            with self.assertRaises(ValueError): release.validate_test_evidence(self.directory, self.source, 'validate', self.definition)
+        with self.assertRaises(ValueError): release.validate_test_evidence(self.directory, self.source, 'validate', self.definition | {'tests': []})
 
-    def test_pr_head_context_cannot_authorize_another_head_or_event(self):
-        event = self.root / '.artifacts/event.json'
-        event.write_text(json.dumps({'pull_request': {'head': {'sha': self.sha},
-                                                     'base': {'sha': 'b'*40},
-                                                     'merge_commit_sha': 'c'*40}}))
-        self.context.update(GITHUB_SHA='c'*40, GITHUB_EVENT_NAME='pull_request', GITHUB_EVENT_PATH=str(event))
-        self.produce_tests()
-        self.run_cli('record')
-        for change in ({'GITHUB_EVENT_NAME': 'workflow_dispatch'}, {'GITHUB_EVENT_NAME': 'pull_request_target'},
-                       {'GITHUB_EVENT_PATH': ''}, {'GITHUB_SHA': 'd'*40}):
-            self.run_cli('publish', False, change)
-            self.assert_no_publication()
-        event.write_text(json.dumps({'pull_request': {'head': {'sha': 'e'*40}}}))
-        self.run_cli('publish', False)
-        self.assert_no_publication()
+    def test_linked_receipt_or_unmatched_build_proof_is_refused(self):
+        path = self.directory / 'test.json'; path.unlink(); path.symlink_to(self.root / 'cookbook.toml')
+        with self.assertRaises(ValueError): release.validate_test_evidence(self.directory, self.source, 'validate', self.definition)
+        with self.assertRaises(ValueError): release.validate_provenance({}, self.source)
 
-    def test_changed_archive_stops_before_docker_load(self):
-        self.run_cli('record')
-        (self.release / 'images.tar.gz').write_bytes(b'tampered')
-        self.run_cli('publish', False)
-        self.assert_no_publication()
-
-    def test_legacy_missing_provenance_requires_rebuild(self):
-        self.run_cli('record')
-        self.change_manifest(lambda data: data.pop('provenance'))
-        self.run_cli('publish', False)
-        self.assert_no_publication()
-
-    def test_wrong_tree_configuration_or_input_digest_stops_publication(self):
-        for key, value in [('source_tree', 'b'*40), ('configuration_sha256', {}), ('input_identity', 'invalid')]:
-            self.run_cli('record')
-            self.change_manifest(lambda data: data['provenance'].update({key: value}))
-            self.run_cli('publish', False)
-            self.assert_no_publication()
-
-    def test_another_run_or_repository_cannot_publish(self):
-        self.run_cli('record')
-        for key in ['GITHUB_SERVER_URL', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID']:
-            self.run_cli('publish', False, {key: 'different'})
-        self.assert_no_publication()
-
-    def test_failed_publish_retry_can_use_prior_same_run_build(self):
-        self.run_cli('record')
-        self.run_cli('publish', overrides={'GITHUB_RUN_ATTEMPT': '2'})
-        self.assertIn('push', self.calls.read_text())
-
-    def test_future_or_invalid_build_attempt_is_rejected(self):
-        self.run_cli('record')
-        for attempt in ['0', 'bad']:
-            self.run_cli('publish', False, {'GITHUB_RUN_ATTEMPT': attempt})
-        self.change_manifest(lambda data: data['provenance']['build_context'].update(GITHUB_RUN_ATTEMPT='2'))
-        self.run_cli('publish', False)
-        self.assert_no_publication()
-
-    def test_modified_publisher_source_cannot_publish(self):
-        self.run_cli('record')
-        (self.root / 'mise.toml').write_text('modified pin')
-        self.run_cli('publish', False)
-        self.assert_no_publication()
-
-    def test_dirty_build_cannot_be_relabelled_as_the_clean_commit(self):
-        pin = self.root / 'mise.toml'
-        original = pin.read_text()
-        pin.write_text('modified build input')
-        self.run_cli('record')
-        self.assertFalse(self.manifest()['provenance']['tracked_source_clean'])
-        pin.write_text(original)
-        self.run_cli('publish', False)
-        self.assert_no_publication()
-
-    def test_pr_head_base_and_merge_are_recorded_without_fake_test_claim(self):
-        event = self.root / '.artifacts/event.json'
-        event.write_text(json.dumps({'pull_request': {'head': {'sha': self.sha},
-                                                     'base': {'sha': 'b'*40}, 'merge_commit_sha': 'c'*40}}))
-        self.run_cli('record', overrides={'GITHUB_EVENT_PATH': str(event), 'GITHUB_SHA': 'c'*40})
-        proof = self.manifest()['provenance']
-        self.assertEqual(proof['source_commit'], self.sha)
-        self.assertEqual(proof['source_relationship'], {'source_commit': self.sha, 'workflow_commit': 'c'*40,
-                                                      'pull_request_head': self.sha, 'pull_request_base': 'b'*40,
-                                                      'pull_request_merge': 'c'*40})
-        self.assertIsNone(proof['tested_commit'])
-        self.run_cli('publish', False, {'GITHUB_SHA': 'c'*40})
-        self.assert_no_publication()
-
-    def test_missing_tests_cannot_publish_a_successful_build(self):
-        self.run_cli('record')
-        (self.root / '.artifacts/verification/test.json').unlink()
-        self.run_cli('publish', False)
-        self.assert_no_publication()
-
-    def test_tests_from_another_source_or_merge_cannot_certify_this_head(self):
-        for key in ['source_commit', 'tested_commit', 'source_tree']:
-            self.produce_tests()
-            self.run_cli('record')
-            self.change_test_proof(lambda proof: proof.update({key: 'b'*40}))
-            self.run_cli('publish', False)
-            self.assert_no_publication()
-
-    def test_test_run_job_or_attempt_must_match_the_trusted_workflow(self):
-        for key, value in [('GITHUB_RUN_ID', 'different'), ('GITHUB_REPOSITORY', 'other/repo'),
-                           ('GITHUB_JOB', 'Build'), ('GITHUB_SHA', 'b'*40), ('GITHUB_RUN_ATTEMPT', '2')]:
-            self.produce_tests()
-            self.run_cli('record')
-            self.change_test_proof(lambda proof: proof['execution_context'].update({key: value}))
-            self.run_cli('publish', False)
-            self.assert_no_publication()
-
-    def test_incomplete_or_mismatched_applicable_test_receipts_are_refused(self):
-        for change in [lambda proof: proof['test_receipts'].pop('integration'),
-                       lambda proof: proof['test_receipts']['unit'].update(input_identity='b'*64),
-                       lambda proof: proof.update(configuration_sha256={})]:
-            self.produce_tests()
-            self.run_cli('record')
-            self.change_test_proof(change)
-            self.run_cli('publish', False)
-            self.assert_no_publication()
-
-    def test_failed_test_removes_a_prior_success_receipt(self):
-        (self.root/'unit.py').write_text('raise SystemExit(3)\n')
-        self.git('add','unit.py')
-        self.git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','failing fixture test')
-        self.sha=self.git('rev-parse','HEAD').stdout.strip()
-        self.context['GITHUB_SHA']=self.sha
-        self.produce_tests(False)
-        self.assertFalse((self.root/'.artifacts/verification/test.json').exists())
-        self.run_cli('record')
-        self.run_cli('publish',False)
-        self.assert_no_publication()
-
-    def test_symlink_test_receipt_is_refused_before_load(self):
-        self.run_cli('record')
-        file = self.root / '.artifacts/verification/test.json'
-        other = file.with_name('retained-test.json')
-        file.rename(other)
-        file.symlink_to(other)
-        self.run_cli('publish', False)
-        self.assert_no_publication()
-
-    def test_empty_test_policy_is_refused_before_publication(self):
-        file=self.root/'deploy/release.toml'
-        definition=source_config.read(file);definition['tests']=[]
-        source_config.write(file, definition)
-        result=self.run_cli('record',False)
-        self.assertIn('declared test tasks',result.stderr)
-        self.assertFalse((self.release/'release.json').exists())
-
-    def test_changed_test_inputs_do_not_create_a_success_receipt(self):
-        (self.root/'integration.py').write_text("from pathlib import Path;Path('mise.toml').write_text('mutated during tests')\n")
-        self.git('add','integration.py')
-        self.git('-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','source-mutating fixture test')
-        self.sha=self.git('rev-parse','HEAD').stdout.strip();self.context['GITHUB_SHA']=self.sha
-        self.produce_tests(False)
-        self.assertFalse((self.root/'.artifacts/verification/test.json').exists())
+    def test_isolated_file_import_never_loads_caller_modules(self):
+        (self.root / 'verification.py').write_text('raise RuntimeError("caller code executed")')
+        script = 'import importlib.util,sys; s=importlib.util.spec_from_file_location("checked_release",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert m.build_provenance(sys.argv[2], {"inputs":{"artifacts":[],"images":[],"environment":[],"revision_environment":[]}})["source_commit"]==sys.argv[2]'
+        subprocess.run([os.sys.executable, '-I', '-B', '-c', script, str(HELPER), self.source], check=True, timeout=10)
 
 
-if __name__=='__main__':
-    unittest.main()
+if __name__ == '__main__': unittest.main()

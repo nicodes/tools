@@ -16,17 +16,20 @@ import time
 
 
 
-def docker_bytes(*args, timeout=180):
-    """Run docker and return raw stdout.
+def podman_bytes(*args, timeout=180):
+    """Run podman and return raw stdout.
 
-    The shared docker() helper decodes and strips its output, which would
+    The shared podman() helper decodes and strips its output, which would
     corrupt a pg_dump custom-format archive. Stderr is swallowed for the same
     reason the shared one swallows it: the arguments carry disposable
     credentials that must never reach a workflow log.
     """
-    result = subprocess.run(['docker', *args], capture_output=True, timeout=timeout)
+    spec = importlib.util.spec_from_file_location('_tools_fixture_runtime', Path(__file__).with_name('container_runtime.py'))
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    result = runtime.run(list(args), capture_output=True, timeout=timeout)
     if result.returncode:
-        raise RuntimeError(f'Docker {args[0]} failed while building the restore fixture')
+        raise RuntimeError(f'Podman {args[0]} failed while building the restore fixture')
     return result.stdout
 
 
@@ -46,9 +49,9 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
     deployment, and the drill that consumes it restores into its own isolated
     container.
     """
-    if not re.fullmatch(r'(?:docker\.io/library/)?postgres@sha256:[a-f0-9]{64}', engine_reference):
+    if not re.fullmatch(r'docker\.io/library/postgres@sha256:[a-f0-9]{64}', engine_reference):
         raise ValueError('the fixture engine must be an immutable official postgres digest')
-    engine = json.loads(restore.docker('image', 'inspect', engine_reference))[0]
+    engine = json.loads(restore.podman('image', 'inspect', engine_reference))[0]
     # The image states its own major; deriving it keeps the fixture honest
     # when the pinned digest moves, rather than asserting a number here that
     # package_capture would then reject against the capture report.
@@ -76,8 +79,8 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
         os.chown(data, uid, uid)
     name = project+'-capture-fixture-'+secrets.token_hex(8)
     try:
-        restore.docker('run', '-d', '--name', name, '--network=none', '--read-only',
-                       '--user', f'{uid}:{uid}', '--cap-drop=ALL',
+        restore.podman('run', '--pull=never', '-d', '--name', name, '--network=none', '--read-only',
+                       *(['--userns=keep-id'] if os.geteuid() != 0 else []), '--user', f'{uid}:{uid}', '--cap-drop=ALL',
                        '--security-opt=no-new-privileges:true', '--memory=256m', '--cpus=1', '--pids-limit=128',
                        '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m',
                        '--tmpfs', f'/var/run/postgresql:rw,noexec,nosuid,uid={uid},gid={uid},mode=0770,size=8m',
@@ -87,7 +90,7 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
         deadline = time.monotonic()+90
         while True:
             try:
-                restore.docker('exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'fixture_owner', '-d', database)
+                restore.podman('exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'fixture_owner', '-d', database)
                 break
             except RuntimeError:
                 if time.monotonic() >= deadline:
@@ -95,13 +98,13 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
                 time.sleep(.2)
         # One table with one row: enough that an empty or truncated dump
         # cannot pass the restore, and small enough to stay disposable.
-        restore.docker('exec', '-i', name, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'fixture_owner',
+        restore.podman('exec', '-i', name, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'fixture_owner',
                        '-d', database, input='CREATE TABLE restore_fixture(id int primary key);\n'
                                              'INSERT INTO restore_fixture VALUES (1);\n')
-        dump = docker_bytes('exec', name, 'pg_dump', '-Fc', '--no-owner', '--no-tablespaces',
+        dump = podman_bytes('exec', name, 'pg_dump', '-Fc', '--no-owner', '--no-tablespaces',
                             '-U', 'fixture_owner', '-d', database)
     finally:
-        restore.docker('rm', '-f', '-v', name)
+        restore.podman('rm', '-f', '-v', name)
     (capture/'database.dump').write_bytes(dump)
     (capture/'database.dump').chmod(0o600)
     files = {'database.dump': {'size': (capture/'database.dump').stat().st_size,
@@ -114,7 +117,7 @@ def postgres_fixture(project, revision, engine_reference, restore, snapshot, rec
     for component in ('api', 'gate'):
         reference = f'{config["image_base"]}-{component}:{revision}'
         images[component] = {'reference': reference,
-                             'image_id': json.loads(restore.docker('image', 'inspect', reference))[0]['Id']}
+                             'image_id': json.loads(restore.podman('image', 'inspect', reference))[0]['Id']}
     metadata = {'project': project, 'revision': revision, 'roles': [config['runtime_role']], 'images': images,
                 'engine': {'reference': engine_reference, 'image_id': engine['Id'], 'major': major}}
     if 'role_namespace' in config:
@@ -159,11 +162,11 @@ def main(project, release, engine=None, *, config_file):
     if config['backend'] == 'postgresql':
         if not engine:
             raise SystemExit('--engine is required for a PostgreSQL product: pass the pinned '
-                             'postgres@sha256:... digest this product deploys')
+                             'docker.io/library/postgres@sha256:... digest this product deploys')
         return postgres_main(project, revision, engine, restore, snapshot, config=config, config_file=config_file)
     component = config['db']
     reference = f'{config["image_base"]}-{component}:{revision}'
-    image = json.loads(restore.docker('image', 'inspect', reference))[0]['Id']
+    image = json.loads(restore.podman('image', 'inspect', reference))[0]['Id']
     binary = config['binary']
     data_path = config['data_path']
     # Empty configuration is intentional: this fixture cannot inspect any live
@@ -178,13 +181,13 @@ def main(project, release, engine=None, *, config_file):
             os.chown(data, uid, uid)
         name = project+'-restore-fixture-'+secrets.token_hex(8)
         try:
-            restore.docker('run', '--name', name, '--network=none', '--read-only', '--user', f'{uid}:{uid}',
+            restore.podman('run', '--pull=never', '--name', name, '--network=none', '--read-only', *(['--userns=keep-id'] if os.geteuid() != 0 else []), '--user', f'{uid}:{uid}',
                 '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--memory=192m', '--cpus=1', '--pids-limit=128',
                 '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m', '--mount', f'type=bind,src={data},dst={data_path}',
                 '--entrypoint', binary, image, 'superuser', 'upsert', 'fixture@verification.invalid',
                 secrets.token_hex(32), f'--dir={data_path}', timeout=180)
         finally:
-            restore.docker('rm', '-f', '-v', name)
+            restore.podman('rm', '-f', '-v', name)
         archive = root/'data.tar.gz'
         with tarfile.open(archive, 'w:gz') as bundle:
             for item in sorted(data.rglob('*')):
@@ -218,7 +221,7 @@ if __name__ == '__main__':
     parser.add_argument('--project', required=True)
     parser.add_argument('--config', type=Path, default=Path('deploy/restore.toml'))
     parser.add_argument('--release', type=Path, default=Path('.artifacts/release/release.json'))
-    parser.add_argument('--engine', help='the pinned postgres@sha256:... digest, for a PostgreSQL product')
+    parser.add_argument('--engine', help='the pinned docker.io/library/postgres@sha256:... digest, for a PostgreSQL product')
     args = parser.parse_args()
     os.umask(0o077)
     main(args.project, args.release, args.engine, config_file=args.config)

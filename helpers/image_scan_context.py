@@ -23,12 +23,8 @@ MAX_FILE = 1 << 20
 MAX_MEMBERS = 4096
 DIGEST = re.compile(r'sha256:[a-f0-9]{64}\Z')
 REVISION = re.compile(r'[a-f0-9]{40}\Z')
-SCANNER = re.compile(r'aquasec/trivy@sha256:[a-f0-9]{64}\Z')
+SCANNER = re.compile(r'docker\.io/aquasec/trivy@sha256:[a-f0-9]{64}\Z')
 DATA_SUFFIXES = {'', '.json', '.yaml', '.yml', '.toml', '.ini', '.conf', '.txt', '.csv', '.xml'}
-LEGACY_CONFIG_FIELDS = {'Hostname', 'Domainname', 'User', 'AttachStdin', 'AttachStdout', 'AttachStderr',
-    'ExposedPorts', 'Tty', 'OpenStdin', 'StdinOnce', 'Env', 'Cmd', 'Healthcheck', 'ArgsEscaped', 'Image',
-    'Volumes', 'WorkingDir', 'Entrypoint', 'NetworkDisabled', 'MacAddress', 'OnBuild', 'Labels',
-    'StopSignal', 'StopTimeout', 'Shell'}
 
 
 def object_pairs(pairs):
@@ -67,10 +63,18 @@ def identity(value):
 
 
 def validate(report, sbom, context):
-    if (not isinstance(context, dict) or set(context) != {
-            'reference', 'source', 'scanner', 'before', 'after', 'started_at', 'finished_at'}):
+    if (not isinstance(context, dict) or set(context) not in ({
+            'reference', 'source', 'scanner', 'before', 'after', 'started_at', 'finished_at'}, {
+            'reference', 'source', 'scanner', 'before', 'after', 'started_at', 'finished_at', 'archive'})):
         raise ValueError('image scan requires a closed completion and identity context')
     reference, source = context['reference'], context['source']
+    archive = context.get('archive')
+    if archive is not None and (not isinstance(archive, dict) or set(archive) != {'sha256', 'target'}
+            or not re.fullmatch('[a-f0-9]{64}', str(archive['sha256']))
+            or archive['target'] != '/inputs/image.oci'):
+        raise ValueError('offline scan needs the exact OCI archive and fixed input target')
+    target = archive['target'] if archive is not None else reference
+    report_reference = '' if archive is not None else reference
     if (not isinstance(reference, str) or not isinstance(source, str) or not REVISION.fullmatch(source)
             or not re.fullmatch(r'[a-z0-9][a-z0-9./:_-]*(?::[a-f0-9]{40}|@sha256:[a-f0-9]{64})', reference)
             or (not '@sha256:' in reference and not reference.endswith(':' + source))):
@@ -92,7 +96,7 @@ def validate(report, sbom, context):
         raise ValueError('image scan completion interval is invalid or unbounded')
     if (not isinstance(report, dict) or type(report.get('SchemaVersion')) is not int
             or report['SchemaVersion'] != 2 or report.get('ArtifactType') != 'container_image'
-            or report.get('ArtifactName') != reference
+            or report.get('ArtifactName') != target
             or not isinstance(report.get('ArtifactID'), str) or not DIGEST.fullmatch(report['ArtifactID'])
             or report.get('Trivy') != {'Version': scanner['version']}):
         raise ValueError('image security report schema, target or scanner differs')
@@ -102,7 +106,8 @@ def validate(report, sbom, context):
         raise ValueError('image security report has no scan identifier') from error
     metadata = report.get('Metadata')
     if (not isinstance(metadata, dict) or metadata.get('ImageID') != before['Id']
-            or metadata.get('Reference') != reference or metadata.get('DiffIDs') != before['RootFS']['Layers']):
+            or not isinstance(metadata.get('Reference', ''), str)
+            or metadata.get('Reference', '') != report_reference or metadata.get('DiffIDs') != before['RootFS']['Layers']):
         raise ValueError('image security report does not bind the inspected image and layers')
     image_config = metadata.get('ImageConfig')
     if (not isinstance(image_config, dict) or image_config.get('os') != before['Os']
@@ -134,7 +139,7 @@ def validate(report, sbom, context):
         raise ValueError('image SBOM scanner differs from the completed scan')
     component = sbom_metadata.get('component', {})
     if (not isinstance(component, dict) or component.get('type') != 'container'
-            or component.get('name') != reference or not isinstance(component.get('bom-ref'), str)
+            or component.get('name') != target or not isinstance(component.get('bom-ref'), str)
             or not component['bom-ref']):
         raise ValueError('image SBOM container identity is missing')
     properties = component.get('properties')
@@ -147,7 +152,7 @@ def validate(report, sbom, context):
             raise ValueError('image SBOM has invalid identity properties')
         values.setdefault(item['name'], []).append(item['value'])
     for key, wanted in {
-        'SchemaVersion': ['2'], 'ImageID': [before['Id']], 'Reference': [reference],
+        'SchemaVersion': ['2'], 'ImageID': [before['Id']],
         # The pinned CycloneDX encoder sorts repeated properties by value.
         # Preserve multiplicity here; ordered layer authority remains the
         # inspected RootFS, JSON image config and authenticated save manifest.
@@ -155,6 +160,9 @@ def validate(report, sbom, context):
     }.items():
         if values.get('aquasecurity:trivy:' + key) != wanted:
             raise ValueError('image SBOM source, identity or layers differ')
+    references = values.get('aquasecurity:trivy:Reference')
+    if references != [report_reference] and not (archive is not None and references is None):
+        raise ValueError('image SBOM source reference differs')
     revision_property = values.get('aquasecurity:trivy:Labels:org.opencontainers.image.revision')
     if revision_property != ([labels['org.opencontainers.image.revision']] if 'org.opencontainers.image.revision' in labels else None):
         raise ValueError('image SBOM revision label differs from the inspected source')
@@ -180,158 +188,64 @@ def regular(path, maximum):
     return path, (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def legacy_metadata(outer, names, allowed, config, layer_count):
-    """Admit only the inert v1 compatibility records emitted by Docker save.
+def archive_core():
+    core_path = Path(__file__).resolve().with_name('oci_archive.py')
+    cached = sys.modules.get('_tools_oci_archive')
+    if cached is not None and Path(getattr(cached, '__file__', '')).resolve() != core_path:
+        raise ValueError('image archive core origin differs from this Tools source')
+    # Always load this exact source; a cached object's claimed filename is not
+    # sufficient authority to replace any verifier function.
+    spec = importlib.util.spec_from_file_location('_tools_oci_archive', core_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    sys.modules['_tools_oci_archive'] = module
+    return module
 
-    Modern config/layer/OCI descriptors were already authenticated independently.
-    These bounded content-addressed JSON records never become filesystem data.
-    """
-    def normalized(value):
-        return {key: item for key, item in value.items() if item not in (None, False, '', [], {})}
-    rows = {}
-    actual = normalized(config.get('config', {}))
-    for name, member in names.items():
-        if not member.isfile() or name in allowed:
-            continue
-        if not re.fullmatch(r'blobs/sha256/[a-f0-9]{64}', name) or not 0 < member.size <= 65536:
-            raise ValueError('data image archive contains files outside its closed image contract')
-        body = outer.extractfile(member).read(65537)
-        if hashlib.sha256(body).hexdigest() != name.rsplit('/', 1)[-1]:
-            raise ValueError('legacy image metadata differs from its content address')
-        value = json.loads(body, object_pairs_hook=object_pairs)
-        full = {'architecture', 'config', 'container_config', 'created', 'id', 'os'}
-        placeholder = {'container_config', 'created', 'id', 'os'}
-        if (not isinstance(value, dict) or set(value) not in (full, full | {'parent'}, placeholder, placeholder | {'parent'})
-                or value['os'] != config['os']
-                or not isinstance(value['id'], str) or not re.fullmatch('[a-f0-9]{64}', value['id'])
-                or value['id'] in rows or ('parent' in value and not re.fullmatch('[a-f0-9]{64}', str(value['parent'])))
-                or not isinstance(value['container_config'], dict)
-                or set(value['container_config']) - LEGACY_CONFIG_FIELDS or normalized(value['container_config'])):
-            raise ValueError('legacy image metadata differs from its closed source configuration')
-        if 'config' in value:
-            if (value['architecture'] != config['architecture'] or not isinstance(value['config'], dict)
-                    or set(value['config']) - LEGACY_CONFIG_FIELDS or normalized(value['config']) != actual):
-                raise ValueError('legacy image configuration differs from the authenticated config')
-            timestamp(value['created'])
-        else:
-            # Docker emits inert epoch placeholders for nonterminal layers.
-            # Its local timezone spelling varies; the instant must remain zero.
-            try: created = datetime.datetime.fromisoformat(value['created'].replace('Z', '+00:00'))
-            except (ValueError, AttributeError) as error: raise ValueError('invalid legacy layer placeholder time') from error
-            if created.utcoffset() is None or created.timestamp() != 0:
-                raise ValueError('legacy layer placeholder must describe the Unix epoch')
-        rows[value['id']] = value; allowed.add(name)
-    if rows:
-        parents = {row.get('parent') for row in rows.values() if row.get('parent')}
-        heads = set(rows) - parents
-        if len(rows) != layer_count or len(heads) != 1:
-            raise ValueError('legacy metadata does not describe one bounded image layer chain')
-        head = next(iter(heads)); visited = set()
-        if normalized(rows[head].get('config', {})) != actual:
-            raise ValueError('legacy metadata final source configuration differs')
-        while head:
-            if head not in rows or head in visited:
-                raise ValueError('legacy metadata layer chain is incomplete or cyclic')
-            visited.add(head); head = rows[head].get('parent')
-        if len(visited) != len(rows):
-            raise ValueError('legacy metadata contains another image chain')
+
+def authenticate_archive(path, context, inspected):
+    """Bind an offline scanner's actual input to its complete image identity."""
+    if path is None or 'archive' not in context:
+        raise ValueError('OCI scan requires its authenticated input archive')
+    module = archive_core()
+    with module.OCIArchive(path, context['reference'], inspected['Id']) as archive:
+        metadata = archive.metadata
+        if (metadata['archive_sha256'] != context['archive']['sha256']
+                or metadata['platform'] != inspected['Os'] + '/' + inspected['Architecture']
+                or [item['diff_id'] for item in metadata['layers']] != inspected['RootFS']['Layers']):
+            raise ValueError('OCI scanner input differs from the accepted image and layers')
+        configuration = metadata['config'].get('config') or {}
+        if not isinstance(configuration, dict):
+            raise ValueError('OCI scanner input configuration is invalid')
+        for name, empty in [('Labels',{}),('Entrypoint',[]),('Cmd',[]),('Env',[]),('User',''),('WorkingDir','')]:
+            if (configuration.get(name) or empty) != (inspected['Config'].get(name) or empty):
+                raise ValueError('OCI scanner input launch configuration differs from inspection')
+        archive.unchanged()
+        return metadata
 
 
 def data_image(path, reference, inspected, report, deadline=None):
-    """Authenticate every saved layer before classifying its bounded text files."""
+    """Authenticate exact OCI layers before classifying their bounded text files."""
     deadline = deadline if deadline is not None else time.monotonic() + 60
     path, original = regular(path, MAX_ARCHIVE)
-    core_path = Path(__file__).resolve().with_name('image_import_cache.py')
-    module = sys.modules.get('_tools_image_import_cache')
-    if module is not None and Path(getattr(module, '__file__', '')).resolve() != core_path:
-        raise ValueError('image archive core origin differs from this Tools source')
-    if module is None:
-        spec = importlib.util.spec_from_file_location('_tools_image_import_cache', core_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        sys.modules['_tools_image_import_cache'] = module
-    archive_images, remaining = module.archive_images, module.remaining
-    # Apply the much smaller data-image bounds before the generic archive
-    # authenticator reads any possibly compressed filesystem layer.
-    with tarfile.open(path, 'r:*') as outer:
-        members, expanded = {}, 0
-        for member in outer:
-            remaining(deadline)
-            expanded += member.size
-            members[member.name] = member
-            if len(members) > MAX_MEMBERS or expanded > MAX_ARCHIVE or member.size < 0:
-                raise ValueError('data image archive exceeds its member or expanded byte bound')
-        manifest_member = members.get('manifest.json')
-        if manifest_member is None or not manifest_member.isfile() or not 0 < manifest_member.size <= MAX_FILE:
-            raise ValueError('data image archive manifest is missing or oversized')
-        manifests = json.load(outer.extractfile(manifest_member), object_pairs_hook=object_pairs)
-        if not isinstance(manifests, list) or len(manifests) != 1 or not isinstance(manifests[0], dict):
-            raise ValueError('data image requires exactly one saved image')
-        layers = manifests[0].get('Layers')
-        if not isinstance(layers, list) or not 1 <= len(layers) <= 128:
-            raise ValueError('data image requires a bounded saved layer inventory')
-        uncompressed = 0
-        for name in layers:
-            member = members.get(name) if isinstance(name, str) else None
-            if member is None or not member.isfile():
-                raise ValueError('data image layer is missing')
-            with outer.extractfile(member) as stream:
-                magic = stream.read(2); stream.seek(0)
-                content = gzip.GzipFile(fileobj=stream) if magic == b'\x1f\x8b' else stream
-                try:
-                    while chunk := content.read(1 << 20):
-                        remaining(deadline); uncompressed += len(chunk)
-                        if uncompressed > MAX_ARCHIVE:
-                            raise ValueError('data image filesystem layers exceed their expanded byte bound')
-                finally:
-                    if content is not stream: content.close()
-    accepted = archive_images(path, {reference: inspected['Id']}, deadline)
-    if accepted != {reference: {'id': inspected['Id'], 'rootfs': inspected['RootFS']['Layers']}}:
-        raise ValueError('data image archive differs from the scanned image')
+    module = archive_core()
+    remaining = module.remaining
     if (report['Trivy']['Version'] != '0.70.0' or report['Metadata'].get('OS') not in (None, {})
             or inspected['Config'].get('Entrypoint')):
         raise ValueError('empty scan results require a supported data image without an entrypoint')
     data, directories, total, files = {}, set(), 0, 0
-    with tarfile.open(path, 'r:*') as outer:
-        manifest = json.load(outer.extractfile('manifest.json'), object_pairs_hook=object_pairs)
-        if len(manifest) != 1 or manifest[0]['RepoTags'] != [reference]:
-            raise ValueError('data image archive must contain exactly the scanned tag')
-        config = json.load(outer.extractfile(manifest[0]['Config']), object_pairs_hook=object_pairs)
-        allowed = {'manifest.json', manifest[0]['Config'], *manifest[0]['Layers']}
-        names = {item.name.rstrip('/'): item for item in outer.getmembers()}
-        if 'index.json' in names:
-            allowed.update({'index.json', 'oci-layout'})
-            index = json.load(outer.extractfile('index.json'), object_pairs_hook=object_pairs)
-            allowed.update('blobs/sha256/' + item['digest'][7:] for item in index['manifests'])
-        if 'repositories' in names:
-            repository, tag = reference.rsplit(':', 1)
-            repositories = json.load(outer.extractfile('repositories'), object_pairs_hook=object_pairs)
-            top = PurePosixPath(manifest[0]['Layers'][-1])
-            top_id = top.name if re.fullmatch('[a-f0-9]{64}', top.name) else top.parent.name
-            if not re.fullmatch('[a-f0-9]{64}', top_id) or repositories != {repository: {tag: top_id}}:
-                raise ValueError('data image archive repository mapping differs')
-            allowed.add('repositories')
-        for name in manifest[0]['Layers']:
-            parent = PurePosixPath(name).parent.as_posix()
-            for suffix in ['json', 'VERSION']:
-                candidate = parent + '/' + suffix
-                if candidate in names and parent != '.':
-                    if names[candidate].size > 65536:
-                        raise ValueError('data image legacy layer metadata is oversized')
-                    body = outer.extractfile(candidate).read(65537)
-                    if suffix == 'VERSION' and body not in {b'1.0', b'1.0\n'}:
-                        raise ValueError('data image legacy layer version is unsupported')
-                    if suffix == 'json' and not isinstance(json.loads(body, object_pairs_hook=object_pairs), dict):
-                        raise ValueError('data image legacy layer metadata is invalid')
-                    allowed.add(candidate)
-        legacy_metadata(outer, names, allowed, config, len(manifest[0]['Layers']))
-        if (config.get('config', {}).get('Labels') != inspected['Config'].get('Labels')
+    with module.OCIArchive(path, reference, inspected['Id'], timeout=remaining(deadline),
+                           max_expanded=MAX_ARCHIVE, max_members=MAX_MEMBERS) as outer:
+        metadata = outer.metadata
+        config = metadata['config']
+        if ([item['diff_id'] for item in metadata['layers']] != inspected['RootFS']['Layers']
+                or metadata['platform'] != inspected['Os'] + '/' + inspected['Architecture']
+                or config.get('config', {}).get('Labels') != inspected['Config'].get('Labels')
                 or config.get('config', {}).get('Entrypoint')
                 or (config.get('config', {}).get('Cmd') or []) != (inspected['Config'].get('Cmd') or [])):
-            raise ValueError('data image archive configuration differs from the inspected source')
-        for layer in manifest[0]['Layers']:
+            raise ValueError('data image archive differs from the scanned image configuration')
+        for layer in metadata['layers']:
             remaining(deadline)
-            with outer.extractfile(layer) as stream, tarfile.open(fileobj=stream, mode='r:*') as archive:
+            with outer.open_blob(layer['digest']) as stream, tarfile.open(fileobj=stream, mode='r:*') as archive:
                 seen = set()
                 for member in archive:
                     remaining(deadline)
@@ -391,4 +305,7 @@ def admit_empty(report, sbom, context, data_archive):
         raise ValueError('empty image results require a closed empty software dependency graph')
     if data_archive is None:
         raise ValueError('empty image scan results need authenticated data-only image bytes')
-    return data_image(data_archive, context['reference'], inspected, report)
+    result = data_image(data_archive, context['reference'], inspected, report)
+    if 'archive' in context and result['archive_sha256'] != context['archive']['sha256']:
+        raise ValueError('data image archive differs from the exact scanned input')
+    return result

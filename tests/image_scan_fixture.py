@@ -6,10 +6,11 @@ import io
 import json
 from pathlib import Path
 import tarfile
+import oci_fixture
 
 SOURCE = 'a' * 40
 REFERENCE = 'example.invalid/security-fixture:' + SOURCE
-SCANNER = 'aquasec/trivy@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e'
+SCANNER = 'docker.io/aquasec/trivy@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e'
 
 
 def archive(path, *, reference=REFERENCE, source=SOURCE, body=b'value: harmless\n',
@@ -40,15 +41,9 @@ def archive(path, *, reference=REFERENCE, source=SOURCE, body=b'value: harmless\
         configuration['config']['Entrypoint'] = entrypoint
     raw = json.dumps(configuration, sort_keys=True, separators=(',', ':')).encode()
     identity = 'sha256:' + hashlib.sha256(raw).hexdigest()
-    names = ['layer.tar'] + ['layer-' + str(index) + '.tar' for index in range(1, len(layers))]
-    manifest = [{'Config': identity[7:] + '.json', 'RepoTags': [reference], 'Layers': names}]
-    with tarfile.open(path, 'w') as output:
-        rows = [('manifest.json', json.dumps(manifest).encode()), (manifest[0]['Config'], raw), *zip(names, layers)]
-        if extra_outer:
-            rows.append(('unbound.txt', b'foreign metadata\n'))
-        for name, data in rows:
-            item = tarfile.TarInfo(name); item.mode = 0o644; item.size = len(data)
-            output.addfile(item, io.BytesIO(data))
+    rows = oci_fixture.contents(reference, configuration, layers)
+    if extra_outer: rows['unbound.txt'] = b'foreign metadata\n'
+    oci_fixture.write(path, rows)
     inspected = {'Id': identity, 'RootFS': {'Type': 'layers', 'Layers': diffs},
         'Config': copy.deepcopy(configuration['config']), 'Os': 'linux', 'Architecture': 'amd64'}
     return inspected, configuration, len(layers[0])

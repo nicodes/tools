@@ -16,10 +16,14 @@ def blocking_findings(report: dict) -> list[dict]:
     return findings
 
 
-def image_scan_findings(report, sbom, *, context, data_archive=None):
+def image_scan_findings(report, sbom, *, context, input_archive=None, data_archive=None):
     """Admit complete image evidence without weakening the standalone parser."""
-    from image_scan_context import admit_empty, validate
-    validate(report, sbom, context)
+    from image_scan_context import admit_empty, authenticate_archive, validate
+    inspected = validate(report, sbom, context)
+    if 'archive' in context:
+        authenticate_archive(input_archive, context, inspected)
+    elif input_archive is not None:
+        raise ValueError('offline input requires an exact archive completion context')
     if 'Results' not in report or report['Results'] == []:
         admit_empty(report, sbom, context, data_archive)
         return []

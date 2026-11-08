@@ -21,7 +21,7 @@ def helper(name):
 
 pg = helper('postgres-recovery')
 snapshot = helper('snapshot')
-ENGINE = 'postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280'
+ENGINE = 'docker.io/library/postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280'
 REVISION = 'a'*40
 
 
@@ -172,12 +172,12 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
     def test_no_image_action_precedes_project_binding_and_no_error_discloses_values(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)/'payload'; payload(root)
-            with patch.object(pg, 'docker') as docker:
+            with patch.object(pg, 'podman') as podman:
                 with self.assertRaisesRegex(ValueError, 'project mismatch'):
                     with pg.restored_database(root, 'samplestore', REVISION, pull=True): pass
-                docker.assert_not_called()
+                podman.assert_not_called()
             with patch.object(pg.subprocess, 'run', side_effect=subprocess.TimeoutExpired(['private-password'], 1)):
-                with self.assertRaises(RuntimeError) as raised: pg.docker('exec', 'private-password')
+                with self.assertRaises(RuntimeError) as raised: pg.podman('exec', 'private-password')
                 self.assertNotIn('private-password', str(raised.exception))
 
     def test_authenticated_backend_cannot_be_downgraded_in_receipt(self):
@@ -262,7 +262,7 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
                 lambda m: m['images']['api'].update(reference='ghcr.io/nicodes/sampleapp-gate:inapi-fold'),
                 # The api tag must anchor the recorded host-local revision.
                 lambda m: m['images']['api'].update(reference='ghcr.io/nicodes/sampleapp-api:other-fold'),
-                # Tags stay within the docker tag charset even in transition mode.
+                # Tags stay within the podman tag charset even in transition mode.
                 lambda m: m['images']['gate'].update(reference='ghcr.io/nicodes/sampleapp-gate:-bad'),
                 lambda m: m['images']['gate'].update(reference='ghcr.io/nicodes/sampleapp-gate:has/slash'),
                 # The revision itself must be a 40-hex SHA or host-local:<tag>.
@@ -344,11 +344,11 @@ class PostgreSQLRestoreIntegration(unittest.TestCase):
         self.restore_roundtrip('newapp')
 
     def restore_roundtrip(self, project):
-        pg.docker('pull', '--quiet', ENGINE, timeout=180)
-        image = json.loads(pg.docker('image', 'inspect', ENGINE))[0]['Id']
+        pg.podman('pull', '--quiet', ENGINE, timeout=180)
+        image = json.loads(pg.podman('image', 'inspect', ENGINE))[0]['Id']
         name = 'tools-pg-source-'+os.urandom(8).hex()
         uid = os.getuid() or 65534
-        source_id = pg.docker('run', '-d', '--name', name, '--network=none', '--read-only', '--user', f'{uid}:{uid}',
+        source_id = pg.podman('run', '-d', '--name', name, '--network=none', '--read-only', '--user', f'{uid}:{uid}',
                               '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--memory=256m',
                               '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
                               '--tmpfs', f'/var/run/postgresql:rw,uid={uid},gid={uid},mode=0770,size=8m',
@@ -356,14 +356,14 @@ class PostgreSQLRestoreIntegration(unittest.TestCase):
                               '--env', 'POSTGRES_HOST_AUTH_METHOD=trust', '--env', 'POSTGRES_USER=sampleapp_owner',
                               '--env', 'POSTGRES_DB=sampleapp', '--env', 'PGDATA=/var/lib/postgresql/data', image,
                               'postgres', '-c', 'listen_addresses=127.0.0.1')
-        self.addCleanup(lambda: pg.docker('rm', '-f', '-v', source_id))
+        self.addCleanup(lambda: pg.podman('rm', '-f', '-v', source_id))
         for _ in range(100):
             try:
-                pg.docker('exec', source_id, 'pg_isready', '-h', '127.0.0.1', '-U', 'sampleapp_owner', '-d', 'sampleapp')
+                pg.podman('exec', source_id, 'pg_isready', '-h', '127.0.0.1', '-U', 'sampleapp_owner', '-d', 'sampleapp')
                 break
             except RuntimeError: time.sleep(.1)
         else: self.fail('synthetic PostgreSQL source did not start')
-        pg.docker('exec', '-i', source_id, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'sampleapp_owner', '-d', 'sampleapp', input='''
+        pg.podman('exec', '-i', source_id, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'sampleapp_owner', '-d', 'sampleapp', input='''
 CREATE ROLE sampleapp_runtime LOGIN;
 CREATE TABLE preserved(id integer PRIMARY KEY,value text NOT NULL);
 INSERT INTO preserved VALUES(1,'captured');
@@ -373,46 +373,46 @@ CREATE FUNCTION private_count() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET
 REVOKE ALL ON FUNCTION private_count() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION private_count() TO sampleapp_runtime;
 ''')
-        pg.docker('exec', source_id, 'pg_dump', '-Fc', '-U', 'sampleapp_owner', '-d', 'sampleapp', '-f', '/tmp/database.dump')
+        pg.podman('exec', source_id, 'pg_dump', '-Fc', '-U', 'sampleapp_owner', '-d', 'sampleapp', '-f', '/tmp/database.dump')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root/'payload'; manifest = payload(source, engine_id=image)
             if project != 'sampleapp':
                 manifest.update(project=project, role_namespace='sampleapp')
                 for component in ('api', 'gate'):
                     manifest['images'][component]['reference'] = f'ghcr.io/example/{project}-{component}:{REVISION}'
-            # Stream bytes rather than relying on Docker's archive-copy support
+            # Stream bytes rather than relying on Podman's archive-copy support
             # for a running read-only container with a tmpfs source file.
             with (source/'database.dump').open('wb') as output:
-                copied = subprocess.run(['docker', '--host', 'unix:///var/run/docker.sock', 'exec', source_id,
-                                         'cat', '/tmp/database.dump'], stdout=output, stderr=subprocess.PIPE, timeout=30)
+                copied = pg.runtime.run(['exec', source_id, 'cat', '/tmp/database.dump'],
+                                        stdout=output, stderr=subprocess.PIPE, timeout=30)
             self.assertEqual(copied.returncode, 0, 'could not stream the synthetic custom dump')
             manifest['files']['database.dump'] = {'size': (source/'database.dump').stat().st_size,
                                                  'sha256': pg.checksum(source/'database.dump')}
             (source/pg.MANIFEST).write_text(json.dumps(manifest))
-            pg.docker('exec', source_id, 'psql', '-X', '-U', 'sampleapp_owner', '-d', 'sampleapp', '-c', "UPDATE preserved SET value='after snapshot'")
+            pg.podman('exec', source_id, 'psql', '-X', '-U', 'sampleapp_owner', '-d', 'sampleapp', '-c', "UPDATE preserved SET value='after snapshot'")
             with pg.restored_database(source, project, REVISION) as clone:
                 restored_id = clone['container']
                 self.assertEqual(clone['database_restore'], 'passed')
                 self.assertNotIn('roles', clone)
-                actual = pg.docker('exec', restored_id, 'psql', '-XAt', '-U', 'restore_owner', '-d', 'sampleapp', '-c', 'SELECT value FROM preserved')
+                actual = pg.podman('exec', restored_id, 'psql', '-XAt', '-U', 'restore_owner', '-d', 'sampleapp', '-c', 'SELECT value FROM preserved')
                 self.assertEqual(actual, 'captured')
-                acl = pg.docker('exec', restored_id, 'psql', '-XAt', '-U', 'sampleapp_runtime', '-d', 'sampleapp', '-c', 'SELECT private_count()')
+                acl = pg.podman('exec', restored_id, 'psql', '-XAt', '-U', 'sampleapp_runtime', '-d', 'sampleapp', '-c', 'SELECT private_count()')
                 self.assertEqual(acl, '1')
-                public_acl = pg.docker('exec', restored_id, 'psql', '-XAt', '-U', 'restore_owner', '-d', 'sampleapp', '-c', "SELECT count(*) FROM pg_proc p, LATERAL aclexplode(p.proacl) a WHERE p.proname='private_count' AND a.grantee=0")
+                public_acl = pg.podman('exec', restored_id, 'psql', '-XAt', '-U', 'restore_owner', '-d', 'sampleapp', '-c', "SELECT count(*) FROM pg_proc p, LATERAL aclexplode(p.proacl) a WHERE p.proname='private_count' AND a.grantee=0")
                 self.assertEqual(public_acl, '0')
-            with self.assertRaises(RuntimeError): pg.docker('inspect', restored_id)
+            with self.assertRaises(RuntimeError): pg.podman('inspect', restored_id)
             # A valid manifest/header cannot turn a broken pg_restore into a
             # passed database result. Owned-container cleanup still runs.
             (source/'database.dump').write_bytes((source/'database.dump').read_bytes()[:8])
             manifest['files']['database.dump'] = {'size': 8, 'sha256': pg.checksum(source/'database.dump')}
             (source/pg.MANIFEST).write_text(json.dumps(manifest))
             created = []
-            real_docker = pg.docker
+            real_podman = pg.podman
             def tracked(*args, **kwargs):
                 if args[0] == 'run': created.append(args[args.index('--name')+1])
-                return real_docker(*args, **kwargs)
-            with patch.object(pg, 'docker', tracked), self.assertRaises(RuntimeError):
+                return real_podman(*args, **kwargs)
+            with patch.object(pg, 'podman', tracked), self.assertRaises(RuntimeError):
                 with pg.restored_database(source, project, REVISION):
                     self.fail('corrupt custom dump yielded a restored database')
             self.assertEqual(len(created), 1)
-            with self.assertRaises(RuntimeError): real_docker('inspect', created[0])
+            with self.assertRaises(RuntimeError): real_podman('inspect', created[0])

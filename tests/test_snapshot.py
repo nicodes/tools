@@ -112,11 +112,11 @@ class SnapshotBoundaries(unittest.TestCase):
                     'Config': {'Healthcheck': {'Test': ['CMD', 'probe']}},
                     'Mounts': [{'Source': str(data), 'Destination': '/data', 'Type': 'volume'}]}
             commands = []
-            def docker(*args):
+            def podman(*args):
                 commands.append(args)
                 if args[0] == 'pause': raise RuntimeError('daemon transport failed')
                 return ''
-            with patch.object(snapshot, 'inspect', return_value=info), patch.object(snapshot, 'docker', docker), \
+            with patch.object(snapshot, 'inspect', return_value=info), patch.object(snapshot, 'podman', podman), \
                     patch.object(snapshot, 'resumed_health'), patch.object(snapshot, 'restore') as restore:
                 with self.assertRaisesRegex(RuntimeError, 'transport'):
                     snapshot.snapshot('db', '/data', destination)

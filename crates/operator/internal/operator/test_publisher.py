@@ -49,19 +49,13 @@ class PublicationTests(unittest.TestCase):
                     break
         context = patch.object(publisher, 'protected_directory', protected)
         context.start();self.addCleanup(context.stop)
-        @contextlib.contextmanager
-        def configuration():
-            with tempfile.TemporaryDirectory(prefix='registry-', dir=self.root) as directory:
-                yield Path(directory)
-        context = patch.object(publisher, 'registry_configuration', configuration)
-        context.start();self.addCleanup(context.stop)
         self.request = {'operation': 'publish', 'repository': 'owner/product', 'revision': REVISION, 'run_id': 42, 'artifact_id': 55}
         workflow = {'workflow_id': 100, 'workflow_path': '.github/workflows/cd.yml', 'app_id': 15368,
                     'event': 'push', 'jobs': ['Build'], 'integration_job': 'build'}
         token = self.root/'token'
         token.write_bytes(b'synthetic-fixture-token')
         token.chmod(0o600)
-        self.contract = {'workflow': workflow, 'images': ['ghcr.io/owner/product'], 'username': 'owner', 'credential': str(token)}
+        self.contract = {'workflow': workflow, 'artifacts': ['ghcr.io/owner/product'], 'username': 'owner', 'credential': str(token)}
         self.policy = {'version': 1, 'repositories': {'owner/product': self.contract}}
         now = datetime.now(timezone.utc)
         self.grant = {'version': 1, 'repository': 'owner/product', 'revision': REVISION, 'tree': TREE,
@@ -77,31 +71,48 @@ class PublicationTests(unittest.TestCase):
         self.archive()
 
     def archive(self, *, bad_layer=False, foreign=False, revision=REVISION, linked=False):
-        layer = b'synthetic uncompressed docker layer'
-        configuration = json.dumps({'os': 'linux', 'architecture': 'amd64',
-            'config': {'Labels': {'org.opencontainers.image.revision': revision,
-                                 'org.opencontainers.image.source': 'https://github.com/owner/product'}},
-            'rootfs': {'diff_ids': ['sha256:'+hashlib.sha256(layer).hexdigest()]}}).encode()
-        self.config_sha = hashlib.sha256(configuration).hexdigest()
-        reference = 'ghcr.io/owner/foreign:'+REVISION if foreign else REFERENCE
-        image = io.BytesIO()
-        with tarfile.open(fileobj=image, mode='w') as archive:
-            files = {'manifest.json': json.dumps([{'Config': 'config.json', 'RepoTags': [reference], 'Layers': ['layer.tar']}]).encode(),
-                     'config.json': configuration, 'layer.tar': layer+b'altered' if bad_layer else layer}
-            for name, body in files.items():
-                entry = tarfile.TarInfo(name);entry.size = len(body)
-                archive.addfile(entry, io.BytesIO(body))
+        layer = b'synthetic uncompressed OCI layer'
+        config = {'os':'linux','architecture':'amd64',
+                  'config':{'Labels':{'org.opencontainers.image.revision':revision,
+                                     'org.opencontainers.image.source':'https://github.com/owner/product'}},
+                  'rootfs':{'type':'layers','diff_ids':['sha256:'+hashlib.sha256(layer).hexdigest()]}}
+        def encoded(value): return json.dumps(value,sort_keys=True,separators=(',',':')).encode()
+        def descriptor(body, media): return {'mediaType':media,'digest':'sha256:'+hashlib.sha256(body).hexdigest(),'size':len(body)}
+        config_body=encoded(config); configuration=descriptor(config_body,publisher.oci.CONFIG)
+        self.config_sha=configuration['digest'][7:]
+        layer_row=descriptor(layer,'application/vnd.oci.image.layer.v1.tar')
+        manifest_body=encoded({'schemaVersion':2,'mediaType':publisher.oci.MANIFEST,'config':configuration,'layers':[layer_row]})
+        manifest=descriptor(manifest_body,publisher.oci.MANIFEST)
+        self.manifest_sha=manifest['digest']
+        repository='ghcr.io/owner/foreign' if foreign else 'ghcr.io/owner/product'
+        self.reference=repository+'@'+manifest['digest']
+        rows={'oci-layout':b'{"imageLayoutVersion":"1.0.0"}',
+              'index.json':encoded({'schemaVersion':2,'manifests':[{**manifest,'annotations':{'org.opencontainers.image.ref.name':repository+':'+REVISION}}]}),
+              'blobs/sha256/'+manifest['digest'][7:]:manifest_body,
+              'blobs/sha256/'+configuration['digest'][7:]:config_body,
+              'blobs/sha256/'+layer_row['digest'][7:]:layer+b'altered' if bad_layer else layer}
+        image=io.BytesIO()
+        with tarfile.open(fileobj=image,mode='w') as archive:
+            for name,body in rows.items():
+                entry=tarfile.TarInfo(name);entry.size=len(body);archive.addfile(entry,io.BytesIO(body))
             if linked:
-                entry = tarfile.TarInfo('escape');entry.type = tarfile.SYMTYPE;entry.linkname = '/etc/shadow'
-                archive.addfile(entry)
-        manifest = {'version': 1, 'repository': 'owner/product', 'revision': REVISION, 'tree': TREE,
-                    'run_id': 42, 'attempt': 2, 'images': {reference: self.config_sha}}
-        self.path = self.state/'artifacts/55.zip'
-        with zipfile.ZipFile(self.path, 'w') as archive:
-            archive.writestr('release.json', json.dumps(manifest))
-            archive.writestr('images.tar', image.getvalue())
-        self.path.chmod(0o600)
-        self.archive_sha = hashlib.sha256(self.path.read_bytes()).hexdigest()
+                entry=tarfile.TarInfo('escape');entry.type=tarfile.SYMTYPE;entry.linkname='/etc/shadow';archive.addfile(entry)
+        release={'kind':'komizo.release','version':1,'application':'example','source':{
+            'repository':'owner/product','repository_id':'123','revision':REVISION},
+            'artifacts':{'api':{'kind':'image','reference':self.reference,'digest':manifest['digest'],
+                                'config_digest':configuration['digest'],'platform':'linux/amd64'}},
+            'workload':{'services':{'api':{'artifact':'api'}},'jobs':{},'assets':{}}}
+        packet={'release.json':encoded(release),'images/api.oci.tar':image.getvalue()}
+        inventory={'version':1,'files':{name:{'sha256':hashlib.sha256(body).hexdigest(),'size':len(body),
+            'type':'release' if name=='release.json' else 'image'} for name,body in packet.items()}}
+        packet['inventory.json']=encoded(inventory)
+        packet['publication-source.json']=encoded({'version':1,'repository':'owner/product','revision':REVISION,
+            'tree':TREE,'run_id':42,'attempt':2})
+        self.path=self.state/'artifacts/55.zip'
+        with zipfile.ZipFile(self.path,'w') as archive:
+            for name,body in packet.items(): archive.writestr(name,body)
+        self.path.chmod(0o600); self.archive_sha=hashlib.sha256(self.path.read_bytes()).hexdigest()
+        self.remote={}
 
     def backend(self, args):
         url = args[-1]
@@ -128,21 +139,24 @@ class PublicationTests(unittest.TestCase):
                 'digest': 'sha256:'+self.archive_sha, 'workflow_run': {'id': 42, 'head_sha': REVISION}}
         raise AssertionError('unexpected evidence request: '+str(args))
 
-    def transport(self, args, directory, deadline, body=None):
-        self.calls.append(args)
-        self.directories.append(directory)
-        if args[0] == 'login':
-            self.assertEqual(body, b'synthetic-fixture-token')
-            (directory/'config.json').write_bytes(body)
-        if args[0] == 'push':
-            return ('digest: sha256:'+'e'*64+' size: 1024\n').encode()
-        if args[:3] == ['manifest', 'inspect', '--verbose']:
-            return json.dumps({'Descriptor': {'digest': 'sha256:'+'e'*64},
-                'SchemaV2Manifest': {'config': {'digest': 'sha256:'+self.config_sha}}}).encode()
-        if args[:2] == ['manifest', 'inspect']:
-            self.assertEqual(args[2], 'ghcr.io/owner/product@sha256:'+'e'*64)
-            return json.dumps({'config': {'digest': 'sha256:'+self.config_sha}}).encode()
-        return b''
+    def transport(self, reference, username, password, deadline):
+        self.assertEqual((username,password),('owner','synthetic-fixture-token'))
+        self.assertLess(time.monotonic(),deadline)
+        outer=self
+        class Registry:
+            _prefix='/v2/owner/product'
+            def upload_blob(self, digest, size, reader):
+                body=reader.read(); outer.assertEqual(len(body),size)
+                outer.assertEqual('sha256:'+hashlib.sha256(body).hexdigest(),digest)
+                outer.calls.append(['upload_blob',digest,size])
+            def put_manifest(self, digest, raw):
+                outer.assertEqual('sha256:'+hashlib.sha256(raw).hexdigest(),digest)
+                outer.calls.append(['put_manifest',digest]);outer.remote[digest]=raw
+            def _request(self, method, path, headers):
+                outer.calls.append(['observe',method,path])
+                digest=path.rsplit('/',1)[-1]
+                return 200,{'docker-content-digest':digest},outer.remote[digest]
+        return Registry()
 
     def publish(self, transport=None):
         return publisher.execute(self.request, self.policy, self.backend, transport or self.transport)
@@ -150,8 +164,9 @@ class PublicationTests(unittest.TestCase):
     def test_exact_publication_retains_immutable_digest_cleans_credentials_and_refuses_replay(self):
         result = self.publish()
         self.assertEqual(result['status'], 'completed')
-        self.assertEqual(result['published'][REFERENCE]['manifest_digest'], 'sha256:'+'e'*64)
-        self.assertTrue(all(not directory.exists() for directory in self.directories))
+        self.assertEqual(result['published'][self.reference]['manifest_digest'], self.manifest_sha)
+        self.assertFalse(list(self.state.glob('.publication-*')))
+        self.assertNotIn(b'synthetic-fixture-token', b''.join(path.read_bytes() for path in self.state.glob('*.json')))
         before = len(self.calls)
         with self.assertRaisesRegex(ValueError, 'already claimed'):
             self.publish()
@@ -179,14 +194,17 @@ class PublicationTests(unittest.TestCase):
                 login.assert_not_called();self.assertEqual(self.calls, [])
 
     def test_interrupted_upload_is_durable_ambiguous_and_reconciles_without_push(self):
-        def interrupted(args, directory, deadline, body=None):
-            result = self.transport(args, directory, deadline, body)
-            if args[0] == 'push':
+        def interrupted(*args):
+            client=self.transport(*args); put=client.put_manifest
+            def lost(digest,raw):
+                put(digest,raw)
                 raise ValueError('synthetic response lost after upload')
-            return result
+            client.put_manifest=lost
+            return client
         with self.assertRaises(ValueError):
             self.publish(interrupted)
-        self.assertTrue(all(not directory.exists() for directory in self.directories))
+        self.assertFalse(list(self.state.glob('.publication-*')))
+        self.assertNotIn(b'synthetic-fixture-token', b''.join(path.read_bytes() for path in self.state.glob('*.json')))
         request = {'operation': 'inspect', 'repository': 'owner/product', 'revision': REVISION}
         observed = publisher.execute(request, self.policy)
         self.assertEqual(observed['status'], 'ambiguous')
@@ -194,7 +212,7 @@ class PublicationTests(unittest.TestCase):
         request['operation'] = 'reconcile'
         result = publisher.execute(request, self.policy, transport=self.transport)
         self.assertEqual(result['status'], 'reconciled')
-        self.assertFalse(any(args[0] in ('push', 'load') for args in self.calls))
+        self.assertFalse(any(args[0] in ('upload_blob', 'put_manifest') for args in self.calls))
         with self.assertRaises(ValueError):
             self.publish()
 
@@ -221,11 +239,12 @@ class PublicationTests(unittest.TestCase):
     def test_actual_process_death_retains_upload_intent_and_refuses_reexecution(self):
         child = os.fork()
         if child == 0:
-            def killed(args, directory, deadline, body=None):
-                result = self.transport(args, directory, deadline, body)
-                if args[0] == 'push':
-                    os.kill(os.getpid(), signal.SIGKILL)
-                return result
+            def killed(*args):
+                client=self.transport(*args); put=client.put_manifest
+                def death(digest,raw):
+                    put(digest,raw); os.kill(os.getpid(),signal.SIGKILL)
+                client.put_manifest=death
+                return client
             try:
                 self.publish(killed)
             except BaseException:
@@ -259,17 +278,25 @@ class PublicationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(b'never-echo-this', result.stdout+result.stderr)
 
-    def test_real_transport_bounds_output_and_kills_timed_out_process_group(self):
-        script = 'import sys;sys.stdout.write("x"*100000);sys.stdout.flush()'
-        with patch.object(publisher, 'DOCKER', ('/usr/bin/python3', '-I', '-c', script)):
-            with self.assertRaisesRegex(ValueError, 'output exceeds'):
-                publisher.docker(['ignored'], self.root, time.monotonic()+2)
-        script = 'import time;time.sleep(30)'
-        started = time.monotonic()
-        with patch.object(publisher, 'DOCKER', ('/usr/bin/python3', '-I', '-c', script)):
-            with self.assertRaisesRegex(ValueError, 'deadline'):
-                publisher.docker(['ignored'], self.root, time.monotonic()+.1)
-        self.assertLess(time.monotonic()-started, 1)
+    def test_native_registry_transport_bounds_output_and_deadline(self):
+        class Response:
+            status=200
+            def getheaders(self): return []
+            def read1(self,maximum): return b'x'*maximum
+        class Connection:
+            sock=None
+            closed=False
+            def __init__(self,*args,**kwargs): pass
+            def request(self,*args,**kwargs): pass
+            def getresponse(self): return Response()
+            def close(self): self.closed=True
+        client=publisher.registry_api.Registry('ghcr.io','owner/product',timeout=1)
+        with patch.object(publisher.registry_api.http.client,'HTTPSConnection',Connection):
+            with self.assertRaisesRegex(ValueError,'response exceeds'):
+                client._request('GET','/v2/owner/product/manifests/'+self.manifest_sha)
+        client._deadline=time.monotonic()-1
+        with self.assertRaisesRegex(ValueError,'deadline'):
+            client._request('GET','/v2/owner/product/manifests/'+self.manifest_sha)
 
 
 if __name__ == '__main__':

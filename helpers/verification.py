@@ -18,6 +18,9 @@ import time
 _source_spec = importlib.util.spec_from_file_location('_verification_source_config', Path(__file__).resolve().with_name('source_config.py'))
 source_config = importlib.util.module_from_spec(_source_spec)
 _source_spec.loader.exec_module(source_config)
+_runtime_spec = importlib.util.spec_from_file_location('_tools_verification_runtime', Path(__file__).with_name('container_runtime.py'))
+runtime = importlib.util.module_from_spec(_runtime_spec)
+_runtime_spec.loader.exec_module(runtime)
 
 if os.name == 'nt':
     import msvcrt
@@ -161,7 +164,7 @@ def artifacts(declaration):
             found[path.as_posix()] = sha(path)
     refs = resolve_images(declaration, git('rev-parse', 'HEAD'))
     if refs:
-        images = json.loads(subprocess.check_output(['docker', 'image', 'inspect', *refs], timeout=60))
+        images = runtime.inspect_images(refs)
         if len(images) != len(refs):
             raise ValueError('a declared image is missing')
         for ref, image in zip(refs, images, strict=True):

@@ -1,5 +1,3 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a899064a6f180aa78bc525077e677284548f292f8594eef4605b0b1de666ad36 -->
-
 # tools
 
 A collection of reusable tools and GitHub Actions. Recipes and their shared execution contract live in [Cookbook](https://github.com/nicodes/cookbook). Application source, domain algorithms, product policy and product assertions stay in their owning repositories.
@@ -15,7 +13,7 @@ The Cargo workspace contains:
 
 Reference the required package from this repository at a reviewed full commit in your application's Cargo dependencies. Historical Go module tags remain available. Product users install their application's published distribution directly.
 
-For development, install [mise](https://mise.jdx.dev/) and Docker, then run `mise run setup` and `mise run check`. The pinned Rust toolchain builds and tests the libraries and operator; Docker supplies owned disposable PostgreSQL recovery fixtures. `mise run test` runs unit and integration checks, `mise run build` builds the workspace, and `mise run clean` removes declared generated outputs. Go remains a contributor tool for the locked upstream Caddy dependency; Tools contains no owned Go entry point for it. CI builds that upstream command directly, retains its dependency lock, runs the upstream race tests, and scans linked symbols. SDK verification includes signed-session security cases, database-budget contracts, metadata ambiguity refusal and private bundle export checks.
+For development, install [mise](https://mise.jdx.dev/) and Podman, then run `mise run setup` and `mise run check`. The pinned Rust toolchain builds and tests the libraries and operator; native local Podman supplies owned disposable PostgreSQL recovery fixtures. `mise run test` runs unit and integration checks, `mise run build` builds the workspace, and `mise run clean` removes declared generated outputs. Go remains a contributor tool for the locked upstream Caddy dependency; Tools contains no owned Go entry point for it. CI builds that upstream command directly, retains its dependency lock, runs the upstream race tests, and scans linked symbols. SDK verification includes signed-session security cases, database-budget contracts, metadata ambiguity refusal and private bundle export checks.
 
 ## CI helpers
 
@@ -139,7 +137,7 @@ For a native project that explicitly depends on Tools, the shared bootstrap rend
 
 Cookbook consumers bind Cookbook independently. Their `COOKBOOK_ROOT` and `.artifacts/cookbook/<full-SHA>` identify recipe code; Cookbook's own reviewed immutable dependency supplies `TOOLS_ROOT`. The two origins are never aliases. A native helper consumer does not become a recipe consumer.
 
-The generic `docker-ci` action prepares its disposable Docker builder and existing compiler caches when invoked. The caller owns whether it needs Docker; this action reads no recipe manifest. Its native mirror, buildx, cache keys and resource bounds are retained.
+The generic `podman-ci` action prepares the native local Podman engine and compiler caches when invoked. Builds use operation-owned registry authentication and job-local image layers. The caller owns build declarations and resource limits. OCI archives retain exact manifest, configuration and layer identities for scanning and publication without a shared engine socket.
 
 The generic authenticated image archive implementation checks closed tags, config IDs, RootFS layers and complete archive bytes before deriving a no-op, load or scoped repair. Existing aliases, digests and containers stay protected. Its caller supplies the already-admitted complete image set and retains the single total deadline; no recipe or product policy is discovered.
 

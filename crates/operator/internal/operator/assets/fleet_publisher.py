@@ -1,4 +1,4 @@
-"""Root-only, single-use publication of authenticated classic Docker archives.
+"""Root-only, single-use publication of authenticated immutable OCI release packets.
 
 The delivery receipt and policy are protected operator state, never request
 fields. Product Actions must separately have Read package access. This program
@@ -8,15 +8,11 @@ import contextlib
 from datetime import datetime, timezone
 import hashlib
 import importlib.util
-import io
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
-import selectors
-import signal
 import stat
-import subprocess
 import sys
 import tarfile
 import tempfile
@@ -35,10 +31,41 @@ MAX_EXPANDED = 16 * 1024**3
 MAX_JSON = 65536
 LIFETIME = 900
 OWNER = 0
-DOCKER = ('/usr/bin/docker',)
-RUNTIME = Path('/run/fleet-publisher')
 SHA256 = re.compile(r'[a-f0-9]{64}\Z')
 IMAGE = re.compile(r'ghcr\.io/[a-z0-9][a-z0-9_.-]*/[a-z0-9][a-z0-9_.-]*\Z')
+
+
+def dependency(name):
+    """Load only an installed bundle member or this repository's canonical helper."""
+    source = Path(__file__).resolve()
+    path = source.with_name(name + '.py')
+    if not path.is_file():
+        # Native bundle tests execute the canonical source directly. Installed
+        # executors have every dependency beside this file and never fall back
+        # to a working checkout or an ambient Python import path.
+        if len(source.parents) < 6:
+            raise ValueError('publisher bundle dependency is missing')
+        repository = source.parents[5]
+        if source != repository / 'crates/operator/internal/operator/assets/fleet_publisher.py':
+            raise ValueError('publisher bundle dependency is missing')
+        path = repository / 'helpers' / (name + '.py')
+    spec = importlib.util.spec_from_file_location('_publisher_' + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+registry_api = dependency('oci_registry')
+_prior_registry = sys.modules.get('oci_registry')
+sys.modules['oci_registry'] = registry_api
+try:
+    packets = dependency('release_packet')
+finally:
+    if _prior_registry is None:
+        del sys.modules['oci_registry']
+    else:
+        sys.modules['oci_registry'] = _prior_registry
+oci = dependency('oci_archive')
 
 
 def protected_directory(path):
@@ -56,7 +83,7 @@ def protected_file(path, maximum):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, 'rb') as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != OWNER or info.st_mode & 0o077 or not 0 < info.st_size <= maximum:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != OWNER or info.st_mode & 0o077 or info.st_nlink != 1 or not 0 < info.st_size <= maximum:
             raise ValueError('publisher input must be private, regular and bounded')
         yield stream
 
@@ -132,17 +159,17 @@ def policy(path=POLICY):
         raise ValueError('unsupported publisher policy')
     for repository, contract in value['repositories'].items():
         if (not operator.REPOSITORY.fullmatch(repository)
-                or not isinstance(contract, dict) or set(contract) != {'workflow', 'images', 'username', 'credential'}
+                or not isinstance(contract, dict) or set(contract) != {'workflow', 'artifacts', 'username', 'credential'}
                 or not isinstance(contract['workflow'], dict)
-                or not isinstance(contract['images'], list) or not 1 <= len(contract['images']) <= 8
-                or len(set(contract['images'])) != len(contract['images'])
+                or not isinstance(contract['artifacts'], list) or not 1 <= len(contract['artifacts']) <= 8
+                or len(set(contract['artifacts'])) != len(contract['artifacts'])
                 or any(not IMAGE.fullmatch(image) or image.split('/')[1] != repository.split('/')[0].lower()
-                       for image in contract['images'])
+                       for image in contract['artifacts'])
                 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}', contract['username'])
                 or not isinstance(contract['credential'], str) or not contract['credential'].startswith('/')
                 or contract['workflow'].get('event') not in ('push', 'workflow_dispatch')
                 or not 1 <= len(contract['workflow'].get('jobs', [])) <= 8):
-            raise ValueError('publisher needs finite protected source, producer and image scopes')
+            raise ValueError('publisher needs finite protected source, producer and artifact scopes')
         # Reuse the operator's complete producer contract validation.
         operator_contract = {'version': 3, 'repositories': {repository: {**contract['workflow'], 'event': 'pull_request'}}, 'hosts': []}
         operator.validate_policy(operator_contract)
@@ -191,197 +218,132 @@ def current_main(repository, revision, run):
         raise ValueError('main advanced before publication')
 
 
-def image_archive(path, expected, revision, repository, deadline):
-    """Validate classic Docker save without extracting tar paths or executing code."""
-    with tarfile.open(path, mode='r:') as archive:
-        entries = {}
-        total = 0
-        for entry in archive:
-            name = PurePosixPath(entry.name)
-            if (name.is_absolute() or '..' in name.parts or str(name) != entry.name.rstrip('/')
-                    or entry.name in entries or not (entry.isfile() or entry.isdir())):
-                raise ValueError('image archive contains linked, repeated or unsafe entries')
-            total += entry.size
-            if len(entries) >= 10000 or total > MAX_EXPANDED or time.monotonic() >= deadline:
-                raise ValueError('image archive exceeds validation bounds')
-            entries[entry.name] = entry
-        def small(name):
-            entry = entries.get(name)
-            if entry is None or not entry.isfile() or not 0 < entry.size <= MAX_JSON:
-                raise ValueError('image metadata missing or oversized')
-            return archive.extractfile(entry).read(MAX_JSON + 1)
-        manifests = json.loads(small('manifest.json'))
-        if not isinstance(manifests, list) or not 1 <= len(manifests) <= 8:
-            raise ValueError('unsupported image manifest count')
-        observed = {}
-        used = {'manifest.json'}
-        for manifest in manifests:
-            if set(manifest) != {'Config', 'RepoTags', 'Layers'} or not isinstance(manifest['RepoTags'], list) or len(manifest['RepoTags']) != 1:
-                raise ValueError('images require one exact publication tag')
-            reference = manifest['RepoTags'][0]
-            used.add(manifest['Config'])
-            body = small(manifest['Config'])
-            configuration = json.loads(body)
-            config_digest = hashlib.sha256(body).hexdigest()
-            labels = configuration.get('config', {}).get('Labels', {})
-            if (reference in observed or expected.get(reference) != config_digest
-                    or configuration.get('os') != 'linux' or configuration.get('architecture') != 'amd64'
-                    or labels.get('org.opencontainers.image.revision') != revision
-                    or labels.get('org.opencontainers.image.source') != 'https://github.com/' + repository):
-                raise ValueError('image configuration, source or finite destination differs')
-            layers = manifest['Layers']
-            diff_ids = configuration.get('rootfs', {}).get('diff_ids', [])
-            if not isinstance(layers, list) or not 1 <= len(layers) <= 128 or len(layers) != len(diff_ids):
-                raise ValueError('unsupported image layer contract')
-            for layer, wanted in zip(layers, diff_ids):
-                used.add(layer)
-                entry = entries.get(layer)
-                if entry is None or not entry.isfile():
-                    raise ValueError('image layer missing')
-                with archive.extractfile(entry) as stream:
-                    if 'sha256:' + digest(stream, deadline, MAX_EXPANDED) != wanted:
-                        raise ValueError('image layer content differs from configuration')
-            observed[reference] = config_digest
-        if observed != expected:
-            raise ValueError('publication archive has an incomplete destination set')
-        if any(entry.isfile() and name not in used for name, entry in entries.items()):
-            raise ValueError('unreferenced image archive bytes refused')
-    return observed
+def remaining(deadline):
+    value = deadline - time.monotonic()
+    if value <= 0:
+        raise ValueError('publication deadline exceeded')
+    return value
 
 
 def prepare_artifact(stream, archive_sha, request, contract, grant, attempt, directory, deadline):
+    """Admit every exact packet byte before reading registry authority."""
     if digest(stream, deadline, MAX_ARCHIVE) != archive_sha:
         raise ValueError('prepared artifact differs from authenticated GitHub digest')
     stream.seek(0)
+    root = directory / 'packet'
+    root.mkdir(mode=0o700)
     with zipfile.ZipFile(stream) as archive:
         entries = archive.infolist()
-        if len(entries) != 2 or {entry.filename for entry in entries} != {'release.json', 'images.tar'}:
-            raise ValueError('publication artifact requires exactly release.json and images.tar')
-        if not 0 < archive.getinfo('release.json').file_size <= MAX_JSON or not 0 < archive.getinfo('images.tar').file_size <= MAX_ARCHIVE:
-            raise ValueError('publication artifact expanded size exceeds bound')
-        manifest = json.loads(archive.read('release.json'))
-        if (set(manifest) != {'version', 'repository', 'revision', 'tree', 'run_id', 'attempt', 'images'}
-                or manifest['version'] != 1 or manifest['repository'] != request['repository']
-                or manifest['revision'] != request['revision'] or manifest['tree'] != grant['tree']
-                or manifest['run_id'] != request['run_id'] or manifest['attempt'] != attempt
-                or not isinstance(manifest['images'], dict) or not manifest['images']
-                or not set(manifest['images']) <= {image + ':' + request['revision'] for image in contract['images']}
-                or any(not isinstance(value, str) or not SHA256.fullmatch(value) for value in manifest['images'].values())):
-            raise ValueError('publication manifest differs from final tested source or allowed images')
-        image_path = directory/'images.tar'
-        with archive.open('images.tar') as source, image_path.open('xb') as target:
-            total = 0
-            while chunk := source.read(65536):
-                total += len(chunk)
-                if total > MAX_ARCHIVE or time.monotonic() >= deadline:
-                    raise ValueError('image extraction exceeds its bound')
-                target.write(chunk)
-        image_path.chmod(0o600)
-        image_archive(image_path, manifest['images'], request['revision'], request['repository'], deadline)
-    return image_path, manifest['images']
+        names, expanded = set(), 0
+        for entry in entries:
+            remaining(deadline)
+            name = entry.filename
+            if (name in names or entry.is_dir() or entry.flag_bits & 1
+                    or entry.file_size < 0 or entry.file_size > MAX_ARCHIVE
+                    or stat.S_IFMT(entry.external_attr >> 16) not in {0, stat.S_IFREG}):
+                raise ValueError('publication ZIP contains repeated, linked or unsupported members')
+            names.add(name); expanded += entry.file_size
+            if len(names) > packets.MAX_FILES + 2 or expanded > MAX_EXPANDED:
+                raise ValueError('publication ZIP exceeds its member or expanded bound')
+            if name not in {'publication-source.json', 'inventory.json'}:
+                packets.member_type(name)
+        if not {'publication-source.json','inventory.json','release.json'} <= names:
+            raise ValueError('publication ZIP is missing its closed source and packet metadata')
+        if not 0 < archive.getinfo('publication-source.json').file_size <= MAX_JSON:
+            raise ValueError('publication source metadata exceeds its bound')
+        source = json.loads(archive.read('publication-source.json'), object_pairs_hook=registry_api.unique_object)
+        expected = {'version':1,'repository':request['repository'],'revision':request['revision'],
+                    'tree':grant['tree'],'run_id':request['run_id'],'attempt':attempt}
+        if source != expected or type(source.get('version')) is not int:
+            raise ValueError('publication source differs from the authenticated final producer')
+        for entry in entries:
+            if entry.filename == 'publication-source.json': continue
+            output = root / entry.filename
+            output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            with archive.open(entry) as incoming, output.open('xb') as target:
+                copied = 0
+                while body := incoming.read(1 << 20):
+                    remaining(deadline); copied += len(body)
+                    if copied > entry.file_size:
+                        raise ValueError('publication ZIP member exceeded its declared size')
+                    target.write(body)
+                if copied != entry.file_size:
+                    raise ValueError('publication ZIP member is incomplete')
+            output.chmod(0o600)
+    packet = packets.Packet(root, timeout=max(1, min(600, int(remaining(deadline)))))
+    descriptor = packet.descriptor
+    if descriptor['source']['repository'] != request['repository'] or descriptor['source']['revision'] != request['revision']:
+        raise ValueError('release descriptor differs from authenticated publication source')
+    for name, artifact in descriptor['artifacts'].items():
+        registry, repository, identity = registry_api.reference(artifact['reference'])
+        if registry != 'ghcr.io' or registry + '/' + repository not in contract['artifacts']:
+            raise ValueError('publication destination differs from protected finite policy')
+        if artifact['kind'] == 'image':
+            path = root / ('images/' + name + '.oci.tar')
+            with oci.OCIArchive(path, artifact['reference'], artifact['config_digest'], timeout=min(600, remaining(deadline))) as image:
+                metadata = image.metadata
+                labels = metadata['config'].get('config', {}).get('Labels', {})
+                if (metadata['manifest_digest'] != identity or metadata['platform'] != artifact['platform']
+                        or labels.get('org.opencontainers.image.revision') != request['revision']
+                        or labels.get('org.opencontainers.image.source') != 'https://github.com/' + request['repository']):
+                    raise ValueError('OCI image differs from its accepted source, platform or manifest')
+    packet.unchanged()
+    return packet
 
 
-def docker(arguments, configuration, deadline, body=None):
-    executable = Path(DOCKER[0])
-    info = executable.stat()
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-        raise ValueError('publisher executable is not protected')
-    remaining = min(300, deadline-time.monotonic())
-    if remaining <= 0:
-        raise ValueError('publication deadline exceeded')
-    process = subprocess.Popen([*DOCKER, '--config', str(configuration), *arguments],
-                               stdin=subprocess.PIPE if body is not None else subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True,
-                               cwd='/', env={'PATH': '/usr/bin:/bin', 'HOME': str(configuration), 'LC_ALL': 'C'})
-    try:
-        if body is not None:
-            # Only the <=4 KiB credential uses stdin. Artifacts use a private file.
-            process.stdin.write(body)
-            process.stdin.close()
-            process.stdin = None
-        output = bytearray()
-        end = time.monotonic() + remaining
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
-            while selector.get_map():
-                left = end-time.monotonic()
-                if left <= 0:
-                    raise ValueError('registry command exceeded its deadline')
-                for key, _ in selector.select(left):
-                    chunk = os.read(key.fd, min(65536, MAX_JSON+1-len(output)))
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    output.extend(chunk)
-                    if len(output) > MAX_JSON:
-                        raise ValueError('registry output exceeds its bound')
-        process.wait(timeout=max(.001, end-time.monotonic()))
-        if process.returncode:
-            raise ValueError('registry command refused; inspect publication state')
-        return bytes(output)
-    finally:
-        # Kill descendants even when the immediate client exited first.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
-        process.stdout.close()
-        if process.stdin is not None:
-            process.stdin.close()
-
-
-def registry_login(contract, directory, deadline, transport):
+def registry_login(contract):
+    """Read protected authority only after source, producer and all bytes pass."""
     with protected_file(Path(contract['credential']), 4096) as stream:
         credential = stream.read(4097).strip()
-    if not credential or b'\n' in credential or b'\r' in credential or len(credential) > 4096:
+    if not credential or any(value in credential for value in [b'\n',b'\r',b'\0']) or len(credential) > 4096:
         raise ValueError('registry credential has an unsupported shape')
-    transport(['login', 'ghcr.io', '--username', contract['username'], '--password-stdin'], directory, deadline, credential)
+    try:
+        return contract['username'], credential.decode('utf-8')
+    except UnicodeDecodeError:
+        raise ValueError('registry credential has an unsupported shape') from None
 
 
-@contextlib.contextmanager
-def registry_configuration():
-    """Refuse disk-backed credential storage, including on process death."""
-    protected_directory(RUNTIME.parent)
-    if not RUNTIME.exists():
-        RUNTIME.mkdir(mode=0o700)
-    protected_directory(RUNTIME)
-    if RUNTIME.stat().st_mode & 0o077:
-        raise ValueError('registry runtime directory is not private')
-    mounts = []
-    for line in Path('/proc/self/mountinfo').read_text().splitlines():
-        before, after = line.split(' - ', 1)
-        mount = before.split()[4]
-        # Only canonical unescaped ancestors are valid for this fixed path.
-        if '\\' not in mount and RUNTIME.is_relative_to(Path(mount)):
-            mounts.append((len(mount), after.split()[0]))
-    if not mounts or max(mounts)[1] != 'tmpfs':
-        raise ValueError('registry credentials require protected volatile storage')
-    with tempfile.TemporaryDirectory(prefix='registry-', dir=RUNTIME) as directory:
-        yield Path(directory)
+def registry(reference, username, password, deadline):
+    host, repository, _ = registry_api.reference(reference)
+    return registry_api.Registry(host, repository, username=username, password=password,
+                                 timeout=max(1, min(LIFETIME, int(remaining(deadline)))))
 
 
-def execute(request, protected_policy, run=operator.command, transport=docker):
+def observe(client, artifact):
+    """Reconcile by the already accepted digest; never publish or resolve a tag."""
+    _, _, identity = registry_api.reference(artifact['reference'])
+    status, headers, raw = client._request('GET', client._prefix + '/manifests/' + identity,
+                                         {'Accept': registry_api.MANIFEST_TYPE})
+    if status != 200 or registry_api.digest(raw) != identity or headers.get('docker-content-digest', identity) != identity:
+        raise ValueError('registry identity remains ambiguous; no upload replayed')
+    value = json.loads(raw, object_pairs_hook=registry_api.unique_object)
+    if artifact['kind'] == 'image':
+        if value.get('config', {}).get('digest') != artifact['config_digest']:
+            raise ValueError('registry image configuration differs from the accepted release')
+    elif raw != registry_api.artifact_manifest(artifact['digest'], artifact['size_bytes']):
+        raise ValueError('registry static artifact differs from the accepted release')
+    return {'manifest_digest':identity, 'config_digest':artifact.get('config_digest'),
+            'payload_digest':artifact['digest'] if artifact['kind'] == 'archive' else None}
+
+
+def execute(request, protected_policy, run=operator.command, transport=registry):
     if not isinstance(request, dict):
         raise ValueError('publisher request must be an object')
     if request.get('operation') in ('inspect', 'reconcile'):
         return inspect(request, protected_policy, transport)
-    operator.fields(request, {'operation', 'repository', 'revision', 'run_id', 'artifact_id'})
+    operator.fields(request, {'operation','repository','revision','run_id','artifact_id'})
     repository, revision = request['repository'], request['revision']
-    if (request['operation'] != 'publish' or repository not in protected_policy['repositories'] or not isinstance(revision, str) or not operator.SHA.fullmatch(revision)
-            or any(type(request[field]) is not int or request[field] <= 0 for field in ('run_id', 'artifact_id'))):
+    if (request['operation'] != 'publish' or repository not in protected_policy['repositories']
+            or not isinstance(revision,str) or not operator.SHA.fullmatch(revision)
+            or any(type(request[field]) is not int or request[field] <= 0 for field in ('run_id','artifact_id'))):
         raise ValueError('publication request is outside protected scope')
     contract = protected_policy['repositories'][repository]
     key = hashlib.sha256(repository.encode()).hexdigest()
     deadline = time.monotonic() + LIFETIME
     original_run = run
     def bounded_run(arguments):
-        if time.monotonic() >= deadline:
-            raise ValueError('publication evidence exceeded its deadline')
-        value = original_run(arguments)
-        if time.monotonic() >= deadline:
-            raise ValueError('publication evidence exceeded its deadline')
-        return value
+        remaining(deadline); result = original_run(arguments); remaining(deadline)
+        return result
     run = bounded_run
     with operator.repository_lock(repository):
         protected_directory(STATE)
@@ -389,93 +351,86 @@ def execute(request, protected_policy, run=operator.command, transport=docker):
         journal = STATE/(key+'-'+revision+'.json')
         if journal.exists() or journal.is_symlink():
             raise ValueError('publication already claimed; inspect and reconcile without retry')
-        attempt, archive_sha = authenticate(request, contract, grant, run)
-        with tempfile.TemporaryDirectory(prefix='.publication-', dir=STATE) as directory:
-            directory = Path(directory)
-            with protected_file(STATE/'artifacts'/(str(request['artifact_id'])+'.zip'), MAX_ARCHIVE) as stream:
-                image_path, images = prepare_artifact(stream, archive_sha, request, contract, grant, attempt, directory, deadline)
-            current_main(repository, revision, run)
-            record = {'version': 1, **request, 'attempt': attempt, 'archive_sha256': archive_sha,
-                      'tree': grant['tree'], 'images': images, 'status': 'claimed', 'published': {}}
-            atomic(journal, record)
+        attempt, archive_sha = authenticate(request,contract,grant,run)
+        with tempfile.TemporaryDirectory(prefix='.publication-',dir=STATE) as directory:
+            with protected_file(STATE/'artifacts'/(str(request['artifact_id'])+'.zip'),MAX_ARCHIVE) as stream:
+                packet = prepare_artifact(stream,archive_sha,request,contract,grant,attempt,Path(directory),deadline)
+            current_main(repository,revision,run)
+            artifacts = packet.descriptor['artifacts']
+            record = {'version':2,**request,'attempt':attempt,'archive_sha256':archive_sha,
+                      'tree':grant['tree'],'release_digest':packet.release_digest,'artifacts':artifacts,
+                      'status':'claimed','published':{}}
+            atomic(journal,record)
             try:
-                with registry_configuration() as configuration_directory:
-                    transport(['load', '--input', str(image_path)], configuration_directory, deadline)
-                    current_main(repository, revision, run)
-                    # No secret access until exact source, producer and all bytes pass.
-                    registry_login(contract, configuration_directory, deadline, transport)
-                    for reference, configuration in images.items():
-                        current_main(repository, revision, run)
-                        if datetime.fromisoformat(grant['expires_at']) <= datetime.now(timezone.utc):
-                            raise ValueError('delivery expired before upload')
-                        record['status'] = 'uploading'
-                        record['uploading'] = reference
-                        atomic(journal, record)
-                        pushed = transport(['push', reference], configuration_directory, deadline)
-                        identities = re.findall(rb'digest: (sha256:[a-f0-9]{64}) size: [1-9][0-9]*', pushed)
-                        if len(identities) != 1:
-                            raise ValueError('push result has no unique manifest identity')
-                        manifest_digest = identities[0].decode()
-                        remote = json.loads(transport(['manifest', 'inspect', reference.split(':')[0]+'@'+manifest_digest], configuration_directory, deadline))
-                        if remote.get('config', {}).get('digest') != 'sha256:' + configuration:
-                            raise ValueError('registry configuration differs; reconcile without retry')
-                        record['published'][reference] = {'config_digest': 'sha256:' + configuration, 'manifest_digest': manifest_digest}
-                        atomic(journal, record)
-                record['status'] = 'completed'
-                record.pop('uploading', None)
-                atomic(journal, record)
+                username,password = registry_login(contract)
+                for name, artifact in artifacts.items():
+                    current_main(repository,revision,run)
+                    if datetime.fromisoformat(grant['expires_at']) <= datetime.now(timezone.utc):
+                        raise ValueError('delivery expired before upload')
+                    packet.unchanged()
+                    reference = artifact['reference']
+                    record['status']='uploading'; record['uploading']=reference; atomic(journal,record)
+                    client = transport(reference,username,password,deadline)
+                    if artifact['kind'] == 'image':
+                        with oci.OCIArchive(packet.root/('images/'+name+'.oci.tar'),reference,artifact['config_digest'],
+                                            timeout=min(600,remaining(deadline))) as image:
+                            for blob in image.metadata['blobs']:
+                                with image.open_blob(blob['digest']) as reader:
+                                    client.upload_blob(blob['digest'],blob['size'],reader)
+                            client.put_manifest(artifact['digest'],image.manifest_bytes)
+                            image.unchanged()
+                    else:
+                        with packets.regular(packet.root/('static/'+name+'.tar.gz')) as (reader,_):
+                            client.publish_static(artifact,reader)
+                    packet.unchanged()
+                    record['published'][reference]=observe(client,artifact); atomic(journal,record)
+                record['status']='completed'; record.pop('uploading',None); atomic(journal,record)
                 return record
             except BaseException:
-                record['status'] = 'ambiguous'
-                atomic(journal, record)
+                record['status']='ambiguous'; atomic(journal,record)
                 raise
 
 
-def inspect(request, protected_policy, transport=docker):
-    operator.fields(request, {'operation', 'repository', 'revision'})
+def inspect(request, protected_policy, transport=registry):
+    operator.fields(request, {'operation','repository','revision'})
     repository, revision = request['repository'], request['revision']
-    if repository not in protected_policy['repositories'] or not isinstance(revision, str) or not operator.SHA.fullmatch(revision):
+    if repository not in protected_policy['repositories'] or not isinstance(revision,str) or not operator.SHA.fullmatch(revision):
         raise ValueError('publication inspection is outside protected scope')
     key = hashlib.sha256(repository.encode()).hexdigest()
     with operator.repository_lock(repository):
         journal = STATE/(key+'-'+revision+'.json')
         record = private_json(journal)
         if request['operation'] == 'inspect':
-            if record['status'] not in ('completed', 'reconciled'):
-                return {**record, 'status': 'ambiguous', 'persisted_status': record['status']}
+            if record['status'] not in ('completed','reconciled'):
+                return {**record,'status':'ambiguous','persisted_status':record['status']}
             return record
         if record['repository'] != repository or record['revision'] != revision or record['status'] == 'completed':
             raise ValueError('only an incomplete exact publication can be reconciled')
         contract = protected_policy['repositories'][repository]
-        if not set(record['images']) <= {image+':'+revision for image in contract['images']}:
-            raise ValueError('retained destinations differ from protected policy')
+        for artifact in record['artifacts'].values():
+            host, repo, _ = registry_api.reference(artifact['reference'])
+            if host != 'ghcr.io' or host+'/'+repo not in contract['artifacts']:
+                raise ValueError('retained destinations differ from protected policy')
         deadline = time.monotonic()+LIFETIME
+        username,password = registry_login(contract)
         found = {}
-        with registry_configuration() as directory:
-            registry_login(contract, directory, deadline, transport)
-            for reference, configuration in record['images'].items():
-                remote = json.loads(transport(['manifest', 'inspect', '--verbose', reference], directory, deadline))
-                if (not isinstance(remote, dict) or remote.get('SchemaV2Manifest', {}).get('config', {}).get('digest') != 'sha256:'+configuration
-                        or not re.fullmatch(r'sha256:[a-f0-9]{64}', remote.get('Descriptor', {}).get('digest', ''))):
-                    raise ValueError('registry identity remains ambiguous; no upload replayed')
-                found[reference] = {'config_digest': 'sha256:'+configuration, 'manifest_digest': remote['Descriptor']['digest']}
-        record['published'] = found
-        record['status'] = 'reconciled'
-        record.pop('uploading', None)
-        atomic(journal, record)
+        for artifact in record['artifacts'].values():
+            reference=artifact['reference']
+            found[reference]=observe(transport(reference,username,password,deadline),artifact)
+        record['published']=found; record['status']='reconciled'; record.pop('uploading',None); atomic(journal,record)
         return record
 
 
 def main():
     if os.geteuid() != 0:
         raise ValueError('publication requires the trusted root operator')
-    request = json.loads(sys.stdin.buffer.read(MAX_JSON + 1))
-    print(json.dumps(execute(request, policy()), sort_keys=True))
+    request = json.loads(sys.stdin.buffer.read(MAX_JSON+1), object_pairs_hook=registry_api.unique_object)
+    print(json.dumps(execute(request,policy()),sort_keys=True))
 
 
 if __name__ == '__main__':
     try:
         main()
-    except (ValueError, OSError, KeyError, TypeError, zipfile.BadZipFile, tarfile.TarError, json.JSONDecodeError):
-        print('publisher refused; inspect protected publication state', file=sys.stderr)
+    except (ValueError,OSError,KeyError,TypeError,zipfile.BadZipFile,tarfile.TarError,json.JSONDecodeError):
+        print('publisher refused; inspect protected publication state',file=sys.stderr)
         raise SystemExit(1)

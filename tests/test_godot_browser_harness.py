@@ -21,7 +21,7 @@ class BrowserFixtureLifetime(unittest.TestCase):
     def early_failure(self, configured):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); commands = root / 'bin'; commands.mkdir()
-            self.command(commands, 'docker', 'raise SystemExit(42)\n')
+            self.command(commands, 'podman', 'raise SystemExit(42)\n')
             environment = {**os.environ, 'PATH': str(commands) + os.pathsep + os.environ['PATH'],
                 'GATE_IMAGE': 'fixture:test', 'GODOT_BROWSER_REPORTS': 'reports', 'BROWSER_TEST_MODE': 'canonical'}
             for key in ['RUNNER_TEMP', 'TMPDIR', 'GATE_CACHE_IMAGE', 'BROWSER_RUNTIME_IMAGE', 'BROWSER_ROUTE_CYCLES', 'BROWSER_SOAK_SECONDS']:
@@ -49,9 +49,11 @@ class BrowserFixtureLifetime(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); commands = root / 'bin'; commands.mkdir()
             temporary = root / 'temporary files'; temporary.mkdir()
-            self.command(commands, 'docker', '''import json,os,sys
+            self.command(commands, 'podman', '''import json,os,sys
 from pathlib import Path
-with Path(os.environ['CALLS']).open('a') as stream:stream.write(json.dumps(['docker',*sys.argv[1:]])+'\\n')
+assert sys.argv[1]=='--remote=false'
+with Path(os.environ['CALLS']).open('a') as stream:stream.write(json.dumps(['podman',*sys.argv[2:]])+'\\n')
+sys.argv.pop(1)
 if sys.argv[1]=='run':print('owned-fixture-gate')
 elif sys.argv[1]=='port':print('127.0.0.1:1')
 elif sys.argv[1]=='logs':print('owned fixture log')
@@ -92,7 +94,7 @@ else:
             stopped = [row[1] for row in calls if row[0]=='proxy-stopped']
             self.assertEqual(len(started), 1)
             self.assertEqual(stopped, started)
-            self.assertEqual([row for row in calls if row[:2]==['docker','rm']], [['docker','rm','--force','owned-fixture-gate']])
+            self.assertEqual([row for row in calls if row[:2]==['podman','rm']], [['podman','rm','--force','owned-fixture-gate']])
             self.assertIn(['journey','journey.mjs'], calls)
             self.assertEqual(list(temporary.iterdir()), [])
             self.assertEqual((root / 'reports with spaces/gate.log').read_text(), 'owned fixture log\n')

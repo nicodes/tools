@@ -109,12 +109,17 @@ def restore(archive, target, expected=None, backend='pocketbase'):
             'files': files, 'databases': databases}
 
 
-def docker(*args):
-    return subprocess.check_output(['docker', *args], text=True, timeout=30).strip()
+_runtime_spec = importlib.util.spec_from_file_location('_tools_snapshot_runtime', Path(__file__).with_name('container_runtime.py'))
+runtime = importlib.util.module_from_spec(_runtime_spec)
+_runtime_spec.loader.exec_module(runtime)
+
+
+def podman(*args):
+    return runtime.output(list(args), timeout=30).strip()
 
 
 def inspect(container):
-    result = json.loads(docker('inspect', container))
+    result = json.loads(podman('inspect', container))
     if len(result) != 1 or not re.fullmatch(r'[a-f0-9]{64}', result[0]['Id']):
         raise ValueError('database writer identity is ambiguous')
     return result[0]
@@ -123,7 +128,7 @@ def inspect(container):
 def timestamp_ns(value):
     match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z', value)
     if not match:
-        raise ValueError('Docker health timestamp is not recognized')
+        raise ValueError('Podman health timestamp is not recognized')
     seconds = int(datetime.strptime(match[1], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc).timestamp())
     return seconds * 10**9 + int((match[2] or '').ljust(9, '0'))
 
@@ -157,7 +162,7 @@ def direct_health(container, port, timeout=90):
         if len(addresses) != 1 or not ipaddress.ip_address(addresses[0]).is_private:
             raise ValueError('writer must have one private container address for a direct health probe')
         try:
-            # Each request starts after unpause. Do not use a cached Docker status.
+            # Each request starts after unpause. Do not use a cached Podman status.
             request = urllib.request.Request(f'http://{addresses[0]}:{port}/api/health')
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open(request, timeout=3) as response:
@@ -203,7 +208,7 @@ def snapshot(container, mount, destination, exclude_auxiliary=False, probe_port=
         try:
             # A pause error is NEVER interpreted as evidence that a writer stopped.
             paused = True
-            docker('pause', writer)
+            podman('pause', writer)
             if not inspect(writer)['State']['Paused']:
                 raise ValueError('database writer did not pause')
             with tarfile.open(archive, 'w:gz', dereference=False) as output:
@@ -226,7 +231,7 @@ def snapshot(container, mount, destination, exclude_auxiliary=False, probe_port=
                         output.addfile(metadata)
         finally:
             if paused:
-                docker('unpause', writer)
+                podman('unpause', writer)
                 boundary = time.time_ns()
                 if probe_port is None:
                     resumed_health(writer, boundary)

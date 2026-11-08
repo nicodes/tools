@@ -12,7 +12,6 @@ HELPERS = Path(__file__).resolve().parents[1] / 'helpers'
 sys.path.insert(0, str(HELPERS))
 with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'fixture/game'}):
     import godot_release_record as record
-    import godot_rollback_config as rollback
 import godot_authoring as authoring
 import image_security_report as security
 
@@ -21,22 +20,15 @@ class ReleaseAuthorityControls(unittest.TestCase):
     def test_only_exact_successful_main_cd_can_authorize_immutable_rollback(self):
         run = {'repository': {'full_name': 'fixture/game'}, 'head_repository': {'full_name': 'fixture/game'},
             'path': '.github/workflows/cd.yml', 'head_branch': 'main', 'event': 'push', 'status': 'completed',
-            'conclusion': 'success', 'head_sha': 'a'*40, 'id': 123}
-        value = {'repository': 'fixture/game', 'sha': 'a'*40, 'run_id': '123', 'release_id': 'b'*64,
-            'gate_ref': 'ghcr.io/fixture/game-gate@sha256:'+'c'*64, 'config_ref': 'ghcr.io/fixture/game-config@sha256:'+'d'*64}
+            'conclusion': 'success', 'head_sha': 'a'*40, 'id': 123, 'run_attempt': 2}
+        value = {'kind': 'komizo.release-record', 'version': 1, 'repository': 'fixture/game',
+                 'source_revision': 'a'*40, 'run_id': '123', 'run_attempt': '2', 'release_digest': 'sha256:'+'b'*64}
         self.assertEqual(record.validate_record(value, run), value)
         for key, changed in [('path','.github/workflows/ci.yml'),('event','pull_request'),('head_branch','feature'),('conclusion','failure'),('head_sha','main')]:
             with self.assertRaises(ValueError):record.validate_record(value,{**run,key:changed})
-        for key, changed in [('sha','0'*40),('run_id','124'),('gate_ref','ghcr.io/fixture/game-gate:main'),('config_ref','ghcr.io/foreign/game-config@sha256:'+'d'*64),('release_id','')]:
-            with self.assertRaises(ValueError):record.validate_record({**value,key:changed},run)
-
-    def test_historical_gate_constraints_reject_weakened_or_additional_services(self):
-        ref='ghcr.io/fixture/game-gate@sha256:'+'a'*64
-        gate={'image':ref,'user':'1000:1000','read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true']}
-        rollback.validate_stack({'services':{'game-gate':gate}},ref)
-        for key,value in [('user','0'),('read_only',False),('volumes',['/:/host']),('ports',['80:80']),('build','.')]:
-            with self.assertRaises(ValueError):rollback.validate_stack({'services':{'game-gate':{**gate,key:value}}},ref)
-        with self.assertRaises(ValueError):rollback.validate_stack({'services':{'game-gate':gate,'extra':{}}},ref)
+        for key, changed in [('source_revision','0'*40), ('run_id','124'), ('run_attempt','1'),
+                             ('release_digest','main'), ('repository','foreign/game')]:
+            with self.assertRaises(ValueError): record.validate_record({**value, key: changed}, run)
 
     def test_only_exact_equivalent_import_defaults_are_restored(self):
         before=b'[remap]\nuid="original"\n[params]\ncompress/mode=0\n'

@@ -25,15 +25,23 @@ def helper(name):
     return module
 
 
-def docker(*args, input=None, timeout=60):
+runtime = helper('container_runtime')
+
+
+def podman(*args, input=None, timeout=60):
     try:
-        result = subprocess.run(['docker', *args], input=input, text=True, capture_output=True, timeout=timeout)
+        result = runtime.run(list(args), input=input, text=True, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        raise RuntimeError(f'Docker {args[0]} timed out during the isolated restore drill') from None
+        raise RuntimeError(f'Podman {args[0]} timed out during the isolated restore drill') from None
     if result.returncode:
         # Arguments may include disposable clone credentials. Never print them,
         # application logs, or restored database contents into a workflow log.
-        raise RuntimeError(f'Docker {args[0]} failed during the isolated restore drill')
+        raise RuntimeError(f'Podman {args[0]} failed during the isolated restore drill')
+    if args[:2] == ('image', 'inspect'):
+        values = json.loads(result.stdout)
+        for value in values:
+            value['Id'] = runtime.config_digest(value.get('Id'))
+        return json.dumps(values)
     return result.stdout.strip()
 
 
@@ -75,7 +83,7 @@ def serving_credentials(config,dsn):
     if transport=='file':
         return {variable:config['dsn_file']},['--mount',f'type=bind,src={dsn},dst={config["dsn_file"]},readonly']
     # This is the disposable clone credential, written only to the private
-    # env-file. It never appears in Docker argv, diagnostic errors or reports.
+    # env-file. It never appears in Podman argv, diagnostic errors or reports.
     dsn=Path(dsn)
     if dsn.is_symlink() or not dsn.is_file() or dsn.stat().st_size>8192 or dsn.stat().st_mode&0o077:
         raise ValueError('restore DSN must be a bounded private disposable credential')
@@ -85,7 +93,7 @@ def serving_credentials(config,dsn):
     return {variable:value},[]
 
 
-def probe_endpoint(docker_run, watched, url, timeout=175):
+def probe_endpoint(podman_run, watched, url, timeout=175):
     """Poll `url` from inside the watched container's network namespace.
 
     The namespace is the isolated one the store was started in, so nothing
@@ -93,10 +101,10 @@ def probe_endpoint(docker_run, watched, url, timeout=175):
     """
     deadline = time.monotonic()+timeout
     while time.monotonic() < deadline:
-        if not json.loads(docker('inspect', watched))[0]['State']['Running']:
+        if not json.loads(podman('inspect', watched))[0]['State']['Running']:
             raise RuntimeError('restored container exited before becoming healthy')
         try:
-            body = docker_run(url)
+            body = podman_run(url)
             if time.monotonic() >= deadline:
                 raise TimeoutError('restore health response arrived after its deadline')
             return body
@@ -174,8 +182,8 @@ def postgres_drill(project, export, key, pull=False, *, config):
             if pull:
                 # Authenticate the encrypted project/revision before pulling.
                 # Registry credentials stay on the host, outside every clone.
-                docker('pull', '--quiet', image, timeout=180)
-            images[component] = json.loads(docker('image', 'inspect', image))[0]['Id']
+                podman('pull', '--quiet', image, timeout=180)
+            images[component] = json.loads(podman('image', 'inspect', image))[0]['Id']
             # A tag is mutable; the snapshot named a digest. Booting whatever
             # currently answers to the tag would make the drill prove nothing
             # about the release the data came from.
@@ -186,7 +194,7 @@ def postgres_drill(project, export, key, pull=False, *, config):
             raise ValueError('authenticated snapshot is missing an application or frontend image')
         uid = os.getuid() if os.getuid() else 65534
         prefix = project+'-restore-'+secrets.token_hex(8)
-        common = ['--read-only', '--user', f'{uid}:{uid}', '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
+        common = ['--read-only', *runtime.bind_mount_user_namespace(), '--user', f'{uid}:{uid}', '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
                   '--cpus=1', '--pids-limit=128', '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m']
         try:
             with recovery.restored_database(payload, project, revision, pull=pull) as restored:
@@ -198,11 +206,11 @@ def postgres_drill(project, export, key, pull=False, *, config):
                     name = prefix+'-probe'
                     containers.append(name)
                     try:
-                        return docker('run', '--name', name, *netns, *common, '--memory=64m',
+                        return podman('run', '--pull=never', '--name', name, *netns, *common, '--memory=64m',
                                       '--entrypoint', '/usr/bin/wget', images['gate'],
                                       '-qO-', '-T', '3', url, timeout=15)
                     finally:
-                        docker('rm', '-f', '-v', name)
+                        podman('rm', '-f', '-v', name)
                         containers.remove(name)
 
                 environment = root/'clone.env'
@@ -213,15 +221,15 @@ def postgres_drill(project, export, key, pull=False, *, config):
                 api = prefix+'-api'
                 containers.append(api)
                 blobs = restored_blob_mounts(payload, config, uid)
-                docker('run', '-d', '--name', api, *netns, *common, '--memory=192m', *blobs,
+                podman('run', '--pull=never', '-d', '--name', api, *netns, *common, '--memory=192m', *blobs,
                        *mounts,
                        '--env-file', str(environment), images[api_component])
                 probe_endpoint(wget, api, f'http://127.0.0.1:{config["api_port"]}{config["health_path"]}', timeout=120)
-                if not json.loads(docker('inspect', api))[0]['State']['Running']:
+                if not json.loads(podman('inspect', api))[0]['State']['Running']:
                     raise RuntimeError('restored API did not remain running')
                 gate = prefix+'-gate'
                 containers.append(gate)
-                docker('run', '-d', '--name', gate, *netns, *common, '--memory=96m',
+                podman('run', '--pull=never', '-d', '--name', gate, *netns, *common, '--memory=96m',
                        '--entrypoint', '/usr/bin/caddy', images['gate'],
                        'file-server', '--root', config['root'], '--listen', '127.0.0.1:8088')
                 html = probe_endpoint(wget, gate, 'http://127.0.0.1:8088/', timeout=45)
@@ -238,7 +246,7 @@ def postgres_drill(project, export, key, pull=False, *, config):
             failed = []
             for name in reversed(containers):
                 try:
-                    docker('rm', '-f', '-v', name)
+                    podman('rm', '-f', '-v', name)
                 except RuntimeError:
                     failed.append(name)
             if failed:
@@ -280,8 +288,8 @@ def drill(project, export, key, pull=False, *, config):
             if pull:
                 # Authenticate the encrypted project/revision before pulling.
                 # Registry credentials stay on the host, outside every clone.
-                docker('pull', '--quiet', image, timeout=180)
-            images[component] = json.loads(docker('image', 'inspect', image))[0]['Id']
+                podman('pull', '--quiet', image, timeout=180)
+            images[component] = json.loads(podman('image', 'inspect', image))[0]['Id']
             if component == config['db'] and images[component] != evidence['image_id']:
                 raise ValueError('restored database image differs from authenticated snapshot metadata')
         # Root-host installations give the clone to nobody. Local verification
@@ -301,7 +309,7 @@ def drill(project, export, key, pull=False, *, config):
         environment.chmod(0o600)
         settings_flags = config.get('settings_flags', [])
         prefix = project+'-restore-'+secrets.token_hex(8)
-        common = ['--read-only', '--user', f'{uid}:{uid}', '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
+        common = ['--read-only', *runtime.bind_mount_user_namespace(), '--user', f'{uid}:{uid}', '--cap-drop=ALL', '--security-opt=no-new-privileges:true',
                   '--cpus=1', '--pids-limit=128', '--tmpfs', '/tmp:rw,noexec,nosuid,size=32m']
         private_env = ['--env-file', str(environment)]
         mount = ['--mount', f'type=bind,src={restored},dst={data_path}']
@@ -309,28 +317,28 @@ def drill(project, export, key, pull=False, *, config):
             # This affects only the decrypted disposable clone.
             bootstrap = prefix+'-bootstrap'
             containers.append(bootstrap)
-            docker('run', '--name', bootstrap, '--network=none', *common, '--memory=192m', *private_env, *mount,
+            podman('run', '--pull=never', '--name', bootstrap, '--network=none', *common, '--memory=192m', *private_env, *mount,
                    '--entrypoint', config['binary'], images[config['db']], 'superuser', 'upsert',
                    'restore@verification.invalid', password, f'--dir={data_path}', *settings_flags, timeout=180)
             db = prefix+'-db'
             containers.append(db)
             command = ['serve', f'--http=127.0.0.1:{config["port"]}', f'--dir={data_path}', *settings_flags]
             command += config['serve_flags']
-            docker('run', '-d', '--name', db, '--network=none', *common, '--memory=192m', *private_env, *mount,
+            podman('run', '--pull=never', '-d', '--name', db, '--network=none', *common, '--memory=192m', *private_env, *mount,
                    '--entrypoint', config['binary'], images[config['db']], *command)
             # The gate image supplies wget for the distroless service too.
             # Its helper processes share only this isolated network namespace.
             def probe(url, timeout=175):
                 deadline = time.monotonic()+timeout
                 while time.monotonic() < deadline:
-                    state = json.loads(docker('inspect', db))[0]['State']
+                    state = json.loads(podman('inspect', db))[0]['State']
                     if not state['Running']:
                         raise RuntimeError('restored database exited before becoming healthy')
                     try:
                         name = prefix+'-probe'
                         if name not in containers:
                             containers.append(name)
-                        body = docker('run', '--name', name, '--network', f'container:{db}', *common, '--memory=64m',
+                        body = podman('run', '--pull=never', '--name', name, '--network', f'container:{db}', *common, '--memory=64m',
                                       '--entrypoint', '/usr/bin/wget', images['gate'], '-qO-', '-T', '3', url, timeout=15)
                         if time.monotonic() >= deadline:
                             raise TimeoutError('restore health response arrived after its deadline')
@@ -338,20 +346,20 @@ def drill(project, export, key, pull=False, *, config):
                     except RuntimeError:
                         time.sleep(1)
                     finally:
-                        docker('rm', '-f', '-v', name)
+                        podman('rm', '-f', '-v', name)
                         containers.remove(name)
                 raise TimeoutError('restored service did not become healthy before its deadline')
             probe(f'http://127.0.0.1:{config["port"]}/api/health')
             if config.get('separate_api', True):
                 api = prefix+'-api'
                 containers.append(api)
-                docker('run', '-d', '--name', api, '--network', f'container:{db}', *common, '--memory=128m', *private_env, images['api'])
+                podman('run', '--pull=never', '-d', '--name', api, '--network', f'container:{db}', *common, '--memory=128m', *private_env, images['api'])
                 probe(f'http://127.0.0.1:{config["api_port"]}{health_path}', timeout=60)
-                if not json.loads(docker('inspect', api))[0]['State']['Running']:
+                if not json.loads(podman('inspect', api))[0]['State']['Running']:
                     raise RuntimeError('restored API did not remain running')
             gate = prefix+'-gate'
             containers.append(gate)
-            docker('run', '-d', '--name', gate, '--network', f'container:{db}', *common, '--memory=96m',
+            podman('run', '--pull=never', '-d', '--name', gate, '--network', f'container:{db}', *common, '--memory=96m',
                    '--entrypoint', '/usr/bin/caddy', images['gate'], 'file-server', '--root', config['root'], '--listen', '127.0.0.1:8088')
             html = probe('http://127.0.0.1:8088/', timeout=45)
             if '<html' not in html.lower() or '<script' not in html.lower():
@@ -364,7 +372,7 @@ def drill(project, export, key, pull=False, *, config):
             failed = []
             for name in reversed(containers):
                 try:
-                    docker('rm', '-f', '-v', name)
+                    podman('rm', '-f', '-v', name)
                 except RuntimeError:
                     failed.append(name)
             if failed:
