@@ -16,7 +16,7 @@ def read_package(path):
 
 
 def development_command(root, arguments):
-    command = ['bun', 'run', 'dev']
+    command = ['bun', '--no-env-file', 'run', 'dev']
     package = read_package(root/'package.json')
     if package.get('scripts', {}).get('dev') == 'astro dev':
         astro = read_package(root/'node_modules/astro/package.json')

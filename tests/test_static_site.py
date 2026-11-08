@@ -48,7 +48,7 @@ class StaticSiteRecipeTest(unittest.TestCase):
             environment = dict(os.environ, PATH=str(root/'bin'), SITE_FIXTURE='preserved')
             result = subprocess.run([sys.executable, str(HELPER), 'a b', '$(literal)'], cwd=root, env=environment)
             self.assertEqual(result.returncode, 19)
-            self.assertEqual(json.loads((root/'observed.json').read_text()), [['run', 'dev', 'a b', '$(literal)'], 'preserved'])
+            self.assertEqual(json.loads((root/'observed.json').read_text()), [['--no-env-file', 'run', 'dev', 'a b', '$(literal)'], 'preserved'])
 
 
 if __name__ == '__main__':
