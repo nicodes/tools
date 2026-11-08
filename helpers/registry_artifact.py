@@ -73,7 +73,7 @@ class Reader:
         if not isinstance(artifact, dict):
             raise ValueError('recovery requires an artifact descriptor')
         server, repository, identity = registry.reference(artifact.get('reference'))
-        if artifact.get('digest') != identity:
+        if artifact.get('kind') == 'image' and artifact.get('digest') != identity:
             raise ValueError('artifact reference differs from its manifest identity')
         username, password = credentials(authfile, server)
         self.client = registry.Registry(server, repository, username=username,
@@ -168,9 +168,13 @@ def publish_file(source, target):
 def fetch_static(artifact, destination, authfile=None, timeout=300):
     target = destination_path(destination)
     if (not isinstance(artifact, dict) or artifact.get('kind') != 'archive'
-            or set(artifact) != {'kind', 'reference', 'digest', 'blob_digest', 'size_bytes'}):
+            or set(artifact) != {'kind', 'reference', 'digest', 'media_type', 'size_bytes'}):
         raise ValueError('static recovery requires an exact archive descriptor')
-    expected = registry.artifact_manifest(artifact['blob_digest'], artifact['size_bytes'])
+    if artifact['media_type'] != registry.STATIC_LAYER:
+        raise ValueError('static recovery requires the admitted archive media type')
+    expected = registry.artifact_manifest(artifact['digest'], artifact['size_bytes'])
+    if registry.reference(artifact['reference'])[2] != registry.digest(expected):
+        raise ValueError('static reference differs from its admitted payload identity')
     if artifact['size_bytes'] > MAX_BYTES:
         raise ValueError('static recovery exceeds its byte bound')
     reader = Reader(artifact, authfile, timeout)
@@ -182,7 +186,7 @@ def fetch_static(artifact, destination, authfile=None, timeout=300):
         if (root / 'config').read_bytes() != registry.EMPTY_CONFIG:
             raise ValueError('static artifact has an invalid empty config')
         source = root / 'payload'
-        reader.blob(artifact['blob_digest'], artifact['size_bytes'], source)
+        reader.blob(artifact['digest'], artifact['size_bytes'], source)
         reader.client._timeout()
         return publish_file(source, target)
 

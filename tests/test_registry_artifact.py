@@ -68,12 +68,12 @@ def image(server, *, corrupt_diff=False, layers=None, expanded=b'bounded uncompr
 
 
 def static(server, payload=b'opaque accepted tar.gz payload'):
-    artifact = {'kind': 'archive', 'blob_digest': r.digest(payload), 'size_bytes': len(payload)}
-    manifest = r.artifact_manifest(artifact['blob_digest'], artifact['size_bytes'])
-    artifact.update(reference='ghcr.io/example/app@' + r.digest(manifest), digest=r.digest(manifest))
-    server.document('/v2/example/app/manifests/' + artifact['digest'], manifest)
+    artifact = {'kind': 'archive', 'digest': r.digest(payload), 'media_type': r.STATIC_LAYER, 'size_bytes': len(payload)}
+    manifest = r.artifact_manifest(artifact['digest'], artifact['size_bytes'])
+    artifact.update(reference='ghcr.io/example/app@' + r.digest(manifest))
+    server.document('/v2/example/app/manifests/' + artifact['reference'].rsplit('@',1)[1], manifest)
     server.document('/v2/example/app/blobs/' + r.digest(b'{}'), b'{}')
-    server.document('/v2/example/app/blobs/' + artifact['blob_digest'], payload)
+    server.document('/v2/example/app/blobs/' + artifact['digest'], payload)
     return artifact, payload
 
 
@@ -103,11 +103,11 @@ class ExactArtifactRecovery(unittest.TestCase):
 
     def test_read_authentication_requests_pull_only_and_never_forwards_to_signed_cdn(self):
         server = Server(); artifact, payload = static(server)
-        path = '/v2/example/app/manifests/' + artifact['digest']
+        path = '/v2/example/app/manifests/' + artifact['reference'].rsplit('@',1)[1]
         server.responses[('ghcr.io', path)].insert(0, Response(401, headers={
             'WWW-Authenticate': 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:example/app:pull"'}))
         server.document('/token?service=ghcr.io&scope=repository%3Aexample%2Fapp%3Apull', b'{"token":"private-token"}')
-        blob_path = '/v2/example/app/blobs/' + artifact['blob_digest']
+        blob_path = '/v2/example/app/blobs/' + artifact['digest']
         server.responses[('ghcr.io', blob_path)] = [Response(307, headers={
             'Location': 'https://pkg-containers.githubusercontent.com/signed?token=signed-query'})]
         server.document('/signed?token=signed-query', payload, host='pkg-containers.githubusercontent.com')
@@ -148,15 +148,15 @@ class ExactArtifactRecovery(unittest.TestCase):
 
     def test_rejects_noncanonical_static_manifest_before_fetching_blobs(self):
         server = Server(); artifact, _ = static(server)
-        path = '/v2/example/app/manifests/' + artifact['digest']
+        path = '/v2/example/app/manifests/' + artifact['reference'].rsplit('@',1)[1]
         body = server.responses[('ghcr.io', path)][0].getvalue() + b'\n'
         identity = r.digest(body)
-        artifact.update(reference='ghcr.io/example/app@'+identity, digest=identity)
+        artifact.update(reference='ghcr.io/example/app@'+identity)
         server.document('/v2/example/app/manifests/'+identity, body)
         with tempfile.TemporaryDirectory() as directory, patch.object(recovery.http.client, 'HTTPSConnection', server):
-            with self.assertRaisesRegex(ValueError, 'manifest differs'):
+            with self.assertRaisesRegex(ValueError, 'reference differs'):
                 recovery.fetch_static(artifact, Path(directory)/'asset')
-        self.assertEqual(len(server.calls), 1)
+        self.assertEqual(len(server.calls), 0)
 
     def test_private_no_replace_destination_validates_before_credentials_and_network(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -174,7 +174,7 @@ class ExactArtifactRecovery(unittest.TestCase):
         for url in ['https://other.invalid/blob', 'http://pkg-containers.githubusercontent.com/blob',
                     'https://owner@pkg-containers.githubusercontent.com/blob', 'https://pkg-containers.githubusercontent.com:444/blob']:
             server = Server(); artifact, _ = static(server)
-            key = ('ghcr.io', '/v2/example/app/blobs/' + artifact['blob_digest'])
+            key = ('ghcr.io', '/v2/example/app/blobs/' + artifact['digest'])
             server.responses[key] = [Response(307, headers={'Location': url})]
             with tempfile.TemporaryDirectory() as directory, patch.object(recovery.http.client, 'HTTPSConnection', server):
                 with self.assertRaisesRegex(ValueError, 'redirect'):
