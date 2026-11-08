@@ -52,11 +52,15 @@ class OperatorCLI(unittest.TestCase):
             report = json.loads(result.stdout)
             self.assertEqual(report["version"], 1)
             self.assertEqual(report["directory"], str(stage))
-            self.assertEqual(len(report["files"]), 6)
+            helpers={name:ROOT/'helpers'/name for name in ['container_runtime.py','oci_archive.py','oci_registry.py','release_packet.py']}
+            original={name:ASSETS/name for name in ['fleet_operator.py','fleet_broker.py','fleet_publisher.py',
+                       'fleet-operator.service','fleet-operator.socket','fleet-operator.conf']}
+            sources={**original,**helpers}
+            self.assertEqual(set(report['files']),set(sources))
             self.assertEqual(stat.S_IMODE(stage.stat().st_mode), 0o700)
             for name, expected in report["files"].items():
-                self.assertEqual((stage / name).read_bytes(), (ASSETS / name).read_bytes())
-                self.assertEqual(hashlib.sha256((ASSETS / name).read_bytes()).hexdigest(), expected)
+                self.assertEqual((stage / name).read_bytes(), sources[name].read_bytes())
+                self.assertEqual(hashlib.sha256(sources[name].read_bytes()).hexdigest(), expected)
                 self.assertEqual(stat.S_IMODE((stage / name).stat().st_mode), 0o600)
 
     def test_export_cannot_overwrite_prior_reviewed_bytes(self):
