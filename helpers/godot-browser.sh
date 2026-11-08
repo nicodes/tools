@@ -1,30 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
 unset CONTAINER_HOST CONTAINER_CONNECTION CONTAINER_SSHKEY DOCKER_HOST DOCKER_CONTEXT
-: "${GATE_IMAGE:?Set GATE_IMAGE to the already-built release image}"
+loopback_address() {
+  if [[ "$1" =~ ^http://127\.0\.0\.1:([1-9][0-9]{0,4})/?$ ]]; then
+    if (( BASH_REMATCH[1] <= 65535 )); then
+      local value="${1%/}"
+      printf '%s\n' "${value#http://}"
+      return 0
+    fi
+  fi
+  echo 'Browser fixture URL must be a bounded loopback HTTP listener' >&2
+  return 1
+}
+if [[ -z ${GATE_URL:-} ]]; then
+  : "${GATE_IMAGE:?Set GATE_URL to the owned native fixture or GATE_IMAGE to a diagnostic fixture}"
+fi
 if [[ -z ${BROWSER_TEST_MODE:-} && ( ${BROWSER_ROUTE_CYCLES:-0} != 0 || ${BROWSER_SOAK_SECONDS:-0} != 0 ) ]]; then
   echo "Retention workload requires explicit BROWSER_TEST_MODE" >&2
   exit 1
 fi
 if [[ ${BROWSER_TEST_MODE:-canonical} == retention ]]; then
   : "${EXPECTED_SOURCE_COMMIT:?Focused retention requires EXPECTED_SOURCE_COMMIT}"
-  : "${EXPECTED_IMAGE_ID:?Focused retention requires EXPECTED_IMAGE_ID}"
-  actual_image_id=$(podman --remote=false image inspect "$GATE_IMAGE" --format '{{.Id}}')
-  actual_image_id="sha256:${actual_image_id#sha256:}"
-  [[ "$actual_image_id" == "$EXPECTED_IMAGE_ID" ]] || {
-    echo "Focused retention image identity mismatch" >&2
-    exit 1
-  }
+  : "${GATE_URL:?Retention requires a native fixture URL}"
+  : "${GATE_DESCRIPTOR_FILE:?Retention requires the exact fixture descriptor file}"
+  : "${EXPECTED_DESCRIPTOR_DIGEST:?Retention requires EXPECTED_DESCRIPTOR_DIGEST}"
+  python3 -I -B - "$GATE_DESCRIPTOR_FILE" "$EXPECTED_DESCRIPTOR_DIGEST" "$EXPECTED_SOURCE_COMMIT" <<'PYTHON'
+import hashlib,json,os,re,stat,sys
+from pathlib import Path
+path=Path(sys.argv[1]).absolute()
+if '..' in path.parts or any(parent.is_symlink() for parent in [path,*path.parents]):
+    raise SystemExit('Fixture descriptor must not traverse links')
+def fingerprint(info):return (info.st_dev,info.st_ino,info.st_mode,info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns)
+info=path.lstat()
+if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or not 0<info.st_size<=4<<20:
+    raise SystemExit('Fixture descriptor must be one bounded ordinary file')
+with os.fdopen(os.open(path,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK),'rb') as stream:
+    before=os.fstat(stream.fileno()); raw=stream.read((4<<20)+1); after=os.fstat(stream.fileno())
+if fingerprint(info)!=fingerprint(before) or fingerprint(before)!=fingerprint(after) or fingerprint(path.lstat())!=fingerprint(after) or len(raw)!=info.st_size:
+    raise SystemExit('Fixture descriptor changed during admission')
+if not re.fullmatch('sha256:[a-f0-9]{64}',sys.argv[2]) or 'sha256:'+hashlib.sha256(raw).hexdigest()!=sys.argv[2]:
+    raise SystemExit('Focused retention descriptor identity mismatch')
+value=json.loads(raw)
+if not re.fullmatch('[a-f0-9]{40}',sys.argv[3]) or value.get('source',{}).get('revision')!=sys.argv[3]:
+    raise SystemExit('Focused retention descriptor source mismatch')
+PYTHON
 fi
 mkdir -p "$GODOT_BROWSER_REPORTS"
 tls_dir=$(mktemp -d "${RUNNER_TEMP:-/tmp}/godot-browser-tls.XXXXXX")
 proxy_pid=''
 cache_gate_id=''
 switch_file=''
-gate_id=$(podman --remote=false run --pull=never --detach --read-only --user 1000:1000 --cap-drop ALL \
-  --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=16m \
-  --sysctl net.ipv4.ip_unprivileged_port_start=0 \
-  --publish 127.0.0.1::80 "$GATE_IMAGE")
+gate_id=''
+cache_address=''
 # shellcheck disable=SC2329
 cleanup() {
   if [[ -n "$proxy_pid" ]]; then
@@ -32,19 +59,34 @@ cleanup() {
     wait "$proxy_pid" 2>/dev/null || true
   fi
   rm -f "$tls_dir/key.pem" "$tls_dir/cert.pem" "$tls_dir/port"
-  rmdir "$tls_dir"
-  podman --remote=false logs "$gate_id" > "$GODOT_BROWSER_REPORTS/gate.log" 2>&1
-  podman --remote=false rm --force "$gate_id" >/dev/null
+  rmdir "$tls_dir" 2>/dev/null || true
+  if [[ -n "$gate_id" ]]; then
+    podman --remote=false logs "$gate_id" > "$GODOT_BROWSER_REPORTS/gate.log" 2>&1
+    podman --remote=false rm --force "$gate_id" >/dev/null
+  fi
   if [[ -n "$cache_gate_id" ]]; then podman --remote=false rm --force "$cache_gate_id" >/dev/null; fi
   if [[ -n "$switch_file" ]]; then rm -f "$switch_file"; fi
 }
 trap cleanup EXIT
-address=$(podman --remote=false port "$gate_id" 80/tcp)
-if [[ -n ${GATE_CACHE_IMAGE:-} ]]; then
+if [[ -n ${GATE_URL:-} ]]; then
+  address=$(loopback_address "$GATE_URL")
+else
+  gate_id=$(podman --remote=false run --pull=never --detach --read-only --user 1000:1000 --cap-drop ALL \
+  --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=16m \
+  --sysctl net.ipv4.ip_unprivileged_port_start=0 \
+  --publish 127.0.0.1::80 "$GATE_IMAGE")
+  address=$(podman --remote=false port "$gate_id" 80/tcp)
+fi
+if [[ -n ${GATE_CACHE_URL:-} ]]; then
+  : "${GATE_URL:?Native cache fixture URLs require a native primary fixture}"
+  cache_address=$(loopback_address "$GATE_CACHE_URL")
+elif [[ -n ${GATE_CACHE_IMAGE:-} ]]; then
   cache_gate_id=$(podman --remote=false run --pull=never --detach --read-only --user 1000:1000 --cap-drop ALL \
     --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=16m \
     --sysctl net.ipv4.ip_unprivileged_port_start=0 --publish 127.0.0.1::80 "$GATE_CACHE_IMAGE")
   cache_address=$(podman --remote=false port "$cache_gate_id" 80/tcp)
+fi
+if [[ -n "$cache_address" ]]; then
   export CACHE_NEXT_PORT="${cache_address##*:}" CACHE_FIRST_PORT="${address##*:}"
   switch_file="$PWD/${GODOT_BROWSER_REPORTS}/upstream-$$"
   export CACHE_SWITCH_FILE="$switch_file"
@@ -67,7 +109,7 @@ for _attempt in {1..30}; do
       export BROWSER="$browser_name"
       echo "Verifying release in $BROWSER"
       browser_command=(node "$GODOT_BROWSER_RUNNER")
-      if [[ -n "$cache_gate_id" ]]; then browser_command=(node "$GODOT_BROWSER_CACHE_RUNNER"); fi
+      if [[ -n "$cache_address" ]]; then browser_command=(node "$GODOT_BROWSER_CACHE_RUNNER"); fi
       if [[ ${BROWSER_STARTUP:-0} == 1 ]]; then browser_command=(node "$GODOT_BROWSER_STARTUP_RUNNER"); fi
       if [[ "$BROWSER" == firefox || ( "$BROWSER" == chromium && ${BROWSER_STARTUP:-0} != 1 && ${BROWSER_TEST_MODE:-canonical} != retention ) ]]; then
         browser_command=(xvfb-run -a "${browser_command[@]}")
@@ -85,7 +127,7 @@ for _attempt in {1..30}; do
         podman --remote=false run --pull=never --rm --init "${user_namespace[@]}" --network host --shm-size=1g --user "$(id -u):$(id -g)" \
           -e HOME=/tmp -e PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
           -e GATE_TLS_PORT -e GATE_TLS_SPKI -e BROWSER -e BROWSER_SOAK_SECONDS -e BROWSER_ROUTE_CYCLES \
-          -e BROWSER_TEST_MODE -e EXPECTED_SOURCE_COMMIT -e EXPECTED_RELEASE_ID -e EXPECTED_IMAGE_ID \
+          -e BROWSER_TEST_MODE -e EXPECTED_SOURCE_COMMIT -e EXPECTED_RELEASE_ID -e EXPECTED_DESCRIPTOR_DIGEST -e GATE_DESCRIPTOR_FILE \
           -e CACHE_NEXT_PORT -e CACHE_FIRST_PORT -e CACHE_SWITCH_FILE "${native_environment[@]}" \
           -v "$PWD:$PWD" -w "$PWD" -v "$BROWSER_CACHE:/ms-playwright:ro" \
           -v "$GDPW_BIN:/usr/local/bin/gd-playwright-cli:ro" "$BROWSER_RUNTIME_IMAGE" "${browser_command[@]}"
