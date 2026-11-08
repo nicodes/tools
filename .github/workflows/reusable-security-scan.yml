@@ -42,12 +42,12 @@ jobs:
       with:
         persist-credentials: false
     - name: Set up development tools
-      uses: nicodes/tools/setup@f412061a7a3f0914db9e09d1159e69504aee8706
+      uses: nicodes/tools/setup@e45263e72e813cb02251f92d8971f11a1b0398e4
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
     - name: Prepare native Podman
-      uses: nicodes/tools/podman-ci@f412061a7a3f0914db9e09d1159e69504aee8706
+      uses: nicodes/tools/podman-ci@e45263e72e813cb02251f92d8971f11a1b0398e4
       if: inputs.scan-images
     - name: Prepare private registry read authority
       timeout-minutes: 3
@@ -97,7 +97,7 @@ jobs:
       with:
         persist-credentials: false
     - name: Set up development tools
-      uses: nicodes/tools/setup@f412061a7a3f0914db9e09d1159e69504aee8706
+      uses: nicodes/tools/setup@e45263e72e813cb02251f92d8971f11a1b0398e4
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
