@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scan immutable release artifacts for the latest attempted and successful deployment."""
+"""Audit historically activated artifacts without claiming current host state."""
 import argparse
 import hashlib
 import importlib.util
@@ -17,6 +17,7 @@ import zipfile
 
 MAX_METADATA = 4 << 20
 MAX_EVIDENCE = 16 << 20
+MAX_ACTIVATION = 1 << 20
 SHA = re.compile(r'[a-f0-9]{40}\Z')
 NAME = re.compile(r'[a-z][a-z0-9-]{0,62}\Z')
 
@@ -105,10 +106,6 @@ def deployed_releases(repository, environment):
     raise ValueError('no successful deployment found within the lookup bound')
 
 
-def deployed_revisions(repository, environment):
-    return list(dict.fromkeys(row['revision'] for row in deployed_releases(repository,environment)))
-
-
 def download(repository, identity, environment=None):
     with tempfile.TemporaryFile() as stream:
         subprocess.run(['gh','api','--hostname','github.com',f'repos/{repository}/actions/artifacts/{identity}/zip'],
@@ -118,7 +115,7 @@ def download(repository, identity, environment=None):
         stream.seek(0); return stream.read(MAX_EVIDENCE+1)
 
 
-def release_for_deployment(config, deployment, environment=None):
+def _publication_for_deployment(config, deployment, environment=None):
     repository,revision=config['repository'],deployment['revision']
     run=api(f'repos/{repository}/actions/runs/{deployment["run_id"]}',environment)
     job=api(f'repos/{repository}/actions/jobs/{deployment["job_id"]}',environment)
@@ -200,7 +197,58 @@ def release_for_deployment(config, deployment, environment=None):
             or commit.get('tree',{}).get('sha')!=documents['validation.json'][1]['source_tree']):
         raise ValueError('deployment acceptance source tree differs from its exact Git commit')
     product_images(config,descriptor)
-    return descriptor
+    return descriptor,run,job,artifacts['artifacts']
+
+
+def activation_for_deployment(config, deployment, environment=None):
+    """Bind accepted publication to an actual ready operation at that time.
+
+    The owner can later stop, recover or replace the instance independently.
+    GitHub evidence does not observe the current installed or running state.
+    """
+    descriptor,run,job,artifacts=_publication_for_deployment(config,deployment,environment)
+    if (deployment['state']!='success' or job.get('conclusion')!='success'
+            or not isinstance(job.get('name'),str) or job['name'].split(' / ')[-1]!='Deliver exact release'):
+        raise ValueError('historical activation requires its successful exact delivery job')
+    provider='nicodes/komizo-actions/.github/workflows/cookbook-deliver.yml@'
+    if not any(isinstance(row,dict) and isinstance(row.get('sha'),str) and SHA.fullmatch(row['sha'])
+            and row.get('path')==provider+row['sha'] for row in run['referenced_workflows']):
+        raise ValueError('historical activation did not execute its immutable delivery adapter')
+    wanted=f'activation-{deployment["revision"]}-{run["id"]}-{run["run_attempt"]}'
+    candidates=[row for row in artifacts if isinstance(row,dict) and row.get('name')==wanted]
+    if len(candidates)!=1:raise ValueError('historical activation requires one exact operation artifact')
+    artifact=candidates[0]
+    if (type(artifact.get('id')) is not int or artifact['id']<=0 or artifact.get('expired') is not False
+            or type(artifact.get('size_in_bytes')) is not int or not 0<artifact['size_in_bytes']<=MAX_ACTIVATION
+            or not isinstance(artifact.get('digest'),str) or not registry.DIGEST.fullmatch(artifact['digest'])
+            or artifact.get('workflow_run',{}).get('id')!=run['id']
+            or artifact.get('workflow_run',{}).get('head_sha')!=deployment['revision']):
+        raise ValueError('activation artifact lacks its immutable source producer identity')
+    raw=download(config['repository'],artifact['id'],environment)
+    if len(raw)!=artifact['size_in_bytes'] or registry.digest(raw)!=artifact['digest']:
+        raise ValueError('activation artifact differs from its authenticated digest')
+    with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+        entries=archive.infolist()
+        if len(entries)!=1:raise ValueError('activation artifact requires only its operation receipt')
+        entry=entries[0]
+        if (entry.filename!='komizo-operation.json' or not 0<entry.file_size<=65536
+                or entry.flag_bits&1 or entry.is_dir() or stat.S_IFMT(entry.external_attr>>16) not in {0,stat.S_IFREG}):
+            raise ValueError('activation operation receipt is linked, unexpected or oversized')
+        body=archive.read(entry);operation=json.loads(body,object_pairs_hook=registry.unique_object)
+    required={'kind','version','operation_id','application','instance','release_digest','phase','ok','reconciliation_required'}
+    if (not isinstance(operation,dict) or not required<=set(operation)<=required|{'previous_release_digest'}
+            or operation.get('kind')!='komizo.operation' or type(operation.get('version')) is not int or operation['version']!=1
+            or not isinstance(operation.get('operation_id'),str) or not re.fullmatch('[a-f0-9]{32}',operation['operation_id'])
+            or operation.get('application')!=config['application'] or operation.get('instance')!='production'
+            or operation.get('release_digest')!=registry.digest(registry.canonical(descriptor))
+            or operation.get('phase')!='ready' or operation.get('ok') is not True or operation.get('reconciliation_required') is not False
+            or ('previous_release_digest' in operation and operation['previous_release_digest'] is not None
+                and (not isinstance(operation['previous_release_digest'],str) or not registry.DIGEST.fullmatch(operation['previous_release_digest'])))
+            or body!=registry.canonical(operation)+b'\n'):
+        raise ValueError('publication is not bound to an exact successful ready operation')
+    return {'scope':'activation_at_time','current_state':'unobserved','descriptor':descriptor,'operation':operation,
+        'proof':{'deployment_id':deployment['deployment_id'],'run_id':run['id'],'run_attempt':run['run_attempt'],'job_id':job['id'],
+                 'artifact_id':artifact['id'],'artifact_digest':artifact['digest']}}
 
 
 def validate_context(value, expected, *, repository_id=True):
@@ -277,6 +325,9 @@ def validate_acceptance(documents, descriptor, publication, context, release_raw
 def product_images(config, descriptor):
     if not isinstance(descriptor,dict) or descriptor.get('application')!=config['application']:
         raise ValueError('image selection requires its accepted release descriptor')
+    actual={name for name,artifact in descriptor.get('artifacts',{}).items() if isinstance(artifact,dict) and artifact.get('kind')=='image'}
+    if set(config['components'])!=actual:
+        raise ValueError('image scan selection differs from the complete accepted image inventory')
     result=[]
     for component in config['components']:
         artifact=descriptor.get('artifacts',{}).get(component,{})
@@ -295,10 +346,10 @@ if __name__=='__main__':
     releases=deployed_releases(config['repository'],config['environment']); scanner=helper('scan-image')
     results,failures=[],[]
     for deployed in releases:
-        descriptor=release_for_deployment(config,deployed)
+        activation=activation_for_deployment(config,deployed);descriptor=activation['descriptor']
         for image in product_images(config,descriptor):
             try:
                 runtime.run(['pull',image],check=True,timeout=300); results.append(scanner.scan(image))
             except (ValueError,subprocess.SubprocessError) as error: failures.append(f'{image}: {error}')
-    print(json.dumps({'deployments':releases,'images':results,'failures':failures},indent=2))
+    print(json.dumps({'scope':'activation_at_time','current_state':'unobserved','deployments':releases,'images':results,'failures':failures},indent=2))
     if failures: raise SystemExit(1)
