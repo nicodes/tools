@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 719c3b6f874b02ebcf807709ff3e7f4cf68c9ef1317d93d06fde751551cd5342 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a3bc75a1ec15d198dc0465f050ef2cda05a1dc153cc9ac5519d4dcd66047df5b -->
 
 # tools
 
@@ -30,6 +30,8 @@ Check out this repository at a reviewed full commit to use `helpers/integration-
 `nicodes/tools/dependencies@FULL_40_CHARACTER_COMMIT` inspects signed bot updates against the caller's protected `.github/dependency-policy.toml`. Supply a new `output` report path and use `apply: 'true'` only from the trusted policy workflow. It verifies the bot commit, current required checks, integration tree and unchanged base/head before merging. It builds its metadata parser from the pinned action source and never loads the product's tool hooks or PR code.
 
 The recovery helpers accept caller-owned declarations and commands. The snapshot helper packages a product capture; the PostgreSQL helper retains ownership/ACL metadata; restore drills verify restoration in isolated disposable containers. Products supply database/image choices, role and data assertions, resource limits and retention policy. Transport helpers preserve conditioned creation, bounded responses and private credentials. The backup-store capability probe creates a uniquely named synthetic object only when explicitly invoked; it is never part of ordinary setup. Historical activation auditing requires an explicit repository, image components and deployment environment. It authenticates the complete publication inventory and an exact successful ready-operation receipt from the delivery run and attempt. Reports use `activation_at_time` and `current_state = "unobserved"`; they make no claim about current host installation. Declared OS/library image components receive the full image scan alongside applicable Rust or Go runtime checks. Production host backup/restore authority and admission remain in the deployment system.
+
+The snapshot `seal` and `unseal` APIs exchange `snapshot.cms` and `receipt.json`. Format 2 encrypts independent chunks of at most 4 MiB with AES-256-GCM CMS and binds their order, sizes, hashes and complete plaintext digest in an encrypted index. Recovery authenticates the entire envelope before exposing restored files. The ciphertext/export limit is 8 GiB; the separate expanded archive limit is 16 GiB. The S3 uploader uses one conditional PUT and accepts at most 5 GiB (5,368,709,120 bytes), including the complete encrypted envelope. It refuses larger uploads before reading credentials or contacting the store.
 
 Use the optional helpers action at a reviewed full commit to expose TOOLS_ROOT without installing SDKs. The runner supplies Python or other interpreters needed by the chosen helper. The setup action instead installs the caller's native SDK pins.
 
