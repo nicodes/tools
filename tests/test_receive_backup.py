@@ -14,7 +14,7 @@ spec.loader.exec_module(receiver)
 
 class ReceiveBackup(unittest.TestCase):
     def test_roundtrip_rejects_checksum_duplicates_and_paths(self):
-        receipt = {'format': 1, 'archive_sha256': 'a'*64,
+        receipt = {'format': 2, 'archive_sha256': 'a'*64,
                    'ciphertext_sha256': hashlib.sha256(b'encrypted').hexdigest(),
                    'image_id': 'sha256:'+'b'*64}
         cases = [('valid', 'snapshot.cms', b'encrypted', False),

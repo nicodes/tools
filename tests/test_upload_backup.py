@@ -87,7 +87,7 @@ class UploadBackup(unittest.TestCase):
         cms = root/'snapshot.cms'
         cms.write_bytes(payload)
         if receipt is None:
-            receipt = {'format': 1, 'ciphertext_sha256': hashlib.sha256(payload).hexdigest(),
+            receipt = {'format': 2, 'ciphertext_sha256': hashlib.sha256(payload).hexdigest(),
                        'archive_sha256': 'a'*64, 'image_id': 'sha256:'+'b'*64}
         path = root/'receipt.json'
         path.write_text(json.dumps(receipt))
@@ -271,11 +271,11 @@ class UploadBackup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, self.env(), patch.object(uploader, 'urlopen', fake):
             root = Path(directory)
             cms, receipt = self.pair(root, payload=b'encrypted',
-                                     receipt={'format': 1, 'ciphertext_sha256': 'c'*64})
+                                     receipt={'format': 2, 'ciphertext_sha256': 'c'*64})
             with self.assertRaises(ValueError):
                 uploader.upload('sampleaddon', cms, receipt, STAMP)
             matching = root/'receipt-ok.json'
-            matching.write_text(json.dumps({'format': 1, 'ciphertext_sha256': hashlib.sha256(b'encrypted').hexdigest()}))
+            matching.write_text(json.dumps({'format': 2, 'ciphertext_sha256': hashlib.sha256(b'encrypted').hexdigest()}))
             link = root/'link.cms'
             link.symlink_to(cms)
             with self.assertRaises(ValueError):
