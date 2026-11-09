@@ -14,14 +14,10 @@ import tempfile
 
 PATHS = {'fleet_operator.py': '/usr/local/libexec/fleet/fleet_operator.py',
          'fleet_broker.py': '/usr/local/libexec/fleet/fleet_broker.py',
-         'fleet_publisher.py': '/usr/local/libexec/fleet/fleet_publisher.py',
-         'oci_registry.py': '/usr/local/libexec/fleet/oci_registry.py',
-         'release_packet.py': '/usr/local/libexec/fleet/release_packet.py',
-         'oci_archive.py': '/usr/local/libexec/fleet/oci_archive.py',
-         'container_runtime.py': '/usr/local/libexec/fleet/container_runtime.py',
          'fleet-operator.service': '/etc/systemd/system/fleet-operator.service',
          'fleet-operator.socket': '/etc/systemd/system/fleet-operator.socket',
          'fleet-operator.conf': '/etc/tmpfiles.d/fleet-operator.conf'}
+RETIRED_CODE = ('fleet_publisher.py','oci_registry.py','release_packet.py','oci_archive.py','container_runtime.py')
 MAX_BYTES = 256 * 1024
 
 
@@ -120,6 +116,11 @@ class Installation:
         self.state = root/'var/lib/fleet-operator'
 
     def plan(self):
+        for name in RETIRED_CODE:
+            path=self.root/'usr/local/libexec/fleet'/name
+            safe_directory(path.parent,self.owner,self.root,False)
+            if path.exists() or path.is_symlink():
+                raise ValueError('retired operator code requires explicit owner reconciliation before installation')
         for path in self.files.values():
             safe_directory(path.parent,self.owner,self.root,False)
         before = {name: read(path, self.owner) for name, path in self.files.items()}

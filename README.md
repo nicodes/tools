@@ -1,5 +1,3 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a3bc75a1ec15d198dc0465f050ef2cda05a1dc153cc9ac5519d4dcd66047df5b -->
-
 # tools
 
 A collection of reusable tools and GitHub Actions. Recipes and their shared execution contract live in [Cookbook](https://github.com/nicodes/cookbook). Application source, domain algorithms, product policy and product assertions stay in their owning repositories.
@@ -85,7 +83,7 @@ For dependency preparation before credential selection, supply an isolated expli
 
 ## Protected operator
 
-The optional Rust `tools-operator` CLI manages the protected engineering operator. It is separate from ordinary build/test setup and requires a root-owned authority policy before installation. Its releases use the `operator-v` tag prefix and the usual Linux/macOS archive names.
+The optional Rust `tools-operator` CLI manages repository-scoped code merges and source validation through the protected engineering operator. It is separate from ordinary build/test setup and requires a root-owned authority policy before installation. Its releases use the `operator-v` tag prefix and the usual Linux/macOS archive names.
 
 Before running the CLI, verify the archive checksum and GitHub attestation against this repository's `cli-release.yml` builder, binding both the signer and source digest to the exact release revision on `main`. Also require the verified certificate's `buildConfigURI` to name `operator-release.yml@refs/heads/main` and its `buildConfigDigest` to match that revision. Then run:
 
@@ -95,7 +93,9 @@ sudo ./tools-operator apply --expected-plan REVIEWED_PLAN_SHA256
 sudo ./tools-operator status
 ```
 
-`recover` restores a prepared installation after interruption. `export --directory NEW_ABSOLUTE_PATH` stages the embedded operator files without installing them. Installation preserves the protected policy and consumed grants. Application hosts independently enforce deployment admission; installing this optional operator does not grant access to a host.
+`recover` restores a prepared installation after interruption. `export --directory NEW_ABSOLUTE_PATH` stages the embedded operator files without installing them. Installation preserves the protected policy, consumed grants and outcome history. Policy contains only `version` and `repositories`; host bindings, owner delivery grants and publication are refused. The operator can request reviewed full source validation or merge the exact accepted PR head. Native publication, deployment and host inspection belong to their separate controllers.
+
+An earlier installation must stop its operator socket/service, preserve private policy, grants and outcome journals, archive and remove the retired publisher/helper code against the previous installed bundle identity, and install a reviewed repository-only policy before applying this source. The retired files are `fleet_publisher.py`, `oci_registry.py`, `release_packet.py`, `oci_archive.py` and `container_runtime.py` under `/usr/local/libexec/fleet/`. Planning refuses while any remains; it neither deletes history nor converts old host authority.
 
 ## CLI releases
 
@@ -147,4 +147,4 @@ The generic authenticated image archive implementation checks closed tags, confi
 
 Source-policy SDK preparation is available through `helpers/source_policy.py setup`; it uses the caller's exact pinned Python and existing hash-locked parser requirements. Read-only checks consume that prepared SDK and refuse stale identity. Recipe declaration selection belongs to Cookbook.
 
-The optional operator source supports a separately reviewed generic `trusted-workflow-request-v1` contract in policy v5. It binds the actual trusted source repository and revision, the exact protected-main request workflow path and hash, current head/base and required CI producer identity before requesting complete validation. A request grants no merge or delivery authority. Ordinary v3/v4 integration policies remain supported; the retired Cookbook-specific request protocol requires a new explicit review. These source changes do not update an installed operator, its credentials or protected policy.
+The optional operator source supports a separately reviewed generic `trusted-workflow-request-v1` contract in policy v5. It binds the actual trusted source repository and revision, the exact protected-main request workflow path and hash, current head/base and required CI producer identity before requesting complete validation. Requesting full validation does not itself merge source. Repository-only v3/v4 integration contracts remain supported; the retired Cookbook-specific request protocol requires a new explicit review. These source changes do not update an installed operator, its credentials or protected policy.

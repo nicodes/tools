@@ -28,21 +28,13 @@ def validate_request(request):
     if not isinstance(request, dict):
         raise ValueError('grant request must be an object')
     operation = request.get('operation')
-    fields = {'merge': {'operation', 'repository', 'pull_request', 'head'},
-              'authorize_owner': {'operation', 'repository', 'revision', 'run_id'},
-              'delivery': {'operation', 'repository', 'revision'},
-              'host_report': {'operation', 'host'}}.get(operation)
-    if fields is None or set(request) != fields:
-        raise ValueError('grant operation has unexpected fields')
-    if operation in ('merge', 'delivery', 'authorize_owner'):
-        if not REPO.fullmatch(request['repository']) or not SHA.fullmatch(request['head' if operation == 'merge' else 'revision']):
-            raise ValueError('grant requires exact repository and source revision')
-    if operation == 'merge' and (type(request['pull_request']) is not int or request['pull_request'] <= 0):
+    fields = {'operation', 'repository', 'pull_request', 'head'}
+    if operation!='merge' or set(request)!=fields:
+        raise ValueError('grant operation permits only exact merge requests')
+    if not isinstance(request['repository'],str) or not REPO.fullmatch(request['repository']) or not isinstance(request['head'],str) or not SHA.fullmatch(request['head']):
+        raise ValueError('grant requires exact repository and source revision')
+    if type(request['pull_request']) is not int or request['pull_request']<=0:
         raise ValueError('grant requires the reviewed PR')
-    if operation == 'authorize_owner' and (type(request['run_id']) is not int or request['run_id'] <= 0):
-        raise ValueError('owner grant requires the reviewed CI run')
-    if operation == 'host_report' and not re.fullmatch('[a-z0-9][a-z0-9.-]{0,252}', request['host']):
-        raise ValueError('grant host is invalid')
 
 
 class Broker:
@@ -94,7 +86,7 @@ class Broker:
             try:
                 result = self.execute(message['request'])
             except BaseException:
-                audit.update(status='ambiguous' if message['request']['operation'] in ('merge', 'authorize_owner') else 'failed', at=self.now())
+                audit.update(status='ambiguous', at=self.now())
                 self.receipt(grant['id'], audit)
                 raise
             audit.update(status='completed', result=result, at=self.now())
@@ -110,6 +102,7 @@ class Broker:
         with os.fdopen(os.open(path, os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK),'rb') as stream:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): raise ValueError('invalid grant')
             grant=json.loads(stream.read(LIMIT+1))
+            validate_request(grant['request'])
             try: fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:
                 if reconcile: raise ValueError('operation is still running')
