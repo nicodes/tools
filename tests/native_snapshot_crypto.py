@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import resource
+import sqlite3
+import tarfile
 import secrets
 import shutil
 import subprocess
@@ -37,7 +39,7 @@ def worker(root, report):
     quota, period = map(int, limits['cpu.max'].split())
     if limits['memory.max'] != str(MEMORY) or limits['memory.swap.max'] != '0' or limits['pids.max'] != '32' or quota != period:
         raise ValueError('actual crypto kernel limits differ from the declared control')
-    if shutil.disk_usage(root).free < SIZE*3 + 1024**3:
+    if shutil.disk_usage(root).free < SIZE*4 + 1024**3:
         raise ValueError('insufficient room for the owned synthetic bulk roundtrip')
     stopped = threading.Event()
     peaks = {'rss_bytes':0, 'anonymous_bytes':0}
@@ -62,26 +64,45 @@ def worker(root, report):
         key, cert = root/'key.pem', root/'cert.pem'
         run(['openssl','req','-x509','-newkey','rsa:4096','-noenc','-keyout',str(key),'-out',str(cert),
              '-days','1','-subj','/CN=disposable-bulk-control'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        plain, cipher, restored = root/'synthetic',root/'snapshot.cms',root/'roundtrip'
-        # Each fresh block is incompressible synthetic entropy, with no secrets.
+        package = root/'package'
+        package.mkdir(mode=0o700)
+        database = package/'data.db'
+        with sqlite3.connect(database) as connection:
+            connection.executescript('CREATE TABLE _collections (name TEXT); CREATE TABLE _migrations (name TEXT);')
         digest = hashlib.sha256()
-        with plain.open('xb') as output:
-            left = SIZE
-            while left:
-                block = os.urandom(min(left,1024**2))
+        class SyntheticReader:
+            def read(self, size):
+                block = os.urandom(size)
                 digest.update(block)
-                output.write(block)
-                left -= len(block)
-        del block
-        snapshot._encrypt_payload(plain,cipher,cert)
-        encrypted_hash = snapshot.sha256(cipher)
-        snapshot._decrypt_payload(cipher,restored,key,encrypted_hash)
-        if restored.stat().st_size != SIZE or snapshot.sha256(restored) != digest.hexdigest():
-            raise ValueError('large authenticated roundtrip changed synthetic bytes')
-        restored.unlink()
+                return block
+        archive = package/'data.tar.gz'
+        # Level 0 prevents synthetic bulk from collapsing into a small archive.
+        # Generate directly into the tar: no second unencrypted bulk source copy.
+        with tarfile.open(archive,'w:gz',compresslevel=0,copybufsize=1024**2) as bundle:
+            bundle.add(database,arcname='data.db')
+            member = tarfile.TarInfo('storage/synthetic.bin')
+            member.size = SIZE
+            bundle.addfile(member,SyntheticReader())
+        evidence = {'archive_sha256':snapshot.sha256(archive),'image_id':'sha256:'+'a'*64,
+                    'image_reference':'ghcr.io/example/fixture-db@sha256:'+'b'*64,
+                    'verified_at':'2026-11-09T00:00:00+00:00'}
+        (package/'verification.json').write_text(json.dumps(evidence))
+        pair = snapshot.seal(package,cert)
+        cipher, receipt = pair/'snapshot.cms',pair/'receipt.json'
+        encrypted_size = cipher.stat().st_size
+        if archive.stat().st_size <= 2*1024**3 or encrypted_size <= 2*1024**3:
+            raise ValueError('bulk fixture did not exercise actual multi-gigabyte payloads')
+        # The ordinary unseal API needs only the two off-host files.
+        archive.unlink()
+        restored = root/'roundtrip'
+        restored.mkdir(mode=0o700)
+        accepted = snapshot.unseal(pair,key,restored)
+        if accepted['archive_sha256'] != evidence['archive_sha256'] or snapshot.sha256(restored/'storage/synthetic.bin') != digest.hexdigest():
+            raise ValueError('large authenticated product roundtrip changed synthetic bytes')
+        shutil.rmtree(restored)
         # Recompute the transport checksum after deliberate tampering: the
         # authenticated framing itself, not merely the receipt, must refuse.
-        middle = cipher.stat().st_size//2
+        middle = encrypted_size//2
         with cipher.open('r+b') as output:
             output.seek(middle)
             byte = output.read(1)
@@ -91,14 +112,19 @@ def worker(root, report):
             if attack == 'truncated':
                 with cipher.open('r+b') as output:
                     output.truncate(cipher.stat().st_size-1)
+            transport = json.loads(receipt.read_text())
+            transport['ciphertext_sha256'] = snapshot.sha256(cipher)
+            receipt.write_text(json.dumps(transport))
+            restored.mkdir(mode=0o700)
             try:
-                snapshot._decrypt_payload(cipher,restored,key,snapshot.sha256(cipher))
+                snapshot.unseal(pair,key,restored)
             except ValueError:
                 pass
             else:
                 raise ValueError('large tampered ciphertext was accepted')
-            if restored.exists() or list(root.glob('.snapshot-*')):
+            if list(restored.iterdir()) or list(pair.glob('.snapshot-*')):
                 raise ValueError('refused bulk authentication exposed plaintext or scratch')
+            restored.rmdir()
         events = dict(line.split() for line in (kernel/'memory.events').read_text().splitlines())
         if int(events['oom']) or int(events['oom_kill']):
             raise ValueError('crypto hit its memory limit')
@@ -107,7 +133,7 @@ def worker(root, report):
         if max(peaks.values()) > RSS_BOUND or self_rss > RSS_BOUND or child_rss > RSS_BOUND:
             raise ValueError(f'crypto resident memory exceeded 64 MiB: {peaks}, parent={self_rss}, child={child_rss}')
         evidence = {'kind':'komizo.snapshot-bulk-control','version':1,'plaintext_bytes':SIZE,
-                    'roundtrip_sha256':digest.hexdigest(),'ciphertext_bytes':cipher.stat().st_size+1,
+                    'roundtrip_sha256':digest.hexdigest(),'ciphertext_bytes':encrypted_size,
                     'frame_bytes':snapshot.FRAME_BYTES,'format':2,'kernel_limits':limits,
                     'measured':{**peaks,'parent_maxrss_bytes':self_rss,'child_maxrss_bytes':child_rss,
                                 'cgroup_memory_peak_bytes':int((kernel/'memory.peak').read_text())},
