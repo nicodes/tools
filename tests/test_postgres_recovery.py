@@ -125,6 +125,23 @@ class PostgreSQLArchiveBoundaries(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'recovery image|recovery images'):
                 pg.validate_manifest(wrong_images)
 
+    def test_retained_namespace_admits_only_the_exact_project_backup_reader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = payload(Path(directory)/'payload')
+            manifest.update(project='newapp', role_namespace='sampleapp')
+            for component in ('api','gate'):
+                manifest['images'][component]['reference']=f'ghcr.io/example/newapp-{component}@sha256:{"d"*64}'
+            bind_deployment(manifest)
+            manifest['roles'].append('newapp')
+            self.assertEqual(pg.validate_manifest(manifest)['roles'],['sampleapp_owner','sampleapp_runtime','newapp'])
+            for role in ['newapp_runtime','otherapp','otherapp_reader','postgres','restore_owner','pg_read_all_data','newapp"; DROP ROLE sampleapp_owner; --']:
+                with self.subTest(role=role),self.assertRaisesRegex(ValueError,'application roles'):
+                    pg.validate_manifest(dict(manifest,roles=[*manifest['roles'],role]))
+            with self.assertRaisesRegex(ValueError,'application roles'):
+                pg.validate_manifest(dict(manifest,role_namespace='pg',roles=['pg_read_all_data']))
+            with self.assertRaisesRegex(ValueError,'application roles'):
+                pg.validate_manifest(dict(manifest,roles=['newapp','newapp']))
+
     def test_complete_inventory_and_explicit_backend_without_fake_integrity(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root/'payload'
@@ -350,11 +367,18 @@ CREATE FUNCTION private_count() RETURNS bigint LANGUAGE sql SECURITY DEFINER SET
 REVOKE ALL ON FUNCTION private_count() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION private_count() TO sampleapp_runtime;
 ''')
+        if project != 'sampleapp':
+            pg.podman('exec', '-i', source_id, 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'sampleapp_owner', '-d', 'sampleapp', input=f'''
+CREATE ROLE "{project}" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+GRANT SELECT ON preserved TO "{project}";
+ALTER DEFAULT PRIVILEGES FOR ROLE sampleapp_owner IN SCHEMA public GRANT SELECT ON TABLES TO "{project}";
+''')
         pg.podman('exec', source_id, 'pg_dump', '-Fc', '-U', 'sampleapp_owner', '-d', 'sampleapp', '-f', '/tmp/database.dump')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root/'payload'; manifest = payload(source, engine_id=image)
             if project != 'sampleapp':
                 manifest.update(project=project, role_namespace='sampleapp')
+                manifest['roles'].append(project)
                 for component in ('api', 'gate'):
                     manifest['images'][component]['reference'] = f'ghcr.io/example/{project}-{component}@sha256:{"d"*64}'
             bind_deployment(manifest)
@@ -378,6 +402,18 @@ GRANT EXECUTE ON FUNCTION private_count() TO sampleapp_runtime;
                 self.assertEqual(acl, '1')
                 public_acl = pg.podman('exec', restored_id, 'psql', '-XAt', '-U', 'restore_owner', '-d', 'sampleapp', '-c', "SELECT count(*) FROM pg_proc p, LATERAL aclexplode(p.proacl) a WHERE p.proname='private_count' AND a.grantee=0")
                 self.assertEqual(public_acl, '0')
+                if project != 'sampleapp':
+                    reader = pg.podman('exec', restored_id, 'psql', '-XAt', '-U', project, '-d', 'sampleapp', '-c', 'SELECT value FROM preserved')
+                    self.assertEqual(reader, 'captured')
+                    flags = pg.podman('exec', restored_id, 'psql', '-XAt', '-U', 'restore_owner', '-d', 'sampleapp', '-c',
+                        f"SELECT rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls FROM pg_roles WHERE rolname='{project}'")
+                    self.assertEqual(flags, 'f')
+                    for sql in ["UPDATE preserved SET value='forbidden'", 'SELECT private_count()']:
+                        with self.assertRaises(RuntimeError):
+                            pg.podman('exec', restored_id, 'psql', '-XAt', '-v', 'ON_ERROR_STOP=1', '-U', project, '-d', 'sampleapp', '-c', sql)
+                    inherited = pg.podman('exec', restored_id, 'psql', '-XAt', '-U', 'restore_owner', '-d', 'sampleapp', '-c',
+                        f"SELECT count(*) FROM pg_default_acl d, LATERAL aclexplode(d.defaclacl) a JOIN pg_roles r ON r.oid=a.grantee WHERE r.rolname='{project}' AND a.privilege_type='SELECT'")
+                    self.assertEqual(inherited, '1')
             with self.assertRaises(RuntimeError): pg.podman('inspect', restored_id)
             # A valid manifest/header cannot turn a broken pg_restore into a
             # passed database result. Owned-container cleanup still runs.

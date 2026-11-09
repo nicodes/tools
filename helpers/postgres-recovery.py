@@ -154,14 +154,18 @@ def validate_manifest(value, expected_project=None, expected_revision=None):
         raise ValueError('unsupported PostgreSQL recovery major version')
     # A renamed application may retain its database roles. The authenticated
     # manifest declares that namespace explicitly; omission preserves the
-    # original project-scoped contract. Images remain bound to project.
+    # original project-scoped contract. The exact current project role may be
+    # its retained backup reader; this does not grant a second role prefix.
+    # Images remain bound to project.
     role_namespace = value.get('role_namespace', project)
     if (not isinstance(role_namespace, str)
             or not re.fullmatch(r'[a-z][a-z0-9-]*', role_namespace)):
         raise ValueError('invalid PostgreSQL role namespace')
     roles = value['roles']
     if not isinstance(roles, list) or not 1 <= len(roles) <= 8 or any(
-            not isinstance(role, str) or not re.fullmatch(re.escape(role_namespace) + r'(?:_[a-z][a-z0-9_]{0,40})?', role)
+            not isinstance(role, str) or role in {'postgres', 'restore_owner'} or role.startswith('pg_')
+            or not (re.fullmatch(re.escape(role_namespace) + r'(?:_[a-z][a-z0-9_]{0,40})?', role)
+                    or 'role_namespace' in value and role == project)
             for role in roles) or len(set(roles)) != len(roles):
         raise ValueError('invalid PostgreSQL application roles')
     images = value['images']
