@@ -19,8 +19,8 @@ def main():
               'source_commit': os.environ.get('GITHUB_SHA'),
               'job': os.environ.get('GITHUB_JOB'),
               'setup_seconds': round(time.monotonic()-float(started), 3) if started else None,
-              'note': 'Setup includes restore actions and optional Buildx setup. Save overhead is recorded separately by GitHub job step timestamps. A false combined-cache output cannot distinguish fallback from miss.',
-              'caches': {name: state(os.environ.get(name.upper()+'_CACHE_ENABLED'), os.environ.get(name.upper()+'_CACHE_HIT')) for name in ('go', 'web', 'layer')}}
+              'note': 'Setup includes compiler cache restore and native Podman preparation. Native image layers are job-local. Save overhead is recorded separately by GitHub job step timestamps. A false combined-cache output cannot distinguish fallback from miss.',
+              'caches': {name: state(os.environ.get(name.upper()+'_CACHE_ENABLED'), os.environ.get(name.upper()+'_CACHE_HIT')) for name in ('go', 'web')}}
     target = Path('.artifacts/contract/cache.json')
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(record, indent=2)+'\n')

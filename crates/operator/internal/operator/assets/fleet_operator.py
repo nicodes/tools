@@ -186,7 +186,7 @@ def verification_path(path):
                              'crates/operator/', 'helpers/', 'setup/', 'dependencies/'))
             or any(part in ('test', 'tests', '__tests__', 'testdata', 'fixtures', 'spec', 'specs')
                    for part in parts[:-1])
-            or name in ('AGENTS.md', 'komizo.json', 'Makefile', 'mise.toml', '.mise.toml', 'mise.lock', '.gitmodules', 'Dockerfile',
+            or name in ('AGENTS.md', 'komizo.json', 'Makefile', 'mise.toml', '.mise.toml', 'mise.lock', '.gitmodules', 'Containerfile', 'Dockerfile',
                         'package.json', 'pyproject.toml', 'go.mod', 'go.sum', 'cookbook.toml')
             or name.startswith('test_') or re.search(r'_test\.[a-zA-Z0-9]+\Z', name) is not None
             or re.search(r'\.(?:test|spec)\.[a-zA-Z0-9]+\Z', name) is not None)

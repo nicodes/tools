@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record and publish the exact container images validated by the Build gate."""
+"""Bind native release publication to exact source and complete test receipts."""
 import argparse
 import hashlib
 import importlib.util
@@ -25,48 +25,6 @@ _stateful_spec.loader.exec_module(stateful_release)
 def digest(file):
     with file.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
-
-
-def references(project, revision, components, image_base):
-    if not re.fullmatch(r'[a-z][a-z0-9-]*', project):
-        raise ValueError('invalid project name')
-    if not re.fullmatch(r'[a-f0-9]{40}', revision):
-        raise ValueError('release revision must be a full commit')
-    if not components or len(set(components)) != len(components):
-        raise ValueError('a release needs distinct image components')
-    if any(not re.fullmatch(r'[a-z][a-z0-9-]*', component) for component in components):
-        raise ValueError('invalid image component')
-    if not re.fullmatch(r'[a-z0-9.-]+(?::[0-9]+)?/[a-z0-9][a-z0-9/._-]*', image_base):
-        raise ValueError('image base must be an explicit registry repository prefix')
-    return [f'{image_base}-{component}:{revision}' for component in components]
-
-
-
-def inspect(refs):
-    images = json.loads(subprocess.check_output(['docker', 'image', 'inspect', *refs], timeout=60))
-    if len(images) != len(refs):
-        raise ValueError('Docker did not return every release image')
-    result = {}
-    for ref, image in zip(refs, images, strict=True):
-        if ref not in image.get('RepoTags', []) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image['Id']):
-            raise ValueError(f'image identity is missing: {ref}')
-        result[ref] = image['Id']
-    return result
-
-
-def validate(manifest, project, revision, components, archive, image_base):
-    refs = references(project, revision, components, image_base)
-    if manifest.get('revision') != revision or manifest.get('project') != project:
-        raise ValueError('release belongs to another project or commit')
-    if 'stateful_contract' in manifest:
-        stateful_release.validate(manifest['stateful_contract'], revision)
-    if set(manifest.get('images', {})) != set(refs):
-        raise ValueError('release image set differs from the declared components')
-    if not all(re.fullmatch(r'sha256:[a-f0-9]{64}', value) for value in manifest['images'].values()):
-        raise ValueError('release image ID is invalid')
-    if not archive.is_file() or archive.is_symlink() or manifest.get('archive_sha256') != digest(archive):
-        raise ValueError('release archive is missing or differs from the validated artifact')
-    return refs
 
 
 # Only public execution identifiers are recorded. Build environment values are
@@ -238,80 +196,42 @@ def validate_test_evidence(directory, revision, expected_job, definition=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation', choices=['record', 'publish'])
+    parser = argparse.ArgumentParser(description='Validate an immutable native release packet and same-run test evidence')
+    parser.add_argument('operation', choices=['validate', 'publish'], nargs='?', default='validate')
     parser.add_argument('--project', required=True)
-    parser.add_argument('--definition', type=Path, default=Path('deploy/release.toml'))
-    parser.add_argument('--image-base')
     parser.add_argument('--revision', required=True)
-    parser.add_argument('--components', nargs='+', required=True)
     parser.add_argument('--directory', type=Path, default=Path('.artifacts/release'))
-    parser.add_argument('--test-evidence-directory', type=Path, default=None)
-    parser.add_argument('--test-job', default='Test')
-    parser.add_argument('--stateful-contract', type=Path, default=None)
+    parser.add_argument('--definition', type=Path, default=Path('deploy/release.toml'))
+    parser.add_argument('--test-evidence-directory', type=Path, default=Path('.artifacts/verification'))
+    parser.add_argument('--test-job', default='validate')
     args = parser.parse_args()
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from release_packet import Packet
+    packet = Packet(args.directory, application=args.project)
+    if packet.descriptor['source']['revision'] != args.revision or verification.git('rev-parse', 'HEAD') != args.revision:
+        raise ValueError('release differs from the clean tested source')
     definition = verification.release_definition(args.definition)
-    if args.project != definition['project']:
-        raise ValueError('release project differs from the caller-owned artifact definition')
-    if args.image_base is not None and args.image_base != definition['image_base']:
-        raise ValueError('release image base differs from the caller-owned artifact definition')
-    if args.stateful_contract is not None and definition.get('stateful_contract') and str(args.stateful_contract) != definition['stateful_contract']:
-        raise ValueError('stateful declaration differs from the caller-owned artifact definition')
-    if args.stateful_contract is None and definition.get('stateful_contract'):
-        args.stateful_contract=Path(definition['stateful_contract'])
-    if args.test_evidence_directory is None:
-        args.test_evidence_directory = Path('.artifacts/test-evidence' if os.environ.get('GITHUB_RUN_ID') else '.artifacts/verification')
-    if args.image_base is None:
-        args.image_base=definition['image_base']
-    refs = references(args.project, args.revision, args.components, args.image_base)
-    head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=10).strip()
-    if head != args.revision:
-        raise ValueError('release revision must match the checked-out commit')
-    archive = args.directory/'images.tar.gz'
-    manifest_file = args.directory/'release.json'
-    data_contract = None
-    if args.stateful_contract is not None:
-        data_contract = stateful_release.materialize(args.stateful_contract, args.revision)
-        relative = args.stateful_contract.resolve().relative_to(Path.cwd().resolve()).as_posix()
-        blob = subprocess.check_output(['git', 'rev-parse', args.revision+':'+relative], text=True, timeout=10).strip()
-        raw = args.stateful_contract.read_bytes()
-        actual = hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
-        if blob != actual:
-            raise ValueError('stateful declaration must match the immutable checked-out source blob')
-        # Initial adoption is deliberately forward-only. A future producer
-        # may attach exact old/new binary fixture evidence; a declaration
-        # alone must never manufacture automatic rollback authority.
-        if data_contract['recovery_action'] != 'forward_only':
-            raise ValueError('publication requires exact compatibility fixture evidence before allowing image rollback')
-    if args.operation == 'record':
-        manifest = {'project': args.project, 'revision': args.revision, 'images': inspect(refs),
-                    'archive_sha256': digest(archive), 'provenance': build_provenance(args.revision, definition)}
-        if data_contract is not None:
-            manifest['stateful_contract'] = data_contract
-        manifest_file.write_text(json.dumps(manifest, indent=2)+'\n')
-        validate(manifest, args.project, args.revision, args.components, archive, args.image_base)
+    validate_test_evidence(args.test_evidence_directory, args.revision, args.test_job, definition)
+    build_path = args.test_evidence_directory / 'build.json'
+    from release_packet import document
+    build = document(build_path)
+    provenance = build.get('provenance', {})
+    if (provenance.get('source_commit') != args.revision or provenance.get('tracked_source_clean') is not True
+            or provenance.get('source_tree') != verification.git('rev-parse', 'HEAD^{tree}')
+            or provenance.get('input_identity') != build.get('identity')):
+        raise ValueError('publication requires exact clean build source provenance')
+    context = provenance.get('execution_context', {})
+    if any(context.get(key) != os.environ.get(key) for key in CONTEXT_KEYS if key != 'GITHUB_JOB'):
+        raise ValueError('publication build belongs to another workflow run or attempt')
+    packet.require_proof(build)
+    packet.unchanged()
+    if args.operation == 'publish':
+        from publish_release import publish
+        result = publish(packet, Path(__file__).resolve().parents[1], os.environ)
+        print(json.dumps({'release_digest': packet.release_digest, 'published': result}, sort_keys=True))
     else:
-        # CD checks out the merged commit. A modified tracked source cannot publish.
-        subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--'], check=True, timeout=30)
-        manifest = json.loads(manifest_file.read_text())
-        validate(manifest, args.project, args.revision, args.components, archive, args.image_base)
-        if manifest.get('stateful_contract') != data_contract:
-            raise ValueError('stateful release contract differs from the clean publisher source')
-        proof = validate_provenance(manifest, args.revision)
-        test_proof = validate_test_evidence(args.test_evidence_directory, args.revision, args.test_job, definition)
-        subprocess.run(['docker', 'load', '--input', str(archive)], check=True, timeout=600)
-        if inspect(refs) != manifest['images']:
-            raise ValueError('loaded image IDs differ from the Build gate evidence')
-        for ref in refs:
-            subprocess.run(['docker', 'push', ref], check=True, timeout=600)
-        publisher = {'version': 1, 'revision': args.revision, 'archive_sha256': manifest['archive_sha256'],
-                     'images': manifest['images'], 'build_provenance': proof,
-                     'tested_commit': args.revision, 'test_provenance': test_proof,
-                     'publisher_context': {key: os.environ[key] for key in CONTEXT_KEYS if os.environ.get(key)}}
-        if data_contract is not None:
-            publisher['stateful_contract'] = data_contract
-        (args.directory/'publication.json').write_text(json.dumps(publisher, indent=2)+'\n')
-    print(f'{args.operation}: {args.project} {args.revision}: {len(refs)} validated images')
+        print(packet.release_digest)
 
 
 if __name__ == '__main__':

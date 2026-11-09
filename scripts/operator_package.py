@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NATIVE = ROOT / ".artifacts/native-operator"
 TARGETS = {"Linux_x86_64": "x86_64-unknown-linux-musl", "Linux_arm64": "aarch64-unknown-linux-musl",
            "Darwin_x86_64": "x86_64-apple-darwin", "Darwin_arm64": "aarch64-apple-darwin"}
-ASSET_NAMES = {"fleet_operator.py", "fleet_broker.py", "fleet_publisher.py", "fleet-operator.service", "fleet-operator.socket", "fleet-operator.conf"}
+ASSET_NAMES = {"fleet_operator.py", "fleet_broker.py", "fleet_publisher.py", "oci_registry.py", "release_packet.py", "oci_archive.py", "container_runtime.py", "fleet-operator.service", "fleet-operator.socket", "fleet-operator.conf"}
 SOURCE = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
 VERSION = os.environ.get("VERSION", "dev")
 
@@ -36,7 +36,7 @@ def native():
     assert report["version"] == VERSION and report["commit"] == SOURCE and report["target"] == target
     assets = ROOT / "crates/operator/internal/operator/assets"
     assert set(report["bundle"]) == ASSET_NAMES
-    assert all(digest(assets / name) == value for name, value in report["bundle"].items())
+    assert all(digest((ROOT / "helpers" if name in {"oci_registry.py", "release_packet.py", "oci_archive.py", "container_runtime.py"} else assets) / name) == value for name, value in report["bundle"].items())
     if label.startswith("Linux_"):
         linkage = subprocess.check_output(["readelf", "-l", "-d", str(binary)], text=True)
         assert "INTERP" not in linkage and "NEEDED" not in linkage, "Linux release must be static"
@@ -77,7 +77,7 @@ def assemble():
             assert binary.mode & 0o777 == 0o755 and binary.size < 64 << 20
             assert hashlib.sha256(payload.extractfile(binary).read()).hexdigest() == receipt["binary_sha256"]
         assets = ROOT / "crates/operator/internal/operator/assets"
-        assert set(receipt["bundle"]) == ASSET_NAMES and all(digest(assets / name) == value for name, value in receipt["bundle"].items())
+        assert set(receipt["bundle"]) == ASSET_NAMES and all(digest((ROOT / "helpers" if name in {"oci_registry.py", "release_packet.py", "oci_archive.py", "container_runtime.py"} else assets) / name) == value for name, value in receipt["bundle"].items())
         verified.append(archive)
     output.mkdir()
     for archive in verified:

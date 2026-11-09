@@ -44,6 +44,25 @@ class Evidence(unittest.TestCase):
         self.assertIn('mise.toml',proof['configuration_sha256'])
         self.assertNotIn('synthetic-private-value',json.dumps(value))
 
+    def test_imported_outputs_bind_declared_proof_keys_to_configs_without_tag_authority(self):
+        declaration=verification.scope(images=['registry.example/team/app:{revision}'])
+        reference=verification.resolve_images(declaration,verification.git('rev-parse','HEAD'))[0]
+        identity='sha256:'+'c'*64
+        with patch.object(verification,'inspect_images',return_value=[{'Id':identity,'RepoTags':[]}]) as inspect:
+            self.assertEqual(verification.artifacts(declaration,image_identities={reference:identity}),{'image:'+reference:identity})
+            inspect.assert_called_once_with([identity])
+            with self.assertRaises(ValueError):verification.artifacts(declaration)
+        for mapping in [{},{reference:identity,'registry.example/other:foreign':identity},{reference:'c'*64}]:
+            with patch.object(verification,'inspect_images') as inspect,self.assertRaises(ValueError):
+                verification.artifacts(declaration,image_identities=mapping)
+            inspect.assert_not_called()
+        with patch.object(verification,'inspect_images',return_value=[{'Id':'sha256:'+'e'*64}]),self.assertRaises(ValueError):
+            verification.artifacts(declaration,image_identities={reference:identity})
+        with patch.object(verification,'inspect_images',return_value=[{'Id':identity}]) as inspect:
+            verification.run_command('build','build',declaration,self.python('pass'),self.output,image_identities={reference:identity})
+            self.assertEqual(json.loads((self.output/'build.json').read_text())['artifacts'],{'image:'+reference:identity})
+            inspect.assert_called_once_with([identity])
+
     def test_modified_source_or_missing_outputs_cannot_leave_a_build_receipt(self):
         for body in ['from pathlib import Path;Path("source.txt").write_text("changed")','pass']:
             Path('source.txt').write_text('original source\n')

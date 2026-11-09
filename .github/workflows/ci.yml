@@ -88,6 +88,8 @@ jobs:
         command -v xvfb-run
         command -v Xvfb
         command -v xauth
+    - name: Prepare native Podman
+      uses: ./podman-ci
     - name: Prepare pinned scanner for offline native image controls
       timeout-minutes: 5
       run: |
@@ -97,7 +99,7 @@ jobs:
       run: mise run setup
     - name: Check libraries and disposable recovery
       run: mise run check
-    - name: Verify isolated classic image-cache reset
+    - name: Verify isolated OCI image-cache reset
       timeout-minutes: 5
       run: sudo /usr/bin/python3 tests/native_image_cache_control.py
     - name: Verify locked upstream Caddy build and linked symbols

@@ -2,6 +2,7 @@
 """Scan every Go executable in an exact built image without executing its code."""
 import argparse
 import json
+import importlib.util
 from pathlib import Path
 import re
 import shutil
@@ -9,6 +10,10 @@ import subprocess
 import tarfile
 import tempfile
 
+
+_runtime_spec = importlib.util.spec_from_file_location('_tools_scan_runtime', Path(__file__).with_name('container_runtime.py'))
+runtime = importlib.util.module_from_spec(_runtime_spec)
+_runtime_spec.loader.exec_module(runtime)
 
 def judge_report(raw):
     """Require a complete known protocol; distinguish module mentions from symbols."""
@@ -120,21 +125,21 @@ def scan(image, expected_go=None, upstream=(), forbidden=()):
     caller's own line. Nothing here exempts a binary this organisation
     compiled -- for those, a reached advisory still fails the build.
     """
-    info = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image], text=True, timeout=30))
+    info = runtime.inspect_images([image], timeout=30)
     if len(info) != 1 or not re.fullmatch(r'sha256:[a-f0-9]{64}', info[0]['Id']):
         raise ValueError('image identity is missing or ambiguous')
     identity = info[0]['Id']
     found = []
     with tempfile.TemporaryDirectory(prefix='go-image-scan-') as directory:
         root = Path(directory)
-        container = subprocess.check_output(['docker', 'create', identity], text=True, timeout=30).strip()
+        container = runtime.output(['create', '--pull=never', identity], timeout=30).strip()
         if not re.fullmatch(r'[a-f0-9]{64}', container):
-            raise ValueError('Docker did not return a container ID')
+            raise ValueError('Podman did not return a container ID')
         try:
             archive = root/'image.tar'
-            subprocess.run(['docker', 'export', '--output', str(archive), container], check=True, timeout=300)
+            runtime.run(['export', '--output', str(archive), container], check=True, timeout=300)
         finally:
-            subprocess.run(['docker', 'rm', '-v', container], check=True, stdout=subprocess.DEVNULL, timeout=30)
+            runtime.run(['rm', '-v', container], check=True, stdout=subprocess.DEVNULL, timeout=30)
         with tarfile.open(archive) as filesystem:
             for member in filesystem:
                 if not member.isfile() or member.size < 4:

@@ -21,9 +21,9 @@ import image_scan_fixture as fixture
 
 class ImageScanContextControls(unittest.TestCase):
     def test_foreign_cached_archive_core_cannot_replace_this_Tools_source(self):
-        foreign = types.ModuleType('_tools_image_import_cache')
-        foreign.__file__ = '/foreign/image_import_cache.py'
-        with patch.dict(sys.modules, {'_tools_image_import_cache': foreign}):
+        foreign = types.ModuleType('_tools_oci_archive')
+        foreign.__file__ = '/foreign/oci_archive.py'
+        with patch.dict(sys.modules, {'_tools_oci_archive': foreign}):
             with self.assertRaisesRegex(ValueError, 'core origin differs'):
                 self.admit()
 
@@ -35,7 +35,7 @@ class ImageScanContextControls(unittest.TestCase):
 
     def admit(self, **changes):
         return image_scan_findings(changes.get('report', self.report), changes.get('sbom', self.sbom),
-            context=changes.get('context', self.context), data_archive=changes.get('archive', self.path))
+            context=changes.get('context', self.context), input_archive=changes.get('input_archive'), data_archive=changes.get('archive', self.path))
 
     def test_default_parser_stays_strict_and_complete_data_image_is_admitted(self):
         before = copy.deepcopy(self.report)
@@ -48,6 +48,23 @@ class ImageScanContextControls(unittest.TestCase):
         self.assertEqual(self.admit(), [])
         with self.assertRaises(ValueError):
             self.admit(archive=None)
+
+    def test_oci_input_target_hash_and_full_identity_are_bound_without_report_rewrite(self):
+        report,sbom,context=copy.deepcopy((self.report,self.sbom,self.context))
+        context['archive']={'sha256':hashlib.sha256(self.path.read_bytes()).hexdigest(),'target':'/inputs/image.oci'}
+        report['ArtifactName']='/inputs/image.oci';report['Metadata'].pop('Reference')
+        sbom['metadata']['component']['name']='/inputs/image.oci'
+        sbom['metadata']['component']['properties']=[row for row in sbom['metadata']['component']['properties'] if not row['name'].endswith(':Reference')]
+        original=copy.deepcopy((report,sbom,context))
+        with self.assertRaisesRegex(ValueError,'authenticated input archive'):
+            self.admit(report=report,sbom=sbom,context=context)
+        self.assertEqual(self.admit(report=report,sbom=sbom,context=context,input_archive=self.path),[])
+        self.assertEqual((report,sbom,context),original)
+        report['Results']=[{'Target':'fixture','Class':'os-pkgs','Vulnerabilities':[]}]
+        self.assertEqual(self.admit(report=report,sbom=sbom,context=context,input_archive=self.path,archive=None),[])
+        context['archive']['sha256']='0'*64
+        with self.assertRaisesRegex(ValueError,'input differs'):
+            self.admit(report=report,sbom=sbom,context=context,input_archive=self.path,archive=None)
 
     def test_original_nonempty_high_critical_and_any_secret_behavior_is_unchanged(self):
         row = {'Target': 'fixture', 'Class': 'os-pkgs', 'Vulnerabilities': [{'Severity': value} for value in ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']],
@@ -139,7 +156,7 @@ class ImageScanContextControls(unittest.TestCase):
         self.path.unlink()
         with self.assertRaises(FileNotFoundError): self.admit()
 
-    def test_legacy_metadata_is_content_addressed_closed_and_bound_to_source(self):
+    def test_unreachable_metadata_is_refused_even_if_content_addressed(self):
         with tarfile.open(self.path) as packet:
             rows = [(item.name, packet.extractfile(item).read()) for item in packet if item.isfile()]
         original = {'architecture': 'amd64', 'os': 'linux', 'created': self.config['created'],
@@ -156,9 +173,7 @@ class ImageScanContextControls(unittest.TestCase):
                 for path, data in [*rows, (name, body)]:
                     item = tarfile.TarInfo(path); item.size = len(data); item.mode = 0o644
                     packet.addfile(item, io.BytesIO(data))
-            if mutation is None: self.assertEqual(self.admit(), [])
-            else:
-                with self.subTest(mutation=mutation), self.assertRaises(ValueError): self.admit()
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError): self.admit()
 
     def test_recursive_plaintext_layers_are_authenticated_in_their_original_order(self):
         image, config, size = fixture.archive(self.path, second_body=b'node.example.invalid\n')
@@ -169,7 +184,7 @@ class ImageScanContextControls(unittest.TestCase):
         diffids[0]['value'], diffids[1]['value'] = diffids[1]['value'], diffids[0]['value']
         with self.assertRaises(ValueError): self.admit(report=report, sbom=sbom, context=context)
 
-    def test_legacy_placeholder_chain_cannot_add_commands_change_epoch_or_escape_source(self):
+    def test_foreign_layer_chains_cannot_add_commands_change_epoch_or_escape_source(self):
         image, config, size = fixture.archive(self.path, second_body=b'node.example.invalid\n')
         report, sbom, context = fixture.evidence(image, config, size)
         with tarfile.open(self.path) as packet:
@@ -191,19 +206,22 @@ class ImageScanContextControls(unittest.TestCase):
                 for name, body in [*rows, *extras]:
                     item = tarfile.TarInfo(name); item.size = len(body); item.mode = 0o644
                     packet.addfile(item, io.BytesIO(body))
-            if mutation is None:
-                self.assertEqual(self.admit(report=report, sbom=sbom, context=context), [])
-            else:
-                with self.subTest(mutation=mutation), self.assertRaises(ValueError):
-                    self.admit(report=report, sbom=sbom, context=context)
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                self.admit(report=report, sbom=sbom, context=context)
 
-    def test_compressed_archive_cannot_bypass_small_expanded_data_bound(self):
-        with tarfile.open(self.path, 'w:gz') as packet:
-            body = bytes((32 << 20) + 1)
-            item = tarfile.TarInfo('oversized-member'); item.size = len(body); item.mode = 0o644
-            packet.addfile(item, io.BytesIO(body))
+    def test_compressed_layer_cannot_bypass_small_expanded_data_bound(self):
+        import oci_fixture
+        body = bytes((32 << 20) + 1)
+        config = copy.deepcopy(self.config)
+        config['rootfs']['diff_ids'] = ['sha256:' + hashlib.sha256(body).hexdigest()]
+        oci_fixture.write(self.path, oci_fixture.contents(fixture.REFERENCE, config, [body], compressed=True))
         self.assertLess(self.path.stat().st_size, 65536)
-        with self.assertRaisesRegex(ValueError, 'expanded byte bound'): self.admit()
+        inspected = copy.deepcopy(self.inspected)
+        inspected['Id'] = 'sha256:' + hashlib.sha256(oci_fixture.encoded(config)).hexdigest()
+        inspected['RootFS']['Layers'] = config['rootfs']['diff_ids']
+        report, sbom, context = fixture.evidence(inspected, config, len(body))
+        with self.assertRaisesRegex(ValueError, 'decompressed bound'):
+            self.admit(report=report, sbom=sbom, context=context)
 
     def test_binary_scripts_executable_links_devices_whiteouts_and_traversal_refuse(self):
         cases = [{'body': b'\x7fELF\x00\x02binary'}, {'body': b'#!/bin/sh\necho harmless\n'},
@@ -236,14 +254,9 @@ class ImageScanContextControls(unittest.TestCase):
 class NativeImageScanContextControls(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('TOOLS_NATIVE_IMAGE_SECURITY_ROOT'), 'prepare pinned native scanner before native controls')
     def test_pinned_scanner_data_secret_and_unsupported_binary_controls(self):
-        import subprocess
         import native_image_security_control as native
         directory = Path(os.environ['TOOLS_NATIVE_IMAGE_SECURITY_ROOT'])
-        if os.geteuid() == 0:
-            native.run(directory)
-        else:
-            subprocess.run(['sudo', '-n', sys.executable, str(Path(native.__file__)), 'run', '--directory', str(directory)],
-                           check=True, timeout=240)
+        native.run(directory)
 
 
 if __name__ == '__main__': unittest.main()

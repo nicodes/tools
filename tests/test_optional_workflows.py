@@ -19,7 +19,7 @@ class OptionalWorkflows(unittest.TestCase):
   source=next(s for s in job['steps'] if s.get('name')=='Scan every source module')
   self.assertEqual(source['env']['SOURCE_COMMAND'],'${{ inputs.source-command }}')
   self.assertNotIn('${',source['run'])
-  for name in ('Log in to container registry','Scan deployed runtime images'):
+  for name in ('Prepare native Podman','Prepare private registry read authority','Scan deployed runtime images'):
    self.assertEqual(next(s for s in job['steps'] if s.get('name')==name)['if'],'inputs.scan-images')
  def test_reusable_helpers_do_not_grant_host_or_oidc_authority(self):
   for name in ('reusable-security-scan.yml','reusable-dependency-maintenance.yml'):

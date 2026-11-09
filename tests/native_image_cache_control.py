@@ -1,258 +1,141 @@
 #!/usr/bin/env python3
-"""Exercise the actual helper against a synthetic corrupted private Docker store.
+"""Exercise real Podman OCI reloads in one new private native image store.
 
-No application/container is started. No existing daemon, profile or image is
-changed; every Docker command targets the newly created private Unix socket.
+No host daemon or existing store is changed. The helper must preserve borrowed
+aliases and stopped containers, import only immutable configs without changing existing tags, and reject
+changed accepted bytes before any engine operation.
 """
 import hashlib
-import io
 import json
 import os
 from pathlib import Path
-import shutil
-import signal
 import subprocess
 import sys
-import tarfile
 import tempfile
-import time
 from unittest.mock import patch
+import oci_fixture as fixture
 
-TOOLS = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(TOOLS / 'helpers'))
-import image_import_cache
-
-SOURCE = 'a' * 40
-
-
-def layer(name, body):
-    output = io.BytesIO()
-    with tarfile.open(fileobj=output, mode='w', format=tarfile.USTAR_FORMAT) as archive:
-        item = tarfile.TarInfo(name); item.size = len(body); item.mode = 0o644; item.mtime = 0
-        archive.addfile(item, io.BytesIO(body))
-    return output.getvalue()
-
-
-def image_archive(path, reference, layers, variant):
-    diff_ids = ['sha256:' + hashlib.sha256(body).hexdigest() for body in layers]
-    configuration = json.dumps({'architecture': 'amd64', 'os': 'linux',
-        'created': '2026-01-01T00:00:00Z', 'config': {'Labels': {'fixture.variant': variant}},
-        'rootfs': {'type': 'layers', 'diff_ids': diff_ids},
-        'history': [{'created': '2026-01-01T00:00:00Z', 'created_by': 'synthetic fixture'} for _ in layers]},
-        sort_keys=True, separators=(',', ':')).encode()
-    identity = hashlib.sha256(configuration).hexdigest()
-    names = [hashlib.sha256(body).hexdigest() + '/layer.tar' for body in layers]
-    manifest = json.dumps([{'Config': identity + '.json', 'RepoTags': [reference], 'Layers': names}]).encode()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(path, 'w') as archive:
-        for name, body in [('manifest.json', manifest), (identity + '.json', configuration), *zip(names, layers)]:
-            item = tarfile.TarInfo(name); item.size = len(body); item.mode = 0o644; item.mtime = 0
-            archive.addfile(item, io.BytesIO(body))
-    return {'id': 'sha256:' + identity, 'rootfs': diff_ids}
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'helpers'))
+import container_runtime as runtime
+import image_import_cache as cache
+import oci_archive
 
 
 def main():
     if os.geteuid() != 0:
-        raise ValueError('prepare the existing sudo capability before running the native cache control')
-    profiles = Path('/sys/kernel/security/apparmor/profiles').read_text().splitlines()
-    if not any(value.startswith('docker-default ') for value in profiles):
-        raise ValueError('existing docker-default profile required; profile installation is forbidden')
-    directory = Path(tempfile.mkdtemp(prefix='tools-private-image-cache-', dir='/tmp'))
-    environment = dict(os.environ, DOCKER_HOST='unix://' + str(directory / 'docker.sock'),
-        DOCKER_CONFIG=str(directory / 'client'))
-    for name in ['DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_API_VERSION',
-                 'GH_TOKEN', 'GITHUB_TOKEN', 'MISE_GITHUB_TOKEN']:
-        environment.pop(name, None)
-    (directory / 'client').mkdir()
-    configuration = directory / 'daemon.json'
-    configuration.write_text(json.dumps({'features': {'containerd-snapshotter': False}, 'storage-driver': 'overlay2'}))
-    source_root = directory / 'source'; source_root.mkdir()
-    refs = ['example.invalid/cache-fixture-base:' + SOURCE, 'example.invalid/cache-fixture-derived:' + SOURCE]
-    base = layer('base-marker', b'synthetic base\n')
-    middle = layer('middle-marker', b'synthetic middle\n')
-    upper = layer('upper-marker', b'synthetic upper\n')
-    paths = ['.artifacts/base.tar', '.artifacts/derived.tar']
-    images = {refs[0]: image_archive(source_root / paths[0], refs[0], [base, middle], 'base'),
-              refs[1]: image_archive(source_root / paths[1], refs[1], [base, middle, upper], 'derived')}
-    expected = {ref: value['id'] for ref, value in images.items()}
-    archives = [{'path': name, 'sha256': hashlib.sha256((source_root / name).read_bytes()).hexdigest()} for name in paths]
-    sentinel = 'example.invalid/unrelated-sentinel:fixture'
-    sentinel_path = source_root / '.artifacts/sentinel.tar'
-    sentinel_image = image_archive(sentinel_path, sentinel, [layer('unrelated-marker', b'unrelated fixture\n')], 'unrelated')
-    proc = None
-    def docker(*args, check=True, timeout=30):
-        return subprocess.run(['docker', *args], env=environment, check=check, timeout=timeout,
-            capture_output=True, text=True)
-    def inspect(ref):
-        values = json.loads(docker('image', 'inspect', ref).stdout)
-        assert len(values) == 1
-        return values[0]
-    def refuse_without_cache_effect(reason):
-        commands = []
-        native_run = subprocess.run
-        def observed(command, *args, **kwargs):
-            commands.append(command)
-            return native_run(command, *args, **kwargs)
-        with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
-            try:
-                image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
-            except ValueError:
-                pass
-            else: raise AssertionError(reason)
-        assert commands and all(command[:3] not in [['docker', 'image', 'rm'], ['docker', 'image', 'load']]
-                                for command in commands), commands
-    with (directory / 'daemon.log').open('w') as log:
+        raise ValueError('native private-store control requires existing sudo capability')
+    with tempfile.TemporaryDirectory(prefix='native-podman-cache-') as temporary:
+        root = Path(temporary)
+        storage = root / 'storage.conf'
+        storage.write_text('[storage]\ndriver="vfs"\ngraphroot=' + json.dumps(str(root / 'graph')) + '\nrunroot=' + json.dumps(str(root / 'run')) + '\n')
+        configuration = root / 'containers.conf'
+        configuration.write_text('[engine]\ncgroup_manager="cgroupfs"\nevents_logger="file"\n')
+        environment = dict(os.environ, CONTAINERS_STORAGE_CONF=str(storage), CONTAINERS_CONF=str(configuration))
+        # A root-owned anonymous authfile is independently created for this
+        # private store; credentials from the invoking CI user are never used.
+        environment.pop('REGISTRY_AUTH_FILE', None)
+        def podman(*args, check=True):
+            return runtime.run(list(args), environment=environment, timeout=60, check=check, capture_output=True, text=True)
+        def fixture_image(path, reference):
+            metadata = oci_archive.load_image(path, reference, environment=environment)
+            # Only explicit fixture construction assigns names. Cache imports
+            # must preserve all of them, including a stale source alias.
+            podman('tag', metadata['config_digest'], reference)
+            return metadata
+        info = json.loads(podman('info','--format','json').stdout)
+        assert info['store']['graphRoot'] == str(root / 'graph') and info['store']['graphDriverName'] == 'vfs'
+        source = hashlib.sha256(root.name.encode()).hexdigest()[:40]
+        refs = ['registry.example/control-' + str(index) + ':' + source for index in range(3)]
+        expected, archives, configs = {}, [], {}
+        for number, reference in enumerate(refs):
+            layers = [fixture.filesystem('data/' + str(index), ('accepted ' + str(index)).encode()) for index in range(number + 1)]
+            config = {'os':'linux','architecture':'amd64','config':{'Cmd':['/never-started']},
+                      'rootfs':{'type':'layers','diff_ids':['sha256:' + hashlib.sha256(body).hexdigest() for body in layers]}}
+            path = root / (str(number) + '.oci.tar'); fixture.write(path,fixture.contents(reference,config,layers))
+            metadata = fixture_image(path,reference)
+            expected[reference] = metadata['config_digest']; configs[reference] = (config,layers)
+            archives.append({'path':path.name,'sha256':metadata['archive_sha256']})
+        sentinel = 'registry.example/unrelated:' + source
+        config,layers = configs[refs[0]]; config = dict(config,created='2026-01-01T00:00:00Z')
+        sentinel_path = root / 'unrelated.oci.tar'; fixture.write(sentinel_path,fixture.contents(sentinel,config,layers))
+        sentinel_meta = fixture_image(sentinel_path,sentinel)
+        unrelated = podman('create','--network=none',sentinel).stdout.strip()
+        def invoke():
+            observed = []
+            original = subprocess.run
+            def record(command, **kwargs):
+                observed.append(command)
+                return original(command, **kwargs)
+            with patch.object(cache.subprocess,'run',side_effect=record):
+                value = cache.reload(root,source,archives,expected,environment)
+            return value, observed
+        def effects(commands):
+            return [row[2:4] for row in commands if row[2:4] in [['image','rm'],['image','load'],['image','tag']]]
         try:
-            proc = subprocess.Popen(['/usr/bin/dockerd', '--config-file', str(configuration),
-                '--host', environment['DOCKER_HOST'], '--group=' + str(os.getgid()),
-                '--data-root', str(directory / 'data'), '--exec-root', str(directory / 'exec'),
-                '--pidfile', str(directory / 'daemon.pid'), '--iptables=false', '--ip6tables=false',
-                '--bridge=none', '--ip-forward=false', '--ip-masq=false', '--log-level=error'],
-                stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=environment)
-            ready = None
-            startup_deadline = time.monotonic() + 30
-            while time.monotonic() < startup_deadline:
-                if proc.poll() is not None: break
-                budget = startup_deadline - time.monotonic()
-                if budget <= 0: break
-                try:
-                    response = docker('info', '--format', '{{json .}}', check=False, timeout=min(3, budget))
-                except subprocess.TimeoutExpired:
-                    continue  # A starting daemon may accept its socket before answering info.
-                if response.returncode == 0:
-                    ready = json.loads(response.stdout); break
-                time.sleep(min(.25, max(0, startup_deadline - time.monotonic())))
-            assert ready and ready['DockerRootDir'] == str(directory / 'data') and ready['Driver'] == 'overlay2'
-            assert image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120) == images
-            # Exercise the running engine's native save format as well as the
-            # deterministic classic fixture; both carry identical image IDs.
-            saved = ['.artifacts/native-base.tar', '.artifacts/native-derived.tar']
-            for reference, name in zip(refs, saved):
-                docker('image', 'save', '--output', str(source_root / name), reference, timeout=60)
-            archives = [{'path': name, 'sha256': hashlib.sha256((source_root / name).read_bytes()).hexdigest()} for name in saved]
-            docker('image', 'load', '--input', str(sentinel_path), timeout=60)
-            unrelated = docker('container', 'create', '--network', 'none', sentinel, '/never-started').stdout.strip()
-            commands = []
-            native_run = subprocess.run
-            def observed(command, *args, **kwargs):
-                commands.append(command)
-                return native_run(command, *args, **kwargs)
-            with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
-                reused = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
-            assert reused == images
-            assert not [command for command in commands if command[:3] in [['docker', 'image', 'rm'], ['docker', 'image', 'load']]]
-            assert inspect(sentinel)['Id'] == sentinel_image['id']
-            assert json.loads(docker('container', 'inspect', unrelated).stdout)[0]['State']['Status'] == 'created'
-            print('NATIVE_IMAGE_CACHE_REUSE_CONTROL_OK: exact healthy IDs/RootFS reused without removal or load; unrelated image/container retained', flush=True)
-            target = docker('container', 'create', '--network', 'none', refs[1], '/never-started').stdout.strip()
-            alias = 'example.invalid/foreign-owner:fixture'
-            docker('image', 'tag', refs[1], alias)
-            commands = []
-            native_run = subprocess.run
-            def observed(command, *args, **kwargs):
-                commands.append(command)
-                return native_run(command, *args, **kwargs)
-            with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
-                reused = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
-            assert reused == images
-            assert not [command for command in commands if command[:3] in [['docker', 'image', 'rm'], ['docker', 'image', 'load']]]
-            assert json.loads(docker('container', 'inspect', target).stdout)[0]['State']['Status'] == 'created'
-            assert inspect(alias)['Id'] == expected[refs[1]]
-            assert all(inspect(ref)['Id'] == value['id'] and inspect(ref)['RootFS']['Layers'] == value['rootfs']
-                       for ref, value in images.items())
-            print('NATIVE_IMAGE_CACHE_PROTECTED_NOOP_CONTROL_OK: authenticated exact images reused with fixture alias and created container; no remove/load; no container started', flush=True)
-            docker('container', 'rm', target)
-            docker('image', 'rm', alias)
-            # Separate builds of one source may have distinct configuration IDs.
-            # Prepare that ordinary cache state without altering accepted inputs.
-            prior = {}
-            for index, reference in enumerate(refs):
-                path = source_root / ('.artifacts/prior-' + str(index) + '.tar')
-                prior[reference] = image_archive(path, reference,
-                    [base, middle] + ([upper] if index else []), 'prior-build-' + str(index))
-                assert prior[reference]['id'] != expected[reference]
-                docker('image', 'load', '--input', str(path), timeout=60)
-            assert all(inspect(ref)['Id'] == value['id'] for ref, value in prior.items())
-            for identity in [prior[refs[1]]['id'], expected[refs[1]]]:
-                target = docker('container', 'create', '--network', 'none', identity, '/never-started').stdout.strip()
-                refuse_without_cache_effect('a prior or incoming created container bypassed reset admission')
-                assert json.loads(docker('container', 'inspect', target).stdout)[0]['State']['Status'] == 'created'
-                assert all(inspect(ref)['Id'] == value['id'] for ref, value in prior.items())
-                docker('container', 'rm', target)
-            for identity in [prior[refs[1]]['id'], expected[refs[1]]]:
-                docker('image', 'tag', identity, alias)
-                refuse_without_cache_effect('a prior or incoming foreign alias bypassed reset admission')
-                assert inspect(alias)['Id'] == identity
-                assert all(inspect(ref)['Id'] == value['id'] for ref, value in prior.items())
-                docker('image', 'rm', alias)
-            commands = []
-            native_run = subprocess.run
-            def observed(command, *args, **kwargs):
-                commands.append(command)
-                return native_run(command, *args, **kwargs)
-            with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
-                replaced = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
-            removal, = [command for command in commands if command[:3] == ['docker', 'image', 'rm']]
-            assert removal[3:5] == ['--no-prune', '--'] and set(removal[5:]) == set(refs)
-            assert replaced == images
-            assert all(inspect(ref)['Id'] == value['id'] and inspect(ref)['RootFS']['Layers'] == value['rootfs']
-                       for ref, value in images.items())
-            assert inspect(sentinel)['Id'] == sentinel_image['id']
-            kept = json.loads(docker('container', 'inspect', unrelated).stdout)[0]
-            assert kept['Image'] == sentinel_image['id'] and kept['State']['Status'] == 'created'
-            print('NATIVE_IMAGE_CACHE_PRIOR_BUILD_CONTROL_OK: distinct prior IDs replaced; both ID sets protected; unrelated image/container retained; no container started', flush=True)
-            rows = [json.loads(value) for value in docker('image', 'ls', '--all', '--no-trunc',
-                '--format', '{{json .}}').stdout.splitlines()]
-            ancestors = {}
-            for row in rows:
-                if row['Repository'] == row['Tag'] == '<none>' and row['ID'] not in expected.values():
-                    value = inspect(row['ID'])
-                    layers = value['RootFS']['Layers']
-                    if any(len(layers) < len(image['rootfs']) and image['rootfs'][:len(layers)] == layers
-                           for image in images.values()):
-                        ancestors[row['ID']] = layers
-            current = inspect(refs[1]); upper_path = Path(current['GraphDriver']['Data']['UpperDir'])
-            store = directory / 'data/overlay2'
-            assert upper_path.is_relative_to(store)
-            link = (upper_path.parent / 'lower').read_text().split(':')[0]
-            assert link.startswith('l/') and len(Path(link).parts) == 2
-            broken = store / link
-            assert broken.is_symlink() and broken.resolve().is_relative_to(store)
-            broken.unlink()
-            failed = docker('image', 'inspect', refs[1], check=False)
-            assert failed.returncode and 'readlink ' in failed.stderr and 'no such file' in failed.stderr
-            commands = []
-            native_run = subprocess.run
-            def observed(command, *args, **kwargs):
-                commands.append(command)
-                return native_run(command, *args, **kwargs)
-            with patch.object(image_import_cache.subprocess, 'run', side_effect=observed):
-                repaired = image_import_cache.reload(source_root, SOURCE, archives, expected, environment, timeout=120)
-            removal, = [command for command in commands if command[:3] == ['docker', 'image', 'rm']]
-            assert removal[3:5] == ['--no-prune', '--'] and set(removal[5:]) == set(refs)
-            assert repaired == images
-            for ref, value in images.items():
-                observed = inspect(ref)
-                assert observed['Id'] == value['id'] and observed['RootFS']['Layers'] == value['rootfs']
-            assert inspect(sentinel)['Id'] == sentinel_image['id']
-            for identity, layers in ancestors.items():
-                kept_ancestor = inspect(identity)
-                assert kept_ancestor['Id'] == identity and kept_ancestor['RootFS']['Layers'] == layers
-            kept = json.loads(docker('container', 'inspect', unrelated).stdout)[0]
-            assert kept['Image'] == sentinel_image['id'] and kept['State']['Status'] == 'created'
-            print('NATIVE_IMAGE_CACHE_RESET_CONTROL_OK: real corruption repaired; unrelated image/container retained; alias/target refusals; no container started')
-            print('NATIVE_IMAGE_CACHE_NO_PRUNE_CONTROL_OK: exact nonforce removals passed --no-prune; exposed untagged ancestors retained=' + str(len(ancestors)))
-        except BaseException:
-            print((directory / 'daemon.log').read_text()[-3000:], file=sys.stderr)
-            raise
+            assert not effects(invoke()[1])
+            alias = 'registry.example/borrowed:fixture'
+            podman('tag',refs[1],alias)
+            borrowed = podman('create','--network=none',refs[1]).stdout.strip()
+            assert not effects(invoke()[1])
+            assert json.loads(podman('inspect',borrowed).stdout)[0]['State']['Status'] in {'configured','created'}
+            podman('rm',borrowed); podman('rmi',alias)
+            # Bind the source tag to a genuinely different native config.
+            prior_config, prior_layers = configs[refs[0]]
+            prior_config = dict(prior_config,created='2026-02-02T00:00:00Z')
+            prior_path = root/'prior.oci.tar'; fixture.write(prior_path,fixture.contents(refs[0],prior_config,prior_layers))
+            prior = fixture_image(prior_path,refs[0])['config_digest']
+            assert prior != expected[refs[0]]
+            accepted_bytes = {record['path']:(root/record['path']).read_bytes() for record in archives}
+            def image_record(identity):
+                value = json.loads(podman('image','inspect',identity).stdout)[0]
+                return {'id':runtime.config_digest(value['Id']), 'rootfs':value['RootFS'],
+                        'tags':set(value['RepoTags']), 'digests':set(value['RepoDigests'])}
+            for identity in [prior,expected[refs[0]]]:
+                # A missing independent accepted config requires import while
+                # borrowed users of old and accepted configs remain untouched.
+                podman('rmi','--no-prune',expected[refs[2]])
+                container = podman('create','--network=none',identity).stdout.strip()
+                before = json.loads(podman('container','inspect',container).stdout)[0]
+                admitted, commands = invoke()
+                after = json.loads(podman('container','inspect',container).stdout)[0]
+                assert before['Id'] == after['Id'] == container
+                assert before['Image'] == after['Image'] and before['State'] == after['State']
+                assert {ref:row['id'] for ref,row in admitted.items()} == expected
+                assert all(effect[1] == 'load' for effect in effects(commands)), commands
+                podman('rm',container)
+                podman('rmi','--no-prune',expected[refs[2]])
+                podman('tag',identity,alias)
+                before = image_record(identity)
+                admitted, commands = invoke()
+                after = image_record(identity)
+                assert before['id'] == after['id'] == identity and before['rootfs'] == after['rootfs']
+                assert before['tags'] <= after['tags'] and before['digests'] <= after['digests']
+                assert image_record(alias)['id'] == identity
+                assert all(effect[1] == 'load' for effect in effects(commands)), commands
+                podman('rmi',alias)
+            podman('rmi','--no-prune',expected[refs[2]])
+            admitted, commands = invoke()
+            assert {ref:row['id'] for ref,row in admitted.items()} == expected
+            assert effects(commands).count(['image','load']) == len(archives)
+            assert all(effect[1] == 'load' for effect in effects(commands)), commands
+            assert image_record(refs[0])['id'] == prior, 'Cache import overwrote an existing source alias'
+            assert accepted_bytes == {record['path']:(root/record['path']).read_bytes() for record in archives}
+            assert not effects(invoke()[1])
+            assert runtime.inspect_images([sentinel],environment=environment)[0]['Id'] == sentinel_meta['config_digest']
+            assert json.loads(podman('inspect',unrelated).stdout)[0]['State']['Status'] in {'configured','created'}
+            # Changed accepted input must fail before the native runtime runs.
+            path=root/archives[0]['path']; data=path.read_bytes(); path.write_bytes(data[:-1]+b'x')
+            with patch.object(cache.subprocess,'run') as engine:
+                try: cache.reload(root,source,archives,expected,environment)
+                except ValueError: pass
+                else: raise AssertionError('changed OCI archive accepted')
+                engine.assert_not_called()
         finally:
-            if proc is not None and proc.poll() is None:
-                proc.terminate()
-                try: proc.wait(timeout=12)
-                except subprocess.TimeoutExpired:
-                    os.killpg(proc.pid, signal.SIGKILL); proc.wait(timeout=3)
-            assert proc is None or proc.poll() is not None
-            shutil.rmtree(directory)
+            podman('rm',unrelated,check=False)
+            for reference in [*refs,sentinel]: podman('rmi','--no-prune',reference,check=False)
+        # Entire graph/run roots were created here and disappear with this
+        # owned temporary directory. No global reset/prune command is used.
+    print('NATIVE_OCI_CACHE_OK: exact no-op; protected prior/incoming aliases and stopped containers; unnamed config import; tamper refusal')
 
 
 if __name__ == '__main__': main()

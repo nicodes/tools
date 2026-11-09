@@ -1,25 +1,16 @@
-name: Prepare disposable image build environment
-description: Shared mirror-aware Docker setup and compiler caches for explicit image recipes
+name: Prepare disposable container build environment
+description: Native Podman setup with private registry authority and compiler caches
 runs:
   using: composite
   steps:
-    - name: Configure public Docker Hub mirror without inherited credentials
+    - name: Prepare native Podman and private registry authority
       shell: bash
-      run: timeout --foreground 120s bash "$GITHUB_ACTION_PATH/../helpers/ci-registry-mirror.sh"
-    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
-      id: builder
-      with:
-        buildkitd-config-inline: |
-          [registry."docker.io"]
-            mirrors = ["mirror.gcr.io"]
+      run: timeout --foreground 300s bash "$GITHUB_ACTION_PATH/../helpers/ci-container-runtime.sh"
     - name: Select job-owned image and compiler caches
       shell: bash
-      env:
-        BUILDER_NAME: ${{ steps.builder.outputs.name }}
       run: |
-        printf 'BUILDX_BUILDER=%s\n' "$BUILDER_NAME" >> "$GITHUB_ENV"
+        printf 'TOOLS_IMAGE_CACHE=%s/tools-image-cache\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
         printf 'FLEET_WEB_CACHE=%s/fleet-webcompiler\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
-        printf 'FLEET_BUILDKIT_CACHE=%s/fleet-buildkit\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
         printf 'GOCACHE=%s/fleet-go-compiler\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
@@ -28,11 +19,6 @@ runs:
           ${{ runner.temp }}/fleet-webcompiler/*/state.json
         key: cookbook-web-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('mise.toml', '**/package.json', '**/bun.lock', '**/package-lock.json') }}-${{ github.sha }}
         restore-keys: cookbook-web-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('mise.toml', '**/package.json', '**/bun.lock', '**/package-lock.json') }}-
-    - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
-      with:
-        path: ${{ runner.temp }}/fleet-buildkit
-        key: cookbook-layers-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('mise.toml', '**/Cargo.lock', '**/go.sum', '**/Dockerfile', '**/package.json', '**/bun.lock', '**/package-lock.json') }}-${{ github.sha }}
-        restore-keys: cookbook-layers-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('mise.toml', '**/Cargo.lock', '**/go.sum', '**/Dockerfile', '**/package.json', '**/bun.lock', '**/package-lock.json') }}-
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: ${{ runner.temp }}/fleet-go-compiler

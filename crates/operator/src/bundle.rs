@@ -25,6 +25,22 @@ pub const FILES: &[(&str, &[u8])] = &[
         include_bytes!("../internal/operator/assets/fleet_publisher.py"),
     ),
     (
+        "oci_registry.py",
+        include_bytes!("../../../helpers/oci_registry.py"),
+    ),
+    (
+        "release_packet.py",
+        include_bytes!("../../../helpers/release_packet.py"),
+    ),
+    (
+        "oci_archive.py",
+        include_bytes!("../../../helpers/oci_archive.py"),
+    ),
+    (
+        "container_runtime.py",
+        include_bytes!("../../../helpers/container_runtime.py"),
+    ),
+    (
         "fleet-operator.service",
         include_bytes!("../internal/operator/assets/fleet-operator.service"),
     ),

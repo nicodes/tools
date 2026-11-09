@@ -42,18 +42,29 @@ jobs:
       with:
         persist-credentials: false
     - name: Set up development tools
-      uses: nicodes/tools/setup@f412061a7a3f0914db9e09d1159e69504aee8706
+      uses: nicodes/tools/setup@e45263e72e813cb02251f92d8971f11a1b0398e4
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
-    - name: Log in to container registry
-      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
-      with:
-        registry: ghcr.io
-        username: ${{ github.actor }}
-        password: ${{ github.token }}
+    - name: Prepare native Podman
+      uses: nicodes/tools/podman-ci@e45263e72e813cb02251f92d8971f11a1b0398e4
+      if: inputs.scan-images
+    - name: Prepare private registry read authority
       timeout-minutes: 3
       if: inputs.scan-images
+      env:
+        REGISTRY_USERNAME: ${{ github.actor }}
+        REGISTRY_PASSWORD: ${{ github.token }}
+      run: |
+        python3 - <<'PYTHON'
+        import base64,json,os
+        from pathlib import Path
+        path=Path(os.environ['REGISTRY_AUTH_FILE'])
+        if path.is_symlink() or path.stat().st_mode & 0o077:
+            raise SystemExit('Private registry authfile required')
+        encoded=base64.b64encode((os.environ['REGISTRY_USERNAME']+':'+os.environ['REGISTRY_PASSWORD']).encode()).decode()
+        path.write_text(json.dumps({'auths':{'ghcr.io':{'auth':encoded}}})+'\n')
+        PYTHON
     - name: Scan every source module
       timeout-minutes: 30
       run: bash -euo pipefail -c "$SOURCE_COMMAND"
@@ -86,7 +97,7 @@ jobs:
       with:
         persist-credentials: false
     - name: Set up development tools
-      uses: nicodes/tools/setup@f412061a7a3f0914db9e09d1159e69504aee8706
+      uses: nicodes/tools/setup@e45263e72e813cb02251f92d8971f11a1b0398e4
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5

@@ -172,7 +172,7 @@ try {
   await browser?.close().catch(error => cleanupErrors.push(error));
   for (const entry of children.slice().reverse()) {
     if (entry.container) await new Promise((accept, reject) => {
-      const cleanup = spawn('docker', ['rm', '-f', entry.container], { stdio: 'ignore', timeout: 30000 });
+      const cleanup = spawn('podman', ['--remote=false', 'rm', '-f', entry.container], { stdio: 'ignore', timeout: 30000 });
       cleanup.once('error', reject);
       cleanup.once('exit', code => code === 0 ? accept() : reject(new Error('Container cleanup failed')));
     }).catch(error => cleanupErrors.push(error));

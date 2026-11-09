@@ -109,12 +109,15 @@ def restore(archive, target, expected=None, backend='pocketbase'):
             'files': files, 'databases': databases}
 
 
-def docker(*args):
-    return subprocess.check_output(['docker', *args], text=True, timeout=30).strip()
+def podman(*args):
+    spec = importlib.util.spec_from_file_location('_tools_snapshot_runtime', Path(__file__).with_name('container_runtime.py'))
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    return runtime.output(list(args), timeout=30).strip()
 
 
 def inspect(container):
-    result = json.loads(docker('inspect', container))
+    result = json.loads(podman('inspect', container))
     if len(result) != 1 or not re.fullmatch(r'[a-f0-9]{64}', result[0]['Id']):
         raise ValueError('database writer identity is ambiguous')
     return result[0]
@@ -123,7 +126,7 @@ def inspect(container):
 def timestamp_ns(value):
     match = re.fullmatch(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?Z', value)
     if not match:
-        raise ValueError('Docker health timestamp is not recognized')
+        raise ValueError('Podman health timestamp is not recognized')
     seconds = int(datetime.strptime(match[1], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc).timestamp())
     return seconds * 10**9 + int((match[2] or '').ljust(9, '0'))
 
@@ -157,7 +160,7 @@ def direct_health(container, port, timeout=90):
         if len(addresses) != 1 or not ipaddress.ip_address(addresses[0]).is_private:
             raise ValueError('writer must have one private container address for a direct health probe')
         try:
-            # Each request starts after unpause. Do not use a cached Docker status.
+            # Each request starts after unpause. Do not use a cached Podman status.
             request = urllib.request.Request(f'http://{addresses[0]}:{port}/api/health')
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             with opener.open(request, timeout=3) as response:
@@ -203,7 +206,7 @@ def snapshot(container, mount, destination, exclude_auxiliary=False, probe_port=
         try:
             # A pause error is NEVER interpreted as evidence that a writer stopped.
             paused = True
-            docker('pause', writer)
+            podman('pause', writer)
             if not inspect(writer)['State']['Paused']:
                 raise ValueError('database writer did not pause')
             with tarfile.open(archive, 'w:gz', dereference=False) as output:
@@ -226,7 +229,7 @@ def snapshot(container, mount, destination, exclude_auxiliary=False, probe_port=
                         output.addfile(metadata)
         finally:
             if paused:
-                docker('unpause', writer)
+                podman('unpause', writer)
                 boundary = time.time_ns()
                 if probe_port is None:
                     resumed_health(writer, boundary)
@@ -247,6 +250,15 @@ def snapshot(container, mount, destination, exclude_auxiliary=False, probe_port=
         return final
 
 
+def deployment_receipt(manifest):
+    deployment = manifest.get('deployment')
+    if deployment is None:
+        return None
+    release = deployment['release']
+    return {'application': release['application'], 'source': release['source'],
+            'release_digest': deployment['release_digest'], 'provider': deployment['provider']}
+
+
 def seal(directory, recipient):
     """Encrypt the verified snapshot to a public recovery certificate."""
     archive = directory / 'data.tar.gz'
@@ -256,6 +268,12 @@ def seal(directory, recipient):
         raise ValueError('unsupported recovery backend')
     if sha256(archive) != evidence['archive_sha256']:
         raise ValueError('snapshot changed after verification')
+    deployment = None
+    if backend == 'postgresql':
+        manifest = postgres_helper().validate_manifest(evidence.get('postgresql'))
+        if manifest['engine']['reference'] != evidence['image_reference'] or manifest['engine']['image_id'] != evidence['image_id']:
+            raise ValueError('sealed PostgreSQL engine differs from authenticated metadata')
+        deployment = deployment_receipt(manifest)
     output = directory / 'offhost'
     output.mkdir(mode=0o700)
     ciphertext = output / 'snapshot.cms'
@@ -272,6 +290,8 @@ def seal(directory, recipient):
                         '-in', str(envelope), '-out', str(ciphertext), str(recipient)], check=True, timeout=600)
     receipt = {key: evidence[key] for key in ['archive_sha256', 'image_id', 'image_reference', 'verified_at']}
     receipt['backend'] = backend
+    if deployment is not None:
+        receipt['deployment'] = deployment
     receipt['format'] = 1
     receipt['ciphertext_sha256'] = sha256(ciphertext)
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
@@ -313,6 +333,8 @@ def unseal(directory, key, target):
         if backend == 'postgresql' and (result['postgresql']['engine']['image_id'] != evidence['image_id'] or
                                        result['postgresql']['engine']['reference'] != evidence['image_reference']):
             raise ValueError('PostgreSQL engine differs from authenticated recovery metadata')
+        if backend == 'postgresql' and receipt.get('deployment') != deployment_receipt(result['postgresql']):
+            raise ValueError('recovery deployment or provider differs from the authenticated envelope')
         result.update({key: evidence[key] for key in ['image_id', 'image_reference', 'verified_at']})
         return result
 
