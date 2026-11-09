@@ -12,6 +12,15 @@ spec.loader.exec_module(runtime)
 
 
 class NativeRuntime(unittest.TestCase):
+    def test_bind_mount_ownership_maps_to_the_exact_nonroot_image_account(self):
+        with patch.object(runtime.os, 'geteuid', return_value=1001):
+            self.assertEqual(runtime.bind_mount_user_namespace(70, 71), ['--userns=keep-id:uid=70,gid=71'])
+            self.assertEqual(runtime.bind_mount_user_namespace(), ['--userns=keep-id'])
+        with patch.object(runtime.os, 'geteuid', return_value=0):
+            self.assertEqual(runtime.bind_mount_user_namespace(70, 71), [])
+        for uid, gid in [(None, 70), (70, None), (0, 70), (70, 0), (True, 70), ('70', 70), (2**32, 70)]:
+            with self.assertRaises(ValueError): runtime.bind_mount_user_namespace(uid, gid)
+
     def test_remote_selectors_cannot_redirect_execution(self):
         source = {key: 'foreign-endpoint' for key in runtime.REMOTE_ENVIRONMENT}
         source.update(PATH='/native/bin', XDG_RUNTIME_DIR='/owned/runtime')

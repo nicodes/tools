@@ -344,7 +344,11 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
     inspected = json.loads(podman('image', 'inspect', engine['image_id']))
     if len(inspected) != 1 or inspected[0]['Id'] != engine['image_id']:
         raise ValueError('restored PostgreSQL engine differs from authenticated metadata')
-    uid = os.getuid() or 65534
+    # Capture-only bundles do not embed the disposable-restore account reader.
+    spec = importlib.util.spec_from_file_location('_tools_pg_image_user', Path(__file__).with_name('image_user.py'))
+    image_user = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(image_user)
+    uid, gid = image_user.identity(engine['image_id'])
     name = project + '-pg-restore-' + secrets.token_hex(8)
     with tempfile.TemporaryDirectory(prefix=project+'-pg-restore-') as directory:
         work = Path(directory)
@@ -359,8 +363,8 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
             raise ValueError('PostgreSQL dump changed while staging restore')
         data = work/'database'; data.mkdir(mode=0o700)
         if os.getuid() == 0:
-            os.chown(data, uid, uid)
-            os.chown(dump, uid, uid)
+            os.chown(data, uid, gid)
+            os.chown(dump, uid, gid)
         password = secrets.token_hex(32)
         environment = work/'postgres.env'
         environment.write_text(f'POSTGRES_USER=restore_owner\nPOSTGRES_PASSWORD={password}\nPOSTGRES_DB={manifest["database"]}\nPGDATA=/var/lib/postgresql/data\n')
@@ -369,7 +373,7 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
         try:
             started = True
             podman('run', '--pull=never', '-d', '--name', name, '--label', 'nicodes.restore='+name,
-                   '--network=none', '--read-only', *native_runtime().bind_mount_user_namespace(), '--user', f'{uid}:{uid}', '--cap-drop=ALL',
+                   '--network=none', '--read-only', *native_runtime().bind_mount_user_namespace(uid, gid), '--user', f'{uid}:{gid}', '--cap-drop=ALL',
                    '--security-opt=no-new-privileges:true', '--memory=256m', '--cpus=1', '--pids-limit=128',
                    '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
                    '--tmpfs', '/var/run/postgresql:rw,noexec,nosuid,mode=1777,size=8m',
@@ -406,7 +410,7 @@ def restored_database(payload, project, revision, pull=False, timeout=300):
                 file.write_text(f'postgresql://{role}:{secret}@127.0.0.1:5432/{manifest["database"]}?sslmode=disable\n')
                 file.chmod(0o600)
                 if os.getuid() == 0:
-                    os.chown(file, uid, uid)
+                    os.chown(file, uid, gid)
                 role_files[role] = str(file)
             yield {'container': name, 'database': manifest['database'], 'credentials': role_files,
                    'engine': engine['image_id'], 'manifest': manifest, 'database_restore': 'passed'}
