@@ -20,13 +20,16 @@ class ReceiveBackup(unittest.TestCase):
         cases = [('valid', 'snapshot.cms', b'encrypted', False),
                  ('changed', 'snapshot.cms', b'changed', False),
                  ('duplicate', 'snapshot.cms', b'encrypted', True),
-                 ('escape', '../snapshot.cms', b'encrypted', False)]
+                 ('escape', '../snapshot.cms', b'encrypted', False),
+                 ('legacy', 'snapshot.cms', b'encrypted', False),
+                 ('float-version', 'snapshot.cms', b'encrypted', False)]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for name, path, payload, duplicate in cases:
                 archive = root/(name+'.tar')
                 with tarfile.open(archive, 'w') as output:
-                    entries = [(path, payload), ('receipt.json', json.dumps(receipt).encode())]
+                    transport = {**receipt, 'format': 1 if name == 'legacy' else 2.0 if name == 'float-version' else 2}
+                    entries = [(path, payload), ('receipt.json', json.dumps(transport).encode())]
                     if duplicate:
                         entries.append((path, payload))
                     for entry, data in entries:
