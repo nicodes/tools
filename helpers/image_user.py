@@ -130,7 +130,7 @@ def owned(native, name, token, config, environment, deadline):
     if (not re.fullmatch(r'[a-f0-9]{64}', value.get('Id', '')) or value.get('Name', '').lstrip('/') != name
             or native.config_digest(value.get('Image')) != config
             or settings.get('Labels', {}).get('tools.image-user') != token
-            or settings.get('User') != '65534:65534' or settings.get('Entrypoint') != ['/bin/false']
+            or settings.get('User') != '65534:65534' or settings.get('Entrypoint') not in ['/bin/false', ['/bin/false']]
             or state.get('Running') is not False or state.get('Pid') != 0
             or state.get('Status') not in {'configured', 'created'} or value.get('Mounts') != []):
         raise RuntimeError('image account inspection container identity changed')

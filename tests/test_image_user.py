@@ -59,7 +59,7 @@ class ImageUser(unittest.TestCase):
             if args[0] == 'create':
                 state.update(Id=CID, Name=args[args.index('--name')+1], Image=CONFIG,
                     Config={'Labels': {'tools.image-user': args[args.index('--label')+1].split('=', 1)[1]},
-                            'User': '65534:65534', 'Entrypoint': ['/bin/false']},
+                            'User': '65534:65534', 'Entrypoint': '/bin/false' if failure == 'native-string-entrypoint' else ['/bin/false']},
                     State={'Running': False, 'Pid': 0, 'Status': 'configured'}, Mounts=[])
                 if failure == 'lost-ack': return 125, b''
                 return 0, (CID+'\n').encode()
@@ -94,6 +94,12 @@ class ImageUser(unittest.TestCase):
                 reader.identity(CONFIG)
             self.assertFalse(state)
             self.assertIn(['rm', CID], calls)
+
+    def test_supported_native_entrypoint_shapes_require_the_same_single_literal_program(self):
+        capture, calls, state, _ = self.inspection(failure='native-string-entrypoint')
+        with patch.object(reader, 'capture', side_effect=capture):
+            self.assertEqual(reader.identity(CONFIG), (70, 71))
+        self.assertFalse(state)
 
     def test_changed_ownership_preserves_object_and_private_intent_for_explicit_recovery(self):
         for failure in ['foreign', 'changed']:
