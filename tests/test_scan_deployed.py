@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import stat
 import tarfile
 import tempfile
 import unittest
@@ -23,9 +24,9 @@ class DeployedRelease(unittest.TestCase):
                      'environment':'production','workflow':'.github/workflows/cd.yml'}
         self.deployment={'revision':self.source,'deployment_id':3,'run_id':42,'job_id':101,'state':'success'}
         self.run={'id':42,'head_sha':self.source,'head_branch':'main','event':'push','path':self.config['workflow'],
-                  'referenced_workflows':[{'path':'nicodes/komizo-actions/.github/workflows/cookbook-publish.yml@'+'c'*40,'sha':'c'*40}],
+                  'referenced_workflows':[{'path':'nicodes/komizo-actions/.github/workflows/cookbook-'+name+'.yml@'+'c'*40,'sha':'c'*40} for name in ['publish','deliver']],
                   'repository':{'id':123,'full_name':'example/widget'},'head_repository':{'full_name':'example/widget'},'run_attempt':2}
-        self.job={'id':101,'run_id':42,'run_attempt':2,'head_sha':self.source,'conclusion':'success'}
+        self.job={'id':101,'run_id':42,'run_attempt':2,'head_sha':self.source,'conclusion':'success','name':'deploy / Deliver exact release'}
         self.descriptor={'kind':'komizo.release','version':1,'application':'widget',
             'source':{'repository':'example/widget','repository_id':'123','revision':self.source},
             'artifacts':{'worker':{'kind':'image','reference':'ghcr.io/example/widget-worker@sha256:'+'e'*64,
@@ -35,12 +36,30 @@ class DeployedRelease(unittest.TestCase):
             'GITHUB_RUN_ID':'42','GITHUB_RUN_ATTEMPT':'2','GITHUB_WORKFLOW_REF':'example/widget/.github/workflows/cd.yml@refs/heads/main',
             'GITHUB_WORKFLOW_SHA':self.source}
         self.archive()
+        self.activation()
+
+    def activation(self, *, change=None, extra=None):
+        self.operation={'kind':'komizo.operation','version':1,'operation_id':'f'*32,'application':'widget','instance':'production',
+            'release_digest':scanner.registry.digest(scanner.registry.canonical(self.descriptor)),
+            'phase':'ready','ok':True,'reconciliation_required':False}
+        if change:self.operation.update(change)
+        output=io.BytesIO()
+        with zipfile.ZipFile(output,'w') as archive:
+            archive.writestr('komizo-operation.json',scanner.registry.canonical(self.operation)+b'\n')
+            for name,body in (extra or {}).items():archive.writestr(name,body)
+        self.activation_raw=output.getvalue()
+        self.activation_artifact={'id':56,'expired':False,'name':'activation-'+self.source+'-42-2',
+            'size_in_bytes':len(self.activation_raw),'digest':scanner.registry.digest(self.activation_raw),
+            'workflow_run':{'id':42,'head_sha':self.source}}
 
     def archive(self, *, change=None, extra=None):
         release=scanner.registry.canonical(self.descriptor); digest=scanner.registry.digest(release)
         source_context={**self.context,'GITHUB_JOB':'validate'}
-        inventory={'version':1,'files':{'release.json':{'type':'release','sha256':hashlib.sha256(release).hexdigest(),'size':len(release)},
-            'images/worker.oci.tar':{'type':'image','sha256':'c'*64,'size':10240}}}
+        inventory={'version':1,'files':{'release.json':{'type':'release','sha256':hashlib.sha256(release).hexdigest(),'size':len(release)}}}
+        for name,artifact in self.descriptor['artifacts'].items():
+            is_image=artifact['kind']=='image';path=('images/'+name+'.oci.tar') if is_image else ('static/'+name+'.tar.gz')
+            inventory['files'][path]={'type':'image' if is_image else 'static',
+                'sha256':'c'*64 if is_image else artifact['digest'][7:],'size':10240 if is_image else artifact['size_bytes']}
         inventory_raw=scanner.registry.canonical(inventory)
         artifacts={'.artifacts/release/'+name:record['sha256'] for name,record in inventory['files'].items()}
         artifacts['.artifacts/release/inventory.json']=hashlib.sha256(inventory_raw).hexdigest()
@@ -52,7 +71,7 @@ class DeployedRelease(unittest.TestCase):
         build={'identity':'f'*64,'artifacts':artifacts,'provenance':provenance}
         test={**provenance,'tested_commit':self.source,'test_receipts':{name:{'source_commit':self.source,'input_identity':'f'*64} for name in ['unit','integration']}}
         publication={'kind':'komizo.publication','version':1,'source':self.descriptor['source'],'release_digest':digest,
-                     'published':{'worker':self.descriptor['artifacts']['worker']['reference']},'execution_context':self.context,
+                     'published':{name:artifact['reference'] for name,artifact in self.descriptor['artifacts'].items()},'execution_context':self.context,
                      'inventory_sha256':hashlib.sha256(inventory_raw).hexdigest(),
                      'validation_sha256':hashlib.sha256(scanner.registry.canonical(validation)).hexdigest()}
         documents={'release.json':release,'inventory.json':inventory_raw,'validation.json':scanner.registry.canonical(validation),
@@ -71,12 +90,12 @@ class DeployedRelease(unittest.TestCase):
         if '/git/commits/' in path: return {'sha':self.source,'tree':{'sha':'d'*40}}
         if path.endswith('/actions/runs/42'): return self.run
         if path.endswith('/actions/jobs/101'): return self.job
-        if path.endswith('/actions/runs/42/artifacts?per_page=100'): return {'total_count':1,'artifacts':[self.artifact]}
+        if path.endswith('/actions/runs/42/artifacts?per_page=100'): return {'total_count':2,'artifacts':[self.artifact,self.activation_artifact]}
         raise AssertionError(path)
 
     def resolve(self):
-        with patch.object(scanner,'api',side_effect=self.backend),patch.object(scanner,'download',return_value=self.raw):
-            return scanner.release_for_deployment(self.config,self.deployment)
+        with patch.object(scanner,'api',side_effect=self.backend),patch.object(scanner,'download',side_effect=lambda repo,identity,env:self.raw if identity==55 else self.activation_raw):
+            return scanner.activation_for_deployment(self.config,self.deployment)
 
     def status(self,state,run=42,job=101):
         return {'state':state,'log_url':f'https://github.com/example/widget/actions/runs/{run}/job/{job}'}
@@ -121,9 +140,64 @@ class DeployedRelease(unittest.TestCase):
             self.assertIn('environment=Preview%20Build',api.call_args.args[0])
 
     def test_authenticated_closed_release_evidence_preserves_immutable_refs(self):
-        self.assertEqual(self.resolve(),self.descriptor)
+        accepted=self.resolve()
+        self.assertEqual(accepted['descriptor'],self.descriptor)
+        self.assertEqual(accepted['operation'],self.operation)
+        self.assertEqual(accepted['scope'],'activation_at_time');self.assertEqual(accepted['current_state'],'unobserved')
+        self.assertEqual(accepted['proof']['artifact_digest'],self.activation_artifact['digest'])
         self.deployment['state']='failure';self.job['conclusion']='failure'
-        self.assertEqual(self.resolve(),self.descriptor)
+        with self.assertRaises(ValueError):self.resolve()
+
+    def test_staged_failed_reconciliation_foreign_or_noncanonical_receipts_never_claim_activation(self):
+        for change in [{'phase':'prepared_stopped'},{'phase':'failed','ok':False},{'reconciliation_required':True},
+                {'application':'foreign'},{'instance':'pr-1'},{'release_digest':'sha256:'+'0'*64},
+                {'operation_id':'main'},{'ok':1},{'previous_release_digest':'wrong'},{'extra':'untrusted'}]:
+            self.activation(change=change)
+            with self.subTest(change=change),self.assertRaises(ValueError):self.resolve()
+        self.activation(extra={'backup/snapshot.cms':b'not metadata'})
+        with self.assertRaises(ValueError):self.resolve()
+
+    def test_activation_artifact_is_exact_bounded_immutable_and_from_the_successful_effect_job(self):
+        for field,value in [('expired',True),('name','activation-'+self.source+'-42-1'),('digest','sha256:'+'0'*64),
+                ('size_in_bytes',scanner.MAX_ACTIVATION+1),('workflow_run',{'id':41,'head_sha':self.source})]:
+            self.activation();self.activation_artifact[field]=value
+            with self.subTest(field=field),self.assertRaises(ValueError):self.resolve()
+        self.activation();self.job['name']='Build release'
+        with self.assertRaises(ValueError):self.resolve()
+        self.job['name']='deploy / Deliver exact release';self.run['referenced_workflows']=self.run['referenced_workflows'][:1]
+        with self.assertRaises(ValueError):self.resolve()
+
+    def test_complete_native_inventory_has_no_implicit_gate_or_omitted_images(self):
+        self.descriptor['artifacts']['postgres']={**self.descriptor['artifacts']['worker'],'reference':'ghcr.io/example/widget-postgres@sha256:'+'e'*64}
+        with self.assertRaisesRegex(ValueError,'complete'):scanner.product_images(self.config,self.descriptor)
+        self.config['components'].append('postgres')
+        self.assertEqual(len(scanner.product_images(self.config,self.descriptor)),2)
+
+    def test_native_static_artifacts_remain_in_the_complete_publication_acceptance_closure(self):
+        blob='sha256:'+'7'*64;size=17
+        manifest=scanner.registry.digest(scanner.registry.artifact_manifest(blob,size))
+        self.descriptor['artifacts']['web']={'kind':'archive','reference':'ghcr.io/example/widget-static@'+manifest,
+            'digest':blob,'size_bytes':size,'media_type':scanner.registry.STATIC_LAYER}
+        self.archive();self.activation()
+        self.assertEqual(self.resolve()['descriptor']['artifacts']['web']['digest'],blob)
+        self.assertEqual(len(scanner.product_images(self.config,self.descriptor)),1)
+        def omit(documents):
+            value=json.loads(documents['inventory.json']);del value['files']['static/web.tar.gz']
+            documents['inventory.json']=scanner.registry.canonical(value)
+        self.archive(change=omit)
+        with self.assertRaises(ValueError):self.resolve()
+
+    def test_operation_canonical_bytes_duplicates_and_linked_members_are_refused(self):
+        for body in [scanner.registry.canonical(self.operation),scanner.registry.canonical(self.operation)+b'\n\n',
+                b'{"kind":"komizo.operation","kind":"other"}\n']:
+            output=io.BytesIO()
+            with zipfile.ZipFile(output,'w') as archive:archive.writestr('komizo-operation.json',body)
+            self.activation_raw=output.getvalue();self.activation_artifact.update(size_in_bytes=len(self.activation_raw),digest=scanner.registry.digest(self.activation_raw))
+            with self.assertRaises(ValueError):self.resolve()
+        output=io.BytesIO();entry=zipfile.ZipInfo('komizo-operation.json');entry.external_attr=(stat.S_IFLNK|0o777)<<16
+        with zipfile.ZipFile(output,'w') as archive:archive.writestr(entry,scanner.registry.canonical(self.operation)+b'\n')
+        self.activation_raw=output.getvalue();self.activation_artifact.update(size_in_bytes=len(self.activation_raw),digest=scanner.registry.digest(self.activation_raw))
+        with self.assertRaises(ValueError):self.resolve()
 
     def test_wrong_source_job_workflow_attempt_or_stale_artifact_refuses(self):
         for field,value in [('head_sha','b'*40),('head_branch','feature'),('event','pull_request'),('path','.github/workflows/foreign.yml'),('run_attempt',3)]:
