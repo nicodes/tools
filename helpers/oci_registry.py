@@ -232,19 +232,33 @@ class Registry:
         return result
 
     def _upload_path(self, location, expected_digest):
+        if (not isinstance(location, str) or not 0 < len(location) <= 32768
+                or any(ord(char) < 32 or ord(char) == 127 for char in location)):
+            raise RegistryError('registry upload location is invalid')
+        # urljoin normalizes dot segments. Refuse them in the advertised path
+        # before resolving a relative location, including in-scope traversals.
+        if any(part in {'.', '..'} for part in urllib.parse.urlsplit(location).path.split('/')):
+            raise RegistryError('blob upload cannot leave its approved repository')
         target = urllib.parse.urlsplit(urllib.parse.urljoin('https://' + self.registry, location))
         origin = urllib.parse.urlsplit('https://' + self.registry)
+        prefixes = [self._prefix + '/blobs/uploads/']
+        if origin.hostname == 'ghcr.io' and (origin.port or 443) == 443:
+            prefixes.append(self._prefix + '/blobs/upload/')
         if (target.scheme != 'https' or target.hostname != origin.hostname
                 or (target.port or 443) != (origin.port or 443)
                 or target.username or target.password or target.fragment
-                or not target.path.startswith(self._prefix + '/blobs/uploads/')
+                or not any(target.path.startswith(prefix) and len(target.path) > len(prefix)
+                           for prefix in prefixes)
                 or '%' in target.path or '\\' in target.path
                 or any(part in {'.', '..'} for part in target.path.split('/'))):
             raise RegistryError('blob upload cannot leave its approved repository')
         query = urllib.parse.parse_qsl(target.query, keep_blank_values=True)
         if any(key == 'digest' for key, _ in query):
             raise RegistryError('registry upload location selects its own digest')
-        return target.path + '?' + urllib.parse.urlencode(query + [('digest', expected_digest)])
+        # The registry's query may carry signed opaque state. Preserve its
+        # original bytes; only the caller-selected digest is appended.
+        return (target.path + '?' + (target.query + '&' if target.query else '')
+                + urllib.parse.urlencode([('digest', expected_digest)]))
 
     def upload_blob(self, blob_digest, size_bytes, reader):
         _blob(reader, blob_digest, size_bytes)
