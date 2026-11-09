@@ -63,26 +63,21 @@ class ImageImportCacheControls(unittest.TestCase):
             reference = command[-1]
             if reference in self.inspect_errors:
                 raise subprocess.CalledProcessError(1, command, stderr=self.inspect_errors[reference])
-            if reference in self.inspected:
-                value = copy.deepcopy(self.inspected[reference])
-            else:
-                value = copy.deepcopy(self.known_images.get(reference, {'Id':reference,'RootFS':{'Layers':[]}}))
+            value = copy.deepcopy(self.known_images.get(reference, {'Id':reference,'RootFS':{'Layers':[]}}))
             identity = cache.runtime.config_digest(value['Id'])
             matching = [row for row in self.listing if cache.runtime.config_digest(row['ID']) == identity]
             value['RepoTags'] = [row['Repository']+':'+row['Tag'] for row in matching if row['Tag'] != '<none>']
             value['RepoDigests'] = sorted({digest for row in matching for digest in row['RepoDigests']})
             output = json.dumps([value])
         elif command[1:3] == ['image','load']:
+            with tarfile.open(command[-1]) as packed:
+                descriptor = json.load(packed.extractfile('index.json'))['manifests'][0]
+                self.assertEqual(set(descriptor), {'mediaType','digest','size'})
             for reference, identity in self.expected.items():
-                for row in self.listing:
-                    if row['Repository']+':'+row['Tag'] == reference and row['ID'] != identity:
-                        if row['RepoDigests']:
-                            self.listing.append({'Repository':'<none>','Tag':'<none>','ID':row['ID'],
-                                                 'RepoDigests':row['RepoDigests'][:]})
-                        row['ID'], row['RepoDigests'] = identity, []
-                if not any(row['Repository']+':'+row['Tag'] == reference for row in self.listing):
-                    self.listing.append(self.row(reference,identity))
-            self.inspected.update(copy.deepcopy(self.after_load)); output = ''
+                self.known_images[identity] = copy.deepcopy(self.after_load[reference])
+                if not any(cache.runtime.config_digest(row['ID']) == identity for row in self.listing):
+                    self.listing.append({'Repository':'<none>','Tag':'<none>','ID':identity,'RepoDigests':[]})
+            output = ''
         else: output = ''
         return subprocess.CompletedProcess(command, 0, stdout=output)
 
@@ -104,25 +99,26 @@ class ImageImportCacheControls(unittest.TestCase):
         self.assertEqual(self.calls,[])
         self.refused(expected={})
 
-    def test_stale_owned_alias_loads_originals_without_deleting_objects(self):
+    def test_missing_config_imports_exact_blobs_without_changing_existing_aliases(self):
         self.listing[0]['ID'] = 'sha256:'+'c'*64
         self.assertEqual(set(self.reload()), set(self.expected))
         mutations = self.mutations()
-        self.assertEqual([row for row in mutations if row[2] == 'load'],
-                         [['podman','image','load','--input',str(self.root / row['path'])] for row in self.archives])
+        self.assertEqual(len([row for row in mutations if row[2] == 'load']),len(self.archives))
+        self.assertEqual(self.listing[0]['ID'],'sha256:'+'c'*64)
+        self.assertFalse(any(row[2]=='tag' for row in mutations))
         self.assertFalse(any(value in command for command, _ in self.calls
                              for value in ['rm','rmi','--force','-f','prune','build','create','start']))
         self.assertTrue(all(options['cwd'] == self.root and options['env']['PATH'] == '/synthetic/native-only'
                             and 'CONTAINER_HOST' not in options['env'] for _, options in self.calls))
 
     def test_content_address_with_wrong_rootfs_refuses_before_effects(self):
-        self.inspected[self.refs[0]]['RootFS']['Layers'] = []
+        self.known_images[self.expected[self.refs[0]]]['RootFS']['Layers'] = []
         with self.assertRaisesRegex(ValueError,'RootFS disagree'): self.reload()
         self.assertEqual(self.mutations(), [])
 
     def test_healthy_exact_cache_is_reverified_without_mutation(self):
         self.assertEqual(set(self.reload()), set(self.expected)); self.assertEqual(self.mutations(), [])
-        self.assertEqual([command[-1] for command,_ in self.calls if command[1:3] == ['image','inspect']], self.refs + self.refs)
+        self.assertEqual([command[-1] for command,_ in self.calls if command[1:3] == ['image','inspect']], list(self.expected.values()) + list(self.expected.values()))
 
     def test_noop_keeps_borrowed_alias_digest_and_stopped_container(self):
         self.listing.append(self.row('registry.example/other/fixture:fixture', self.expected[self.refs[0]]))
@@ -186,13 +182,13 @@ class ImageImportCacheControls(unittest.TestCase):
 
     def test_unknown_native_store_inspect_failure_refuses_without_deletion(self):
         for message in ['permission denied','layer not known','readlink /foreign/overlay/l/missing: no such file or directory']:
-            self.calls.clear(); self.inspect_errors[self.refs[-1]] = message
+            self.calls.clear(); self.inspect_errors[self.expected[self.refs[-1]]] = message
             with self.assertRaises(subprocess.CalledProcessError): self.reload()
             self.assertEqual(self.mutations(), [])
 
     def test_changed_tag_or_malformed_inspection_refuses(self):
         for value in [{'Id':'sha256:'+'e'*64,'RootFS':{'Layers':[]}}, {'Id':self.expected[self.refs[0]],'RootFS':{'Layers':'invalid'}}]:
-            self.calls.clear(); self.inspected[self.refs[0]] = value
+            self.calls.clear(); self.known_images[self.expected[self.refs[0]]] = value
             with self.assertRaises(ValueError): self.reload()
             self.assertEqual(self.mutations(), [])
 

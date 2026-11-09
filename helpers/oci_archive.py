@@ -2,6 +2,7 @@
 import gzip
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -244,6 +245,32 @@ class OCIArchive:
             shutil.rmtree(destination)
             raise
 
+    def import_archive(self, destination):
+        """Derive an unnamed native import; raw registry manifest/blobs stay exact."""
+        destination = Path(destination).absolute()
+        if destination.exists() or destination.is_symlink() or any(p.is_symlink() for p in destination.parents):
+            raise ValueError('OCI import needs a new file without linked ancestors')
+        self.unchanged()
+        descriptor = {'mediaType': MANIFEST, 'digest': self.metadata['manifest_digest'],
+                      'size': len(self.manifest_bytes)}
+        index = json.dumps({'schemaVersion': 2, 'manifests': [descriptor]}, separators=(',', ':')).encode()
+        try:
+            with destination.open('xb') as output:
+                os.fchmod(output.fileno(), 0o600)
+                with tarfile.open(fileobj=output, mode='w', format=tarfile.USTAR_FORMAT) as packed:
+                    for name in sorted(self.reachable):
+                        remaining(self.deadline)
+                        member = tarfile.TarInfo(name)
+                        member.mode = 0o600
+                        member.size = len(index) if name == 'index.json' else self.members[name].size
+                        with (io.BytesIO(index) if name == 'index.json' else self.archive.extractfile(self.members[name])) as incoming:
+                            packed.addfile(member, incoming)
+            self.unchanged()
+            return destination
+        except BaseException:
+            destination.unlink(missing_ok=True)
+            raise
+
     def open_blob(self, digest):
         self.unchanged()
         if not isinstance(digest, str) or not DIGEST.fullmatch(digest):
@@ -283,15 +310,12 @@ def save_image(reference, path, *, environment=None, authfile=None, timeout=600)
 def load_image(path, expected_reference=None, expected_config=None, *, environment=None, authfile=None, timeout=600):
     deadline = time.monotonic() + timeout
     with OCIArchive(path, expected_reference, expected_config, timeout=timeout) as archive:
-        archive.unchanged()
-        runtime.run(['load', '--input', str(path)], environment=environment, authfile=authfile,
-                    timeout=remaining(deadline), check=True)
-        archive.unchanged()
-        if expected_reference and '@sha256:' not in expected_reference:
-            runtime.run(['tag', archive.metadata['config_digest'], expected_reference],
-                        environment=environment, authfile=authfile, timeout=remaining(deadline), check=True)
-        selected = (expected_reference if expected_reference and '@sha256:' not in expected_reference
-                    else archive.metadata['config_digest'])
+        with tempfile.TemporaryDirectory(prefix='oci-import-') as directory:
+            incoming = archive.import_archive(Path(directory) / 'image.oci.tar')
+            runtime.run(['load', '--input', str(incoming)], environment=environment, authfile=authfile,
+                        timeout=remaining(deadline), check=True)
+            archive.unchanged()
+        selected = archive.metadata['config_digest']
         image = runtime.inspect_images([selected], environment=environment, authfile=authfile,
                                        timeout=remaining(deadline))[0]
         if (image['Id'] != archive.metadata['config_digest']

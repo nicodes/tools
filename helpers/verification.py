@@ -143,7 +143,14 @@ def resolve_images(declaration, revision):
     return result
 
 
-def artifacts(declaration):
+def inspect_images(identities):
+    spec = importlib.util.spec_from_file_location('_tools_verification_runtime', Path(__file__).with_name('container_runtime.py'))
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    return runtime.inspect_images(identities)
+
+
+def artifacts(declaration, image_identities=None):
     found = {}
     for pattern in declaration['artifacts']:
         candidates = []
@@ -159,17 +166,22 @@ def artifacts(declaration):
                 raise ValueError('build artifacts must not follow links')
             found[path.as_posix()] = sha(path)
     refs = resolve_images(declaration, git('rev-parse', 'HEAD'))
+    if image_identities is not None:
+        if (not isinstance(image_identities, dict) or set(image_identities) != set(refs)
+                or any(not isinstance(value, str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', value)
+                       for value in image_identities.values())):
+            raise ValueError('accepted image identities must cover the exact declared references')
     if refs:
-        spec = importlib.util.spec_from_file_location('_tools_verification_runtime', Path(__file__).with_name('container_runtime.py'))
-        runtime = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(runtime)
-        images = runtime.inspect_images(refs)
+        images = inspect_images(refs if image_identities is None else [image_identities[ref] for ref in refs])
         if len(images) != len(refs):
             raise ValueError('a declared image is missing')
         for ref, image in zip(refs, images, strict=True):
-            if ref not in image.get('RepoTags', []) or not re.fullmatch(r'sha256:[a-f0-9]{64}', image.get('Id', '')):
+            identity = image.get('Id', '')
+            if (not re.fullmatch(r'sha256:[a-f0-9]{64}', identity)
+                    or (ref not in image.get('RepoTags', []) if image_identities is None
+                        else identity != image_identities[ref])):
                 raise ValueError('built image has no matching immutable identity')
-            found['image:'+ref] = image['Id']
+            found['image:'+ref] = identity
     return found
 
 
@@ -305,7 +317,7 @@ def invoke(command, environment=None):
         raise ValueError('verification command could not start') from None
 
 
-def run_command(kind, name, declaration, command, directory, source_only=False, variant='production'):
+def run_command(kind, name, declaration, command, directory, source_only=False, variant='production', *, image_identities=None):
     if not NAME.fullmatch(name):
         raise ValueError('verification name must be a task slug')
     with locked():
@@ -336,7 +348,7 @@ def run_command(kind, name, declaration, command, directory, source_only=False, 
                  'tested_commit': source if kind == 'test' else None,
                  **checkout_binding(), 'execution_context': execution_context()}
         if kind == 'build':
-            write(directory/'build.json', {'identity': before, 'artifacts': artifacts(declaration), 'provenance': proof})
+            write(directory/'build.json', {'identity': before, 'artifacts': artifacts(declaration, image_identities=image_identities), 'provenance': proof})
         else:
             session = os.environ.get('TOOLS_VERIFICATION_SESSION')
             if session:

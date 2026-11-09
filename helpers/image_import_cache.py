@@ -1,4 +1,4 @@
-"""Reuse or import a closed image set without deleting native store objects."""
+"""Reuse or import exact image configs without changing native store names."""
 import hashlib
 import json
 import importlib.util
@@ -8,6 +8,7 @@ import stat
 import subprocess
 import tarfile
 import time
+import tempfile
 
 _spec = importlib.util.spec_from_file_location('_tools_cache_oci', Path(__file__).with_name('oci_archive.py'))
 oci = importlib.util.module_from_spec(_spec)
@@ -86,7 +87,7 @@ def reload(root, source, archives, expected, environment, timeout=600):
 
     The caller owns source/configuration/build-proof admission and supplies the
     complete declared image set. This helper independently closes the archive
-    tag/config/layer set, protects aliases and containers, and retains one total
+    reference/config/layer set, protects aliases and containers, and retains one total
     deadline across validation, cache inspection, load and verification.
     """
     if type(timeout) is not int or not 1 <= timeout <= 600:
@@ -172,19 +173,11 @@ def reload(root, source, archives, expected, environment, timeout=600):
                 result[target] = set(entries)
         return result
 
-    stale = any(identity != expected[reference] for reference, identity in present.items())
-    for reference, identity in present.items():
-        if identity != expected[reference]:
-            continue
-        # A matching content address with different data is storage corruption,
-        # not permission to remove objects or attempt a global store repair.
-        observed = inspect(reference)
-        if observed['id'] != identity:
-            raise ValueError('source tag changed during image cache admission')
-        if observed != admitted[reference]:
+    available = {row['ID'] for row, _ in rows}
+    for reference, wanted in admitted.items():
+        if wanted['id'] in available and inspect(wanted['id']) != wanted:
             raise ValueError('content-addressed cache config and RootFS disagree; native storage requires operator inspection')
-
-    mutating = stale or set(present) != set(expected)
+    mutating = not set(expected.values()) <= available
     protected_images, protected_containers = {}, {}
     def container(identity):
         values = json.loads(execute(['container', 'inspect', identity]), object_pairs_hook=unique_object)
@@ -195,8 +188,8 @@ def reload(root, source, archives, expected, environment, timeout=600):
                 'state': values[0]['State']}
 
     if mutating:
-        # Imports change only admitted source aliases. Every existing config,
-        # other alias, registry identity and container remains in native storage.
+        # Unnamed imports leave every existing config, source alias, registry
+        # identity and container in native storage.
         targets = (set(expected.values()) | set(present.values())) & {row['ID'] for row, _ in rows}
         accepted = {row['id']: row['rootfs'] for row in admitted.values()}
         for identity in sorted(targets):
@@ -205,7 +198,7 @@ def reload(root, source, archives, expected, environment, timeout=600):
                     or identity in accepted and observed['rootfs'] != accepted[identity]):
                 raise ValueError('native content-addressed storage disagrees with the accepted image')
             protected_images[identity] = {'rootfs': observed['rootfs'],
-                                          'tags': observed['tags'] - set(expected),
+                                          'tags': observed['tags'],
                                           'digests': observed['digests']}
             for selected in execute(['container', 'ls', '--all', '--quiet', '--no-trunc',
                                      '--filter', 'ancestor=' + identity]).splitlines():
@@ -225,13 +218,14 @@ def reload(root, source, archives, expected, environment, timeout=600):
     if mutating:
         for path in paths:
             unchanged(path)
-            execute(['image', 'load', '--input', str(path)], cap=600)
+            with oci.OCIArchive(path, timeout=remaining(deadline)) as accepted:
+                with tempfile.TemporaryDirectory(prefix='oci-cache-import-') as directory:
+                    incoming = accepted.import_archive(Path(directory) / 'image.oci.tar')
+                    execute(['image', 'load', '--input', str(incoming)], cap=600)
+                    accepted.unchanged()
             unchanged(path)
-            values = archive_images(path, expected, deadline)
-            for reference, value in values.items():
-                execute(['image', 'tag', value['id'], reference])
-    for reference, wanted in admitted.items():
-        if inspect(reference) != wanted:
+    for wanted in admitted.values():
+        if inspect(wanted['id']) != wanted:
             raise ValueError('imported image differs from its accepted config ID or RootFS')
     for identity, wanted in protected_images.items():
         actual = inspect(identity, detailed=True)

@@ -77,6 +77,27 @@ class ImageArchive(unittest.TestCase):
             with oci.OCIArchive(path) as archive:
                 with self.assertRaises(ValueError): archive.materialize(root/'alias'/'outside')
 
+    def test_unnamed_import_preserves_every_raw_blob_without_mutating_accepted_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);path=root/'accepted.oci.tar'
+            entries,manifest,config,_=fixture(compressed=True);write(path,entries)
+            before=path.read_bytes()
+            with oci.OCIArchive(path,REF,config['digest']) as archive:
+                incoming=archive.import_archive(root/'import.oci.tar')
+                with tarfile.open(incoming) as packed:
+                    received={member.name:packed.extractfile(member).read() for member in packed}
+                index=json.loads(received.pop('index.json'))
+                self.assertEqual(index,{'schemaVersion':2,'manifests':[{key:manifest[key] for key in ['mediaType','digest','size']}]})
+                self.assertEqual(received,{key:body for key,body in entries.items() if key!='index.json'})
+                self.assertEqual(incoming.stat().st_mode & 0o777,0o600)
+                self.assertEqual(path.read_bytes(),before)
+                with self.assertRaises(ValueError):archive.import_archive(incoming)
+                (root/'linked').symlink_to(root,target_is_directory=True)
+                with self.assertRaises(ValueError):archive.import_archive(root/'linked'/'escape.tar')
+                admitted=oci.inspect_archive(incoming,expected_config=config['digest'])
+                self.assertEqual(admitted['manifest_digest'],manifest['digest'])
+                self.assertEqual(admitted['reference'],'')
+
     def test_corrupt_blob_or_rootfs_identity_refuses(self):
         with tempfile.TemporaryDirectory() as directory:
             for corrupt in ['blob', 'diff']:

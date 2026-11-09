@@ -2,7 +2,7 @@
 """Exercise real Podman OCI reloads in one new private native image store.
 
 No host daemon or existing store is changed. The helper must preserve borrowed
-aliases and stopped containers, replace only owned source tags, and reject
+aliases and stopped containers, import only immutable configs without changing existing tags, and reject
 changed accepted bytes before any engine operation.
 """
 import hashlib
@@ -36,6 +36,12 @@ def main():
         environment.pop('REGISTRY_AUTH_FILE', None)
         def podman(*args, check=True):
             return runtime.run(list(args), environment=environment, timeout=60, check=check, capture_output=True, text=True)
+        def fixture_image(path, reference):
+            metadata = oci_archive.load_image(path, reference, environment=environment)
+            # Only explicit fixture construction assigns names. Cache imports
+            # must preserve all of them, including a stale source alias.
+            podman('tag', metadata['config_digest'], reference)
+            return metadata
         info = json.loads(podman('info','--format','json').stdout)
         assert info['store']['graphRoot'] == str(root / 'graph') and info['store']['graphDriverName'] == 'vfs'
         source = hashlib.sha256(root.name.encode()).hexdigest()[:40]
@@ -46,13 +52,13 @@ def main():
             config = {'os':'linux','architecture':'amd64','config':{'Cmd':['/never-started']},
                       'rootfs':{'type':'layers','diff_ids':['sha256:' + hashlib.sha256(body).hexdigest() for body in layers]}}
             path = root / (str(number) + '.oci.tar'); fixture.write(path,fixture.contents(reference,config,layers))
-            metadata = oci_archive.load_image(path,reference,environment=environment)
+            metadata = fixture_image(path,reference)
             expected[reference] = metadata['config_digest']; configs[reference] = (config,layers)
             archives.append({'path':path.name,'sha256':metadata['archive_sha256']})
         sentinel = 'registry.example/unrelated:' + source
         config,layers = configs[refs[0]]; config = dict(config,created='2026-01-01T00:00:00Z')
         sentinel_path = root / 'unrelated.oci.tar'; fixture.write(sentinel_path,fixture.contents(sentinel,config,layers))
-        sentinel_meta = oci_archive.load_image(sentinel_path,sentinel,environment=environment)
+        sentinel_meta = fixture_image(sentinel_path,sentinel)
         unrelated = podman('create','--network=none',sentinel).stdout.strip()
         def invoke():
             observed = []
@@ -77,7 +83,7 @@ def main():
             prior_config, prior_layers = configs[refs[0]]
             prior_config = dict(prior_config,created='2026-02-02T00:00:00Z')
             prior_path = root/'prior.oci.tar'; fixture.write(prior_path,fixture.contents(refs[0],prior_config,prior_layers))
-            prior = oci_archive.load_image(prior_path,refs[0],environment=environment)['config_digest']
+            prior = fixture_image(prior_path,refs[0])['config_digest']
             assert prior != expected[refs[0]]
             accepted_bytes = {record['path']:(root/record['path']).read_bytes() for record in archives}
             def image_record(identity):
@@ -85,9 +91,9 @@ def main():
                 return {'id':runtime.config_digest(value['Id']), 'rootfs':value['RootFS'],
                         'tags':set(value['RepoTags']), 'digests':set(value['RepoDigests'])}
             for identity in [prior,expected[refs[0]]]:
-                # Each scenario begins with a genuinely stale owned source tag.
-                # Borrowed users of both old and accepted configs must survive.
-                oci_archive.load_image(prior_path,refs[0],environment=environment)
+                # A missing independent accepted config requires import while
+                # borrowed users of old and accepted configs remain untouched.
+                podman('rmi','--no-prune',expected[refs[2]])
                 container = podman('create','--network=none',identity).stdout.strip()
                 before = json.loads(podman('container','inspect',container).stdout)[0]
                 admitted, commands = invoke()
@@ -95,23 +101,24 @@ def main():
                 assert before['Id'] == after['Id'] == container
                 assert before['Image'] == after['Image'] and before['State'] == after['State']
                 assert {ref:row['id'] for ref,row in admitted.items()} == expected
-                assert all(effect[1] in {'load','tag'} for effect in effects(commands)), commands
+                assert all(effect[1] == 'load' for effect in effects(commands)), commands
                 podman('rm',container)
-                oci_archive.load_image(prior_path,refs[0],environment=environment)
+                podman('rmi','--no-prune',expected[refs[2]])
                 podman('tag',identity,alias)
                 before = image_record(identity)
                 admitted, commands = invoke()
                 after = image_record(identity)
                 assert before['id'] == after['id'] == identity and before['rootfs'] == after['rootfs']
-                assert before['tags'] - set(refs) <= after['tags'] and before['digests'] <= after['digests']
+                assert before['tags'] <= after['tags'] and before['digests'] <= after['digests']
                 assert image_record(alias)['id'] == identity
-                assert all(effect[1] in {'load','tag'} for effect in effects(commands)), commands
+                assert all(effect[1] == 'load' for effect in effects(commands)), commands
                 podman('rmi',alias)
-            oci_archive.load_image(prior_path,refs[0],environment=environment)
+            podman('rmi','--no-prune',expected[refs[2]])
             admitted, commands = invoke()
             assert {ref:row['id'] for ref,row in admitted.items()} == expected
             assert effects(commands).count(['image','load']) == len(archives)
-            assert all(effect[1] in {'load','tag'} for effect in effects(commands)), commands
+            assert all(effect[1] == 'load' for effect in effects(commands)), commands
+            assert image_record(refs[0])['id'] == prior, 'Cache import overwrote an existing source alias'
             assert accepted_bytes == {record['path']:(root/record['path']).read_bytes() for record in archives}
             assert not effects(invoke()[1])
             assert runtime.inspect_images([sentinel],environment=environment)[0]['Id'] == sentinel_meta['config_digest']
@@ -128,7 +135,7 @@ def main():
             for reference in [*refs,sentinel]: podman('rmi','--no-prune',reference,check=False)
         # Entire graph/run roots were created here and disappear with this
         # owned temporary directory. No global reset/prune command is used.
-    print('NATIVE_OCI_CACHE_OK: exact no-op; protected prior/incoming aliases and stopped containers; non-destructive replacement; tamper refusal')
+    print('NATIVE_OCI_CACHE_OK: exact no-op; protected prior/incoming aliases and stopped containers; unnamed config import; tamper refusal')
 
 
 if __name__ == '__main__': main()
