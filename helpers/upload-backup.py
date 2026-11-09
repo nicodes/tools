@@ -29,7 +29,7 @@ def allowed_slugs():
         raise ValueError('BACKUP_ALLOWED_SLUGS must contain distinct reviewed project slugs')
     return values
 
-MAX_CMS = 17 * 1024**3
+MAX_CMS = 8 * 1024**3
 MAX_RECEIPT = 64 * 1024
 CHUNK_BYTES = 64 * 1024
 TOTAL_SECONDS = 600
@@ -280,7 +280,7 @@ def upload_pair(slug, cms_body, receipt, taken_at):
         envelope = json.loads(receipt_body.decode())
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError('receipt is not valid JSON') from error
-    if not isinstance(envelope, dict) or envelope.get('format') != 1:
+    if not isinstance(envelope, dict) or type(envelope.get('format')) is not int or envelope['format'] != 2:
         raise ValueError('unknown encrypted envelope format')
     digest = envelope.get('ciphertext_sha256')
     if not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest):

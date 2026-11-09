@@ -16,7 +16,7 @@ def receive(archive, target):
         for member in source:
             if member.name not in {'snapshot.cms', 'receipt.json'} or member.name in seen or not member.isfile():
                 raise ValueError('unexpected, duplicate, or unsafe encrypted export entry')
-            if member.size > (17 * 1024**3 if member.name == 'snapshot.cms' else 64 * 1024):
+            if member.size > (8 * 1024**3 if member.name == 'snapshot.cms' else 64 * 1024):
                 raise ValueError('encrypted export exceeds the size bound')
             if shutil.disk_usage(target).free < member.size + 512 * 1024**2:
                 raise ValueError('insufficient disk headroom to receive encrypted export')
@@ -27,7 +27,7 @@ def receive(archive, target):
     if seen != {'snapshot.cms', 'receipt.json'}:
         raise ValueError('encrypted export is incomplete')
     receipt = json.loads((target / 'receipt.json').read_text())
-    if receipt.get('format') != 1:
+    if type(receipt.get('format')) is not int or receipt['format'] != 2:
         raise ValueError('unknown encrypted envelope format')
     for key in ['archive_sha256', 'ciphertext_sha256']:
         if not isinstance(receipt.get(key), str) or not re.fullmatch(r'[a-f0-9]{64}', receipt[key]):

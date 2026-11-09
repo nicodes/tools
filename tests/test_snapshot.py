@@ -48,6 +48,7 @@ class SnapshotBoundaries(unittest.TestCase):
                         'verified_at': '2026-09-04T12:00:00+00:00'}
             (root/'verification.json').write_text(json.dumps(evidence))
             offhost = snapshot.seal(root, cert)
+            self.assertEqual(json.loads((offhost/'receipt.json').read_text())['format'], 2)
             target = root/'restored'; target.mkdir()
             self.assertEqual(snapshot.unseal(offhost, key, target)['archive_sha256'], evidence['archive_sha256'])
             receipt = json.loads((offhost/'receipt.json').read_text())
@@ -63,7 +64,9 @@ class SnapshotBoundaries(unittest.TestCase):
             receipt = json.loads((offhost/'receipt.json').read_text())
             receipt['ciphertext_sha256'] = snapshot.sha256(ciphertext)
             (offhost/'receipt.json').write_text(json.dumps(receipt))
-            with self.assertRaises(subprocess.CalledProcessError): snapshot.unseal(offhost, key, target)
+            with patch.object(snapshot, 'restore') as restore, self.assertRaises(ValueError):
+                snapshot.unseal(offhost, key, target)
+            restore.assert_not_called()
 
     def test_committed_wal_is_restored_and_corruption_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:

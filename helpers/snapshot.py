@@ -7,6 +7,7 @@ import hashlib
 import gzip
 import fcntl
 import ipaddress
+import io
 import importlib.util
 import json
 import os
@@ -15,6 +16,8 @@ import re
 import shutil
 import signal
 import sqlite3
+import stat
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -24,6 +27,337 @@ import urllib.request
 MAX_FILES = 100000
 MAX_BYTES = 16 * 1024**3
 AUXILIARY = {'auxiliary.db', 'auxiliary.db-wal', 'auxiliary.db-shm'}
+
+# The transport limit is distinct from MAX_BYTES (expanded product files).
+MAX_CIPHERTEXT = 8 * 1024**3
+FRAME_BYTES = 4 * 1024**2
+MAX_FRAMES = MAX_CIPHERTEXT // FRAME_BYTES
+INDEX_BYTES = 2 * 1024**2
+CMS_OVERHEAD = 64 * 1024
+FILE_MAGIC = b'KMSNAP2\0'
+END_MAGIC = b'KMSEND2\0'
+PART_MAGIC = b'KMSPART2'
+INDEX_MAGIC = b'KMSIDX2\0'
+FILE_HEADER = struct.Struct('>8s16s')
+PART_HEADER = struct.Struct('>8s16sQI')
+RECORD_HEADER = struct.Struct('>Q')
+FOOTER = struct.Struct('>8sQQ')
+CRYPTO_SECONDS = 900
+
+
+def _remaining(deadline):
+    seconds = deadline - time.monotonic()
+    if seconds <= 0:
+        raise TimeoutError('snapshot cryptography exceeded its aggregate deadline')
+    return seconds
+
+
+def _canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode('ascii')
+
+
+def _unique_object(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError('duplicate recovery metadata key')
+        result[key] = value
+    return result
+
+
+def _metadata(raw):
+    return json.loads(raw, object_pairs_hook=_unique_object)
+
+
+class _StableFile:
+    """Use one bounded regular inode and refuse replacement or mutation."""
+    def __init__(self, path, limit):
+        self.path = Path(path)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        self.stream = os.fdopen(descriptor, 'rb')
+        self.info = os.fstat(descriptor)
+        if not stat.S_ISREG(self.info.st_mode) or not 0 < self.info.st_size <= limit:
+            self.stream.close()
+            raise ValueError('recovery input must be a bounded nonempty regular file')
+
+    def unchanged(self):
+        now, named = os.fstat(self.stream.fileno()), self.path.lstat()
+        fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+        if any(getattr(value, field) != getattr(self.info, field) for value in (now, named) for field in fields):
+            raise ValueError('recovery input changed during cryptography')
+
+    def hash(self, deadline):
+        self.stream.seek(0)
+        result = hashlib.sha256()
+        while block := self.stream.read(256 * 1024):
+            _remaining(deadline)
+            result.update(block)
+        self.unchanged()
+        return result.hexdigest()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.stream.close()
+
+
+def _der_item(data, start, bound):
+    if start + 2 > bound:
+        raise ValueError('truncated CMS DER')
+    tag, length = data[start], data[start+1]
+    cursor = start + 2
+    if length & 0x80:
+        width = length & 0x7f
+        if not 1 <= width <= 4 or cursor + width > bound or data[cursor] == 0:
+            raise ValueError('indefinite or noncanonical CMS DER length')
+        length = int.from_bytes(data[cursor:cursor+width], 'big')
+        if length < 128:
+            raise ValueError('noncanonical CMS DER length')
+        cursor += width
+    end = cursor + length
+    if end > bound:
+        raise ValueError('truncated CMS DER value')
+    return tag, data[cursor:end], end
+
+
+def _der_fields(body, count):
+    # Fixed field counts and depth, never attacker-selected recursion or count.
+    result, cursor = [], 0
+    for _ in range(count):
+        tag, value, cursor = _der_item(body, cursor, len(body))
+        result.append((tag, value))
+    if cursor != len(body):
+        raise ValueError('unexpected CMS DER fields')
+    return result
+
+
+def _der_sequence(raw, tag, count):
+    actual, body, end = _der_item(raw, 0, len(raw))
+    if actual != tag or end != len(raw):
+        raise ValueError('unknown CMS DER shape')
+    return _der_fields(body, count)
+
+
+def _require_gcm(path):
+    """Accept only the shallow DER AuthEnvelopedData emitted by our command."""
+    # An arbitrary CMS decrypt also accepts unauthenticated CBC. Require GCM,
+    # a 96-bit nonce and a 128-bit tag before invoking the native decoder.
+    raw = memoryview(path.read_bytes())
+    content = _der_sequence(raw, 0x30, 2)
+    if content[0] != (0x06, bytes.fromhex('2a864886f70d0109100117')) or content[1][0] != 0xa0:
+        raise ValueError('recovery CMS must be authenticated enveloped data')
+    fields = _der_sequence(content[1][1], 0x30, 4)
+    if (fields[0] != (0x02, b'\0') or fields[1][0] != 0x31 or
+            not 0 < len(fields[1][1]) <= CMS_OVERHEAD or fields[2][0] != 0x30 or
+            fields[3][0] != 0x04 or len(fields[3][1]) != 16):
+        raise ValueError('invalid authenticated CMS envelope')
+    encrypted = _der_fields(fields[2][1], 3)
+    if (encrypted[0] != (0x06, bytes.fromhex('2a864886f70d010701')) or encrypted[1][0] != 0x30 or encrypted[2][0] != 0x80):
+        raise ValueError('invalid CMS encrypted content')
+    algorithm = _der_fields(encrypted[1][1], 2)
+    if algorithm[0] != (0x06, bytes.fromhex('60864801650304012e')) or algorithm[1][0] != 0x30:
+        raise ValueError('recovery CMS must use AES-256-GCM')
+    parameters = _der_fields(algorithm[1][1], 2)
+    if parameters[0][0] != 0x04 or len(parameters[0][1]) != 12 or parameters[1] != (0x02, b'\x10'):
+        raise ValueError('invalid recovery CMS GCM parameters')
+
+
+def _cms(source, target, authority, encrypt, deadline):
+    """Each DER object is small; no ASN.1 decoder receives the whole backup."""
+    args = (['-encrypt', '-aes-256-gcm', '-outform', 'DER'] if encrypt else
+            ['-decrypt', '-inform', 'DER', '-inkey', str(authority)])
+    command = ['openssl', 'cms', *args, '-binary', '-in', str(source), '-out', str(target)]
+    if encrypt:
+        command.append(str(authority))
+    if not encrypt:
+        _require_gcm(source)
+    # OpenSSL can emit unauthenticated plaintext before checking a GCM tag.
+    # Its output is private scratch and is never interpreted after a failure.
+    try:
+        subprocess.run(command, check=True, timeout=min(30, _remaining(deadline)),
+                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except subprocess.CalledProcessError:
+        raise ValueError('recovery CMS authentication or encryption failed') from None
+    target.chmod(0o600)
+    _remaining(deadline)
+
+
+def _publish_file(pending, destination):
+    """Publish complete bytes without replacing a preexisting destination."""
+    os.link(pending, destination)
+    pending.unlink()
+
+
+def _read_exact(stream, size):
+    data = stream.read(size)
+    if len(data) != size:
+        raise ValueError('truncated recovery framing')
+    return data
+
+
+def _encrypt_payload(payload, destination, recipient, *, deadline=None):
+    """Write one finite, indexed sequence of independently authenticated CMS objects."""
+    deadline = deadline if deadline is not None else time.monotonic() + CRYPTO_SECONDS
+    with _StableFile(payload, MAX_CIPHERTEXT) as source, tempfile.TemporaryDirectory(
+            prefix='.snapshot-encrypt-', dir=destination.parent) as directory:
+        scratch = Path(directory)
+        plain, cipher, pending = scratch/'plain', scratch/'cipher', scratch/'pending'
+        session = os.urandom(16)
+        entries, whole, consumed = [], hashlib.sha256(), 0
+        with pending.open('xb') as output:
+            os.fchmod(output.fileno(), 0o600)
+            output.write(FILE_HEADER.pack(FILE_MAGIC, session))
+            for ordinal in range(MAX_FRAMES):
+                _remaining(deadline)
+                data = source.stream.read(FRAME_BYTES)
+                if not data:
+                    break
+                consumed += len(data)
+                whole.update(data)
+                plain_hash = hashlib.sha256(data).hexdigest()
+                with plain.open('wb') as stream:
+                    stream.write(PART_HEADER.pack(PART_MAGIC, session, ordinal, len(data)))
+                    stream.write(data)
+                del data
+                _cms(plain, cipher, recipient, True, deadline)
+                size = cipher.stat().st_size
+                if not 0 < size <= PART_HEADER.size + FRAME_BYTES + CMS_OVERHEAD:
+                    raise ValueError('recovery CMS frame exceeds its bound')
+                offset = output.tell()
+                if offset + RECORD_HEADER.size + size + INDEX_BYTES + CMS_OVERHEAD + FOOTER.size > MAX_CIPHERTEXT:
+                    raise ValueError('encrypted snapshot exceeds the 8 GiB transport bound')
+                entries.append({'ordinal': ordinal, 'offset': offset, 'size': size,
+                                'sha256': sha256(cipher), 'plaintext_size': consumed - ordinal * FRAME_BYTES,
+                                'plaintext_sha256': plain_hash})
+                output.write(RECORD_HEADER.pack(size))
+                with cipher.open('rb') as stream:
+                    shutil.copyfileobj(stream, output, length=256 * 1024)
+            if source.stream.read(1) or consumed != source.info.st_size:
+                raise ValueError('recovery payload exceeds its frame count or changed')
+            source.unchanged()
+            index = {'kind': 'komizo.snapshot-index', 'version': 2, 'session': session.hex(),
+                     'frame_bytes': FRAME_BYTES, 'payload_bytes': consumed,
+                     'payload_sha256': whole.hexdigest(), 'frames': entries}
+            raw = INDEX_MAGIC + session + _canonical(index)
+            if len(raw) > INDEX_BYTES:
+                raise ValueError('recovery index exceeds its bound')
+            plain.write_bytes(raw)
+            _cms(plain, cipher, recipient, True, deadline)
+            size, offset = cipher.stat().st_size, output.tell()
+            if not 0 < size <= INDEX_BYTES + CMS_OVERHEAD or offset + 8 + size + FOOTER.size > MAX_CIPHERTEXT:
+                raise ValueError('encrypted snapshot exceeds the 8 GiB transport bound')
+            output.write(RECORD_HEADER.pack(size))
+            with cipher.open('rb') as stream:
+                shutil.copyfileobj(stream, output, length=256 * 1024)
+            output.write(FOOTER.pack(END_MAGIC, offset, size))
+            output.flush()
+            os.fsync(output.fileno())
+        source.unchanged()
+        _remaining(deadline)
+        _publish_file(pending, destination)
+
+
+def _checked_index(raw, session, index_offset):
+    if not raw.startswith(INDEX_MAGIC + session):
+        raise ValueError('recovery index session mismatch')
+    index_raw = raw[len(INDEX_MAGIC) + len(session):]
+    index = _metadata(index_raw)
+    if not isinstance(index, dict) or set(index) != {'kind', 'version', 'session', 'frame_bytes',
+                                                       'payload_bytes', 'payload_sha256', 'frames'}:
+        raise ValueError('unknown recovery index schema')
+    if (index_raw != _canonical(index) or index['kind'] != 'komizo.snapshot-index' or
+            type(index['version']) is not int or index['version'] != 2 or index['session'] != session.hex() or
+            type(index['frame_bytes']) is not int or index['frame_bytes'] != FRAME_BYTES or
+            type(index['payload_bytes']) is not int or not 0 < index['payload_bytes'] <= MAX_CIPHERTEXT or
+            not isinstance(index['payload_sha256'], str) or not re.fullmatch(r'[a-f0-9]{64}', index['payload_sha256']) or
+            not isinstance(index['frames'], list) or not 1 <= len(index['frames']) <= MAX_FRAMES):
+        raise ValueError('invalid recovery index identity or bounds')
+    offset, total = FILE_HEADER.size, 0
+    for ordinal, entry in enumerate(index['frames']):
+        if not isinstance(entry, dict) or set(entry) != {'ordinal', 'offset', 'size', 'sha256', 'plaintext_size', 'plaintext_sha256'}:
+            raise ValueError('unknown recovery frame schema')
+        if (any(type(entry[key]) is not int for key in ('ordinal', 'offset', 'size', 'plaintext_size')) or
+                entry['ordinal'] != ordinal or entry['offset'] != offset or
+                not 0 < entry['size'] <= PART_HEADER.size + FRAME_BYTES + CMS_OVERHEAD or
+                not 0 < entry['plaintext_size'] <= FRAME_BYTES or
+                (ordinal < len(index['frames']) - 1 and entry['plaintext_size'] != FRAME_BYTES) or
+                any(not isinstance(entry[key], str) or not re.fullmatch(r'[a-f0-9]{64}', entry[key])
+                    for key in ('sha256', 'plaintext_sha256'))):
+            raise ValueError('invalid recovery frame identity, order or bounds')
+        offset += RECORD_HEADER.size + entry['size']
+        total += entry['plaintext_size']
+    if offset != index_offset or total != index['payload_bytes']:
+        raise ValueError('recovery framing has gaps, overlaps or an incorrect total')
+    return index
+
+
+def _decrypt_payload(ciphertext, destination, key, expected, *, deadline=None):
+    """Publish plaintext only after every tag and the complete closure authenticate."""
+    deadline = deadline if deadline is not None else time.monotonic() + CRYPTO_SECONDS
+    with _StableFile(ciphertext, MAX_CIPHERTEXT) as source, tempfile.TemporaryDirectory(
+            prefix='.snapshot-decrypt-', dir=destination.parent) as directory:
+        scratch = Path(directory)
+        cipher, plain, pending = scratch/'cipher', scratch/'plain', scratch/'pending'
+        if source.hash(deadline) != expected:
+            raise ValueError('off-host ciphertext checksum mismatch')
+        stream = source.stream
+        stream.seek(0)
+        magic, session = FILE_HEADER.unpack(_read_exact(stream, FILE_HEADER.size))
+        if magic != FILE_MAGIC or source.info.st_size < FILE_HEADER.size + FOOTER.size + 8:
+            raise ValueError('unknown recovery framing')
+        stream.seek(-FOOTER.size, os.SEEK_END)
+        magic, offset, size = FOOTER.unpack(_read_exact(stream, FOOTER.size))
+        if (magic != END_MAGIC or offset < FILE_HEADER.size or not 0 < size <= INDEX_BYTES + CMS_OVERHEAD or
+                offset + RECORD_HEADER.size + size + FOOTER.size != source.info.st_size):
+            raise ValueError('invalid recovery footer or index bounds')
+        stream.seek(offset)
+        if RECORD_HEADER.unpack(_read_exact(stream, 8))[0] != size:
+            raise ValueError('recovery index length mismatch')
+        cipher.write_bytes(_read_exact(stream, size))
+        _cms(cipher, plain, key, False, deadline)
+        if plain.stat().st_size > INDEX_BYTES:
+            raise ValueError('recovery index exceeds its bound')
+        index = _checked_index(plain.read_bytes(), session, offset)
+        whole = hashlib.sha256()
+        with pending.open('xb') as output:
+            os.fchmod(output.fileno(), 0o600)
+            for entry in index['frames']:
+                _remaining(deadline)
+                stream.seek(entry['offset'])
+                if RECORD_HEADER.unpack(_read_exact(stream, 8))[0] != entry['size']:
+                    raise ValueError('recovery frame length mismatch')
+                with cipher.open('wb') as incoming:
+                    data = _read_exact(stream, entry['size'])
+                    if hashlib.sha256(data).hexdigest() != entry['sha256']:
+                        raise ValueError('recovery frame checksum mismatch')
+                    incoming.write(data)
+                del data
+                _cms(cipher, plain, key, False, deadline)
+                if plain.stat().st_size != PART_HEADER.size + entry['plaintext_size']:
+                    raise ValueError('recovery plaintext frame length mismatch')
+                with plain.open('rb') as incoming:
+                    identity = PART_HEADER.unpack(_read_exact(incoming, PART_HEADER.size))
+                    if identity != (PART_MAGIC, session, entry['ordinal'], entry['plaintext_size']):
+                        raise ValueError('recovery plaintext frame identity mismatch')
+                    part = hashlib.sha256()
+                    while block := incoming.read(256 * 1024):
+                        part.update(block)
+                        whole.update(block)
+                        output.write(block)
+                    if part.hexdigest() != entry['plaintext_sha256']:
+                        raise ValueError('recovery plaintext checksum mismatch')
+            if output.tell() != index['payload_bytes'] or whole.hexdigest() != index['payload_sha256']:
+                raise ValueError('recovery complete payload checksum mismatch')
+            output.flush()
+            os.fsync(output.fileno())
+        source.unchanged()
+        # The receipt hash is checked again on the same inode before exposure.
+        if source.hash(deadline) != expected:
+            raise ValueError('off-host ciphertext changed during authentication')
+        _remaining(deadline)
+        _publish_file(pending, destination)
+
 
 
 def sha256(path):
@@ -260,9 +594,22 @@ def deployment_receipt(manifest):
 
 
 def seal(directory, recipient):
-    """Encrypt the verified snapshot to a public recovery certificate."""
+    """Encrypt verified product data; failed attempts leave no off-host pair."""
+    output = directory / 'offhost'
+    output.mkdir(mode=0o700)
+    try:
+        return _seal(directory, recipient, output)
+    except BaseException:
+        shutil.rmtree(output)
+        raise
+
+
+def _seal(directory, recipient, output):
     archive = directory / 'data.tar.gz'
-    evidence = json.loads((directory / 'verification.json').read_text())
+    with _StableFile(directory / 'verification.json', 16 * 1024**2) as metadata:
+        evidence_raw = metadata.stream.read()
+        metadata.unchanged()
+    evidence = _metadata(evidence_raw)
     backend = evidence.get('backend', 'pocketbase')
     if backend not in {'pocketbase', 'postgresql'}:
         raise ValueError('unsupported recovery backend')
@@ -274,8 +621,6 @@ def seal(directory, recipient):
         if manifest['engine']['reference'] != evidence['image_reference'] or manifest['engine']['image_id'] != evidence['image_id']:
             raise ValueError('sealed PostgreSQL engine differs from authenticated metadata')
         deployment = deployment_receipt(manifest)
-    output = directory / 'offhost'
-    output.mkdir(mode=0o700)
     ciphertext = output / 'snapshot.cms'
     # Bind recovery metadata to the authenticated ciphertext too. A transport
     # receipt alone must not let a modified image reference select a restore binary.
@@ -283,33 +628,43 @@ def seal(directory, recipient):
         raise ValueError('insufficient headroom for authenticated off-host envelope')
     with tempfile.TemporaryDirectory(prefix='snapshot-envelope-', dir=directory) as temporary:
         envelope = Path(temporary) / 'envelope.tar'
-        with tarfile.open(envelope, 'w') as bundle:
-            bundle.add(archive, arcname='data.tar.gz', recursive=False)
-            bundle.add(directory / 'verification.json', arcname='verification.json', recursive=False)
-        subprocess.run(['openssl', 'cms', '-encrypt', '-aes-256-gcm', '-binary', '-outform', 'DER',
-                        '-in', str(envelope), '-out', str(ciphertext), str(recipient)], check=True, timeout=600)
+        with _StableFile(archive, MAX_CIPHERTEXT) as original, tarfile.open(envelope, 'w', format=tarfile.USTAR_FORMAT) as bundle:
+            member = tarfile.TarInfo('data.tar.gz')
+            member.size, member.mode = original.info.st_size, 0o600
+            bundle.addfile(member, original.stream)
+            original.unchanged()
+            if original.hash(time.monotonic() + CRYPTO_SECONDS) != evidence['archive_sha256']:
+                raise ValueError('snapshot changed after verification')
+            member = tarfile.TarInfo('verification.json')
+            member.size, member.mode = len(evidence_raw), 0o600
+            bundle.addfile(member, io.BytesIO(evidence_raw))
+        _encrypt_payload(envelope, ciphertext, recipient)
     receipt = {key: evidence[key] for key in ['archive_sha256', 'image_id', 'image_reference', 'verified_at']}
     receipt['backend'] = backend
     if deployment is not None:
         receipt['deployment'] = deployment
-    receipt['format'] = 1
+    receipt['format'] = 2
     receipt['ciphertext_sha256'] = sha256(ciphertext)
     (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+    (output / 'receipt.json').chmod(0o600)
     return output
 
 
 def unseal(directory, key, target):
     """Authenticate/decrypt an off-host copy, then validate its isolated restore."""
-    receipt = json.loads((directory / 'receipt.json').read_text())
+    with _StableFile(directory / 'receipt.json', 64 * 1024) as receipt_file:
+        receipt = _metadata(receipt_file.stream.read())
+        receipt_file.unchanged()
+    if (not isinstance(receipt, dict) or type(receipt.get('format')) is not int or receipt['format'] != 2 or
+            not isinstance(receipt.get('ciphertext_sha256'), str) or
+            not re.fullmatch(r'[a-f0-9]{64}', receipt['ciphertext_sha256'])):
+        raise ValueError('unknown or invalid recovery envelope format')
     ciphertext = directory / 'snapshot.cms'
-    if sha256(ciphertext) != receipt['ciphertext_sha256']:
-        raise ValueError('off-host ciphertext checksum mismatch')
     with tempfile.TemporaryDirectory(prefix='snapshot-decrypt-') as temporary:
         if shutil.disk_usage(temporary).free < 2 * ciphertext.stat().st_size + 512 * 1024**2:
             raise ValueError('insufficient headroom to decrypt recovery envelope')
         envelope = Path(temporary) / 'envelope.tar'
-        subprocess.run(['openssl', 'cms', '-decrypt', '-binary', '-inform', 'DER',
-                        '-in', str(ciphertext), '-inkey', str(key), '-out', str(envelope)], check=True, timeout=600)
+        _decrypt_payload(ciphertext, envelope, key, receipt['ciphertext_sha256'])
         seen = set()
         with tarfile.open(envelope) as source:
             for member in source:
@@ -320,9 +675,9 @@ def unseal(directory, key, target):
                 seen.add(member.name)
                 with source.extractfile(member) as incoming, (Path(temporary) / member.name).open('wb') as output:
                     shutil.copyfileobj(incoming, output)
-        if seen != {'data.tar.gz', 'verification.json'} or receipt.get('format') != 1:
+        if seen != {'data.tar.gz', 'verification.json'} or receipt.get('format') != 2:
             raise ValueError('incomplete or unknown recovery envelope')
-        evidence = json.loads((Path(temporary) / 'verification.json').read_text())
+        evidence = _metadata((Path(temporary) / 'verification.json').read_bytes())
         for key in ['archive_sha256', 'image_id', 'image_reference', 'verified_at']:
             if evidence[key] != receipt[key]:
                 raise ValueError('recovery metadata does not match authenticated envelope')
