@@ -209,6 +209,23 @@ class UploadBackup(unittest.TestCase):
                         next(iter(body))
             finally:tracemalloc.stop()
 
+    def test_single_put_bound_refuses_before_hash_credentials_and_http(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cms, receipt = self.pair(Path(directory))
+            with cms.open('wb') as stream:
+                stream.truncate(5_368_709_121)
+            with patch.object(uploader.Ciphertext,'hash') as hashed, patch.object(uploader,'credentials') as credentials, patch.object(uploader,'urlopen') as http:
+                with self.assertRaisesRegex(ValueError, r'5368709120 bytes \(5 GiB\)'):
+                    uploader.upload('sampleaddon',cms,receipt,STAMP)
+                hashed.assert_not_called()
+                credentials.assert_not_called()
+                http.assert_not_called()
+            # Exact boundary is eligible; this isolates the gate from bulk IO.
+            with cms.open('wb') as stream:
+                stream.truncate(5_368_709_120)
+            with patch.object(uploader.Ciphertext,'hash',return_value='a'*64), uploader.Ciphertext(cms,uploader.time.monotonic()+10) as body:
+                self.assertEqual(body.size,5_368_709_120)
+
     def test_total_deadline_rejects_before_transport(self):
         with tempfile.TemporaryDirectory() as directory:
             cms,_=self.pair(Path(directory))

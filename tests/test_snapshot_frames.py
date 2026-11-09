@@ -147,6 +147,9 @@ class SnapshotFrames(unittest.TestCase):
         with self.assertRaises(FileExistsError):
             snapshot._encrypt_payload(self.payload, target, self.cert)
         self.assertEqual(target.read_bytes(), b'preserve')
+        with self.assertRaises(FileExistsError):
+            snapshot._decrypt_payload(self.original, target, self.key, snapshot.sha256(self.original))
+        self.assertEqual(target.read_bytes(), b'preserve')
         with self.assertRaises(TimeoutError):
             snapshot._encrypt_payload(self.payload, self.work/'expired', self.cert, deadline=time.monotonic()-1)
         self.assertFalse((self.work/'expired').exists())
@@ -166,6 +169,21 @@ class SnapshotFrames(unittest.TestCase):
             stream.truncate(snapshot.MAX_CIPHERTEXT+1)
         with self.assertRaisesRegex(ValueError, 'bounded'):
             snapshot._encrypt_payload(source, self.work/'result', self.cert)
+
+    def test_replacement_after_authenticated_index_refuses_before_exposure(self):
+        cipher, destination = self.work/'changing.cms', self.work/'output'
+        cipher.write_bytes(self.raw)
+        original, calls = snapshot._cms, []
+        def replace(*args):
+            original(*args)
+            calls.append(True)
+            if len(calls) == 1:
+                cipher.rename(self.work/'old-inode')
+                cipher.write_bytes(self.raw)
+        with patch.object(snapshot, '_cms', replace), self.assertRaisesRegex(ValueError, 'changed'):
+            snapshot._decrypt_payload(cipher,destination,self.key,hashlib.sha256(self.raw).hexdigest())
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.work.glob('.snapshot-*')))
 
     def test_symlink_refusal_and_no_unauthenticated_restore(self):
         link = self.work/'link'

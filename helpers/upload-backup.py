@@ -29,7 +29,9 @@ def allowed_slugs():
         raise ValueError('BACKUP_ALLOWED_SLUGS must contain distinct reviewed project slugs')
     return values
 
-MAX_CMS = 8 * 1024**3
+# AWS s3transfer MAX_SINGLE_UPLOAD_SIZE: 5 GiB (the guide calls this 5 GB).
+# This single conditional PUT is deliberately smaller than host export capacity.
+MAX_CMS = 5 * 1024**3
 MAX_RECEIPT = 64 * 1024
 CHUNK_BYTES = 64 * 1024
 TOTAL_SECONDS = 600
@@ -85,9 +87,12 @@ class Ciphertext:
             raise ValueError('snapshot.cms must be an accessible non-symlink regular file') from None
         self.stream = os.fdopen(fd, 'rb')
         self.info = os.fstat(fd)
-        if not stat.S_ISREG(self.info.st_mode) or not 0 < self.info.st_size <= MAX_CMS:
+        if not stat.S_ISREG(self.info.st_mode) or self.info.st_size <= 0:
             self.stream.close()
-            raise ValueError('snapshot.cms must be a bounded nonempty regular file')
+            raise ValueError('snapshot.cms must be a nonempty regular file')
+        if self.info.st_size > MAX_CMS:
+            self.stream.close()
+            raise ValueError('snapshot.cms exceeds the single-PUT bound of 5368709120 bytes (5 GiB)')
         self.size = self.info.st_size
         try:
             self.sha256 = self.hash()
