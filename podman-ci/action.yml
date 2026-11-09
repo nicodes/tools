@@ -3,6 +3,17 @@ description: Native Podman setup with private registry authority and compiler ca
 runs:
   using: composite
   steps:
+    - name: Freeze compiler cache input identities before native fixtures
+      id: cache_identity
+      shell: bash
+      env:
+        WEB_INPUTS: ${{ hashFiles('mise.toml', '**/package.json', '**/bun.lock', '**/package-lock.json') }}
+        GO_INPUTS: ${{ hashFiles('mise.toml', '**/go.mod', '**/go.sum') }}
+      run: |
+        set -euo pipefail
+        [[ -z "$WEB_INPUTS" || "$WEB_INPUTS" =~ ^[a-f0-9]{64}$ ]]
+        [[ -z "$GO_INPUTS" || "$GO_INPUTS" =~ ^[a-f0-9]{64}$ ]]
+        printf 'web=%s\ngo=%s\n' "$WEB_INPUTS" "$GO_INPUTS" >> "$GITHUB_OUTPUT"
     - name: Prepare native Podman and private registry authority
       shell: bash
       run: timeout --foreground 300s bash "$GITHUB_ACTION_PATH/../helpers/ci-container-runtime.sh"
@@ -17,10 +28,10 @@ runs:
         path: |
           ${{ runner.temp }}/fleet-webcompiler/*/metro-cache
           ${{ runner.temp }}/fleet-webcompiler/*/state.json
-        key: cookbook-web-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('mise.toml', '**/package.json', '**/bun.lock', '**/package-lock.json') }}-${{ github.sha }}
-        restore-keys: cookbook-web-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('mise.toml', '**/package.json', '**/bun.lock', '**/package-lock.json') }}-
+        key: cookbook-web-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ steps.cache_identity.outputs.web }}-${{ github.sha }}
+        restore-keys: cookbook-web-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ steps.cache_identity.outputs.web }}-
     - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
       with:
         path: ${{ runner.temp }}/fleet-go-compiler
-        key: cookbook-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('mise.toml', '**/go.mod', '**/go.sum') }}-${{ github.sha }}
-        restore-keys: cookbook-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('mise.toml', '**/go.mod', '**/go.sum') }}-
+        key: cookbook-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ steps.cache_identity.outputs.go }}-${{ github.sha }}
+        restore-keys: cookbook-go-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ steps.cache_identity.outputs.go }}-

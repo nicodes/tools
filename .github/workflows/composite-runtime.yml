@@ -4,6 +4,14 @@ name: Composite runtime admission
     paths:
       - podman-ci/**
       - helpers/composite-actions.py
+      - tests/test_podman_ci_cache.py
+      - .github/workflows/composite-runtime.yml
+  push:
+    branches: [main]
+    paths:
+      - podman-ci/**
+      - helpers/composite-actions.py
+      - tests/test_podman_ci_cache.py
       - .github/workflows/composite-runtime.yml
   workflow_dispatch: {}
 permissions:
@@ -24,3 +32,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
       - name: Admit every composite step before evaluating optional capability conditions
         uses: ./podman-ci
+      - name: Leave an actually unreadable native fixture through cache post-actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" != 0
+          test "$(id -u)" != 65534
+          fixture="$GITHUB_WORKSPACE/.artifacts/cache-post-control"
+          test ! -e "$fixture"
+          install -d -m 700 "$fixture"
+          sudo install -d -m 700 -o 65534 -g 65534 "$fixture/private"
+          sudo install -m 600 -o 65534 -g 65534 /dev/null "$fixture/private/package.json"
+          sudo install -m 600 -o 65534 -g 65534 /dev/null "$fixture/private/go.mod"
+          test "$(stat -c '%u:%g:%a' "$fixture/private")" = 65534:65534:700
+          test ! -r "$fixture/private/package.json"
+          if LC_ALL=C find "$fixture/private" -type f > "$RUNNER_TEMP/cache-fixture.out" 2> "$RUNNER_TEMP/cache-fixture.err"; then
+            echo 'Native fixture unexpectedly permits runner traversal' >&2
+            exit 1
+          fi
+          grep -q 'Permission denied' "$RUNNER_TEMP/cache-fixture.err"
+          mkdir -p "$GOCACHE" "$FLEET_WEB_CACHE/control/metro-cache"
+          printf '%s\n' 'cache-post-control' > "$GOCACHE/cache-post-control"
+          printf '%s\n' 'cache-post-control' > "$FLEET_WEB_CACHE/control/metro-cache/cache-post-control"
+          printf '%s\n' '{"control":true}' > "$FLEET_WEB_CACHE/control/state.json"
+          # The private tree deliberately survives until both actual cache
+          # post-actions finish; the disposable runner owns final teardown.
