@@ -83,9 +83,13 @@ def environment(environment=None):
     return _environment(environment)
 
 
-def bind_mount_user_namespace():
-    """Keep the caller's numeric UID for owned bind mounts in rootless fixtures."""
-    return ['--userns=keep-id'] if os.geteuid() != 0 else []
+def bind_mount_user_namespace(uid=None, gid=None):
+    """Map the caller's owned bind files to an explicit image account if needed."""
+    if uid is None and gid is None:
+        return ['--userns=keep-id'] if os.geteuid() != 0 else []
+    if any(type(value) is not int or not 0 < value <= 2**31-1 for value in (uid, gid)):
+        raise ValueError('bind ownership requires an explicit nonroot UID and GID')
+    return [f'--userns=keep-id:uid={uid},gid={gid}'] if os.geteuid() != 0 else []
 
 
 def command(arguments, environment=None, *, authfile=None):

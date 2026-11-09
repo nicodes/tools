@@ -22,6 +22,7 @@ def helper(name):
 pg = helper('postgres-recovery')
 snapshot = helper('snapshot')
 ENGINE = 'docker.io/library/postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280'
+ALPINE_ENGINE = 'docker.io/library/postgres@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873'
 REVISION = 'a'*40
 
 
@@ -332,13 +333,22 @@ class PostgreSQLRestoreIntegration(unittest.TestCase):
     def test_renamed_project_restores_existing_database_and_roles(self):
         self.restore_roundtrip('newapp')
 
-    def restore_roundtrip(self, project):
-        pg.podman('pull', '--quiet', ENGINE, timeout=180)
-        image = json.loads(pg.podman('image', 'inspect', ENGINE))[0]['Id']
+    def test_alpine_restores_with_its_native_account_and_preserves_rows_acl_and_cleanup(self):
+        self.restore_roundtrip('newapp', ALPINE_ENGINE)
+
+    def restore_roundtrip(self, project, engine=ENGINE):
+        pg.podman('pull', '--quiet', engine, timeout=180)
+        image = json.loads(pg.podman('image', 'inspect', engine))[0]['Id']
         name = 'tools-pg-source-'+os.urandom(8).hex()
-        uid = os.getuid() or 65534
+        original = json.loads(pg.podman('image', 'inspect', image))[0]
+        probes = pg.podman('ps', '--all', '--filter', 'label=tools.image-user', '--format', '{{.ID}}')
+        uid, gid = helper('image_user').identity(image)
+        self.assertEqual(pg.podman('ps', '--all', '--filter', 'label=tools.image-user', '--format', '{{.ID}}'), probes)
+        self.assertEqual(json.loads(pg.podman('image', 'inspect', image))[0], original)
+        if engine == ALPINE_ENGINE:
+            self.assertEqual((uid, gid), (70, 70))
         launched = pg.native_runtime().run(['run', '--pull=never', '-d', '--name', name, '--network=none', '--read-only',
-                              *pg.native_runtime().bind_mount_user_namespace(), '--user', f'{uid}:{uid}',
+                              *pg.native_runtime().bind_mount_user_namespace(uid, gid), '--user', f'{uid}:{gid}',
                               '--cap-drop=ALL', '--security-opt=no-new-privileges:true', '--memory=256m',
                               '--tmpfs', '/tmp:rw,noexec,nosuid,size=64m',
                               '--tmpfs', '/var/run/postgresql:rw,mode=1777,size=8m',
@@ -376,6 +386,7 @@ ALTER DEFAULT PRIVILEGES FOR ROLE sampleapp_owner IN SCHEMA public GRANT SELECT 
         pg.podman('exec', source_id, 'pg_dump', '-Fc', '-U', 'sampleapp_owner', '-d', 'sampleapp', '-f', '/tmp/database.dump')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); source = root/'payload'; manifest = payload(source, engine_id=image)
+            manifest['engine']['reference'] = engine
             if project != 'sampleapp':
                 manifest.update(project=project, role_namespace='sampleapp')
                 manifest['roles'].append(project)
@@ -395,6 +406,8 @@ ALTER DEFAULT PRIVILEGES FOR ROLE sampleapp_owner IN SCHEMA public GRANT SELECT 
             with pg.restored_database(source, project, REVISION) as clone:
                 restored_id = clone['container']
                 self.assertEqual(clone['database_restore'], 'passed')
+                settings = json.loads(pg.podman('inspect', restored_id))[0]
+                self.assertEqual(settings['Config']['User'], f'{uid}:{gid}')
                 self.assertNotIn('roles', clone)
                 actual = pg.podman('exec', restored_id, 'psql', '-XAt', '-U', 'restore_owner', '-d', 'sampleapp', '-c', 'SELECT value FROM preserved')
                 self.assertEqual(actual, 'captured')
