@@ -33,6 +33,13 @@
         "sha256_after": "790bd9dad293964f23aa51d748afc33be677223a1e4b41b64e3f81f88eed161b",
         "old": "#define DEFAULT_PGSOCKET_DIR  \"/tmp\"",
         "new": "#define DEFAULT_PGSOCKET_DIR  \"/run/postgresql\""
+      },
+      {
+        "path": "src/backend/utils/misc/postgresql.conf.sample",
+        "sha256_before": "93e3da1fc8d667ba086ee239e5f053581739648a90566f191666cc63de16357f",
+        "sha256_after": "a69ec850143ad87a56799f9f07abf68d0935f34325344fe6b85f10c80adc4891",
+        "old": "#listen_addresses = 'localhost'",
+        "new": "listen_addresses = '*'"
       }
     ]
   },

@@ -96,6 +96,21 @@ class MinimalRuntimeInputs(unittest.TestCase):
         self.assertEqual((self.pin['database_uid'], self.pin['database_gid']), (999, 999))
         self.assertEqual((self.pin['locale'], self.pin['collation_version']), ('en_US.utf8', '2.41'))
 
+    def test_exact_socket_and_interface_defaults_cannot_be_removed_or_substituted(self):
+        for change in ['remove', 'duplicate', 'localhost', 'other-path']:
+            value = copy.deepcopy(self.pin)
+            patches = value['postgresql']['source_patches']
+            if change == 'remove':
+                patches.pop()
+            elif change == 'duplicate':
+                patches[1] = copy.deepcopy(patches[0])
+            elif change == 'localhost':
+                patches[1]['new'] = "listen_addresses = 'localhost'"
+            else:
+                patches[1]['path'] = '../foreign-config'
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                self.builder.validate_pin(value)
+
     def test_unpublished_source_or_changed_feature_set_is_refused(self):
         for field, value in [('url', 'https://example.invalid/postgres.tar.bz2'),
                              ('version', '19.0'), ('sha256', 'not-a-digest'),
@@ -254,6 +269,16 @@ class ImmutableConsumer(unittest.TestCase):
 
 
 class NativeDiagnosticBoundary(unittest.TestCase):
+    def test_kernel_listener_proof_requires_active_wildcard_binding(self):
+        spec = importlib.util.spec_from_file_location('postgres_kernel_listener', ROOT / 'tests/native_postgres_runtime.py')
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        header = '  sl  local_address rem_address st\n'
+        self.assertTrue(fixture.wildcard_listener(header + '  0: 00000000:1538 00000000:0000 0A\n'))
+        for row in ['0100007F:1538 00000000:0000 0A', '00000000:1539 00000000:0000 0A',
+                    '00000000:1538 00000000:0000 01']:
+            self.assertFalse(fixture.wildcard_listener(header + '  0: ' + row + '\n'))
+
     def test_native_fixture_obeys_the_actual_strict_scan_context_contract(self):
         spec = importlib.util.spec_from_file_location('postgres_native_context', ROOT / 'tests/native_postgres_runtime.py')
         fixture = importlib.util.module_from_spec(spec)

@@ -56,14 +56,20 @@ def validate_pin(value):
             or not re.fullmatch('[a-f0-9]{64}', postgres.get('sha256', ''))):
         raise ValueError('runtime constructor requires exact official PostgreSQL source bytes')
     patches = postgres['source_patches']
-    if (not isinstance(patches, list) or len(patches) != 1 or not isinstance(patches[0], dict)
-            or set(patches[0]) != {'path', 'sha256_before', 'sha256_after', 'old', 'new'}
-            or patches[0]['path'] != 'src/include/pg_config_manual.h'
-            or patches[0]['old'] != '#define DEFAULT_PGSOCKET_DIR  "/tmp"'
-            or patches[0]['new'] != '#define DEFAULT_PGSOCKET_DIR  "/run/postgresql"'
-            or any(not isinstance(patches[0][name], str) or not re.fullmatch('[a-f0-9]{64}', patches[0][name])
-                   for name in ['sha256_before', 'sha256_after'])):
-        raise ValueError('runtime constructor requires its exact canonical socket-default patch')
+    expected_patches = [
+        ('src/include/pg_config_manual.h', '#define DEFAULT_PGSOCKET_DIR  "/tmp"',
+         '#define DEFAULT_PGSOCKET_DIR  "/run/postgresql"'),
+        ('src/backend/utils/misc/postgresql.conf.sample', "#listen_addresses = 'localhost'",
+         "listen_addresses = '*'")]
+    if not isinstance(patches, list) or len(patches) != len(expected_patches):
+        raise ValueError('runtime constructor requires its exact socket and container-interface defaults')
+    for patch, expected in zip(patches, expected_patches):
+        if (not isinstance(patch, dict)
+                or set(patch) != {'path', 'sha256_before', 'sha256_after', 'old', 'new'}
+                or (patch['path'], patch['old'], patch['new']) != expected
+                or any(not isinstance(patch[name], str) or not re.fullmatch('[a-f0-9]{64}', patch[name])
+                       for name in ['sha256_before', 'sha256_after'])):
+            raise ValueError('runtime constructor requires its exact socket and container-interface defaults')
     allowed = {'--prefix=/usr/local', '--with-openssl', '--with-lz4', '--with-zstd',
                '--with-system-tzdata=/usr/share/zoneinfo', '--without-readline', '--without-icu',
                '--without-libxml', '--without-libxslt', '--without-gssapi', '--without-ldap',

@@ -13,20 +13,20 @@
       "size": 5843
     },
     "contract.py": {
-      "sha256": "4c39d4c1bfb1527541b4d7c9ccd9239b41404dc52fbed619c058711f0def9598",
-      "size": 23041
+      "sha256": "130cd3c41a7b7fd05165de59dd1b13272f4ecc0abfcd480b3cbc6ec2ea201b0d",
+      "size": 23464
     },
     "prepare-build.sh": {
       "sha256": "4652bfdf6c57e00be55ba61fa5ed5859620b38828916ea00dc548d3a2b956593",
       "size": 1405
     },
     "runtime/PIN.json": {
-      "sha256": "5d0db5bf12960a9996a6d4d7dba0d5ba6942b09c3699f2891f3a27ec6cd4f1c1",
-      "size": 2522
+      "sha256": "a6ab3f09ec0057da2c9fc3a4a9cc2c95c1b4a14ec1c6cd2d6d139e173afbef0e",
+      "size": 2879
     },
     "runtime/build.py": {
-      "sha256": "f9e24582d1b9c0b12c4f94a3beb2ef80ee6c04d312c52e4194b6b4a39e31a79a",
-      "size": 24525
+      "sha256": "7377403876aec48b6952d3b29024dc5c310d2658d840f90de364de38d967c956",
+      "size": 24867
     },
     "runtime/entrypoint/AUTHORS": {
       "sha256": "a016549e5373f5fd36b698ac4d73a894e7818b50a0c0837f18788cccd6a6da1a",

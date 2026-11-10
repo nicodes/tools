@@ -268,6 +268,10 @@ def image_contract(image, *, wrapper=None):
             control=inspect_file(image,'/var/lib/dpkg/status.d/'+name).decode()
             assert 'Version: '+version+'+komizo1\n' in control
         assert set(pin['postgresql']['configure']) <= set(shlex.split(command(image,'pg_config --configure')))
+        sample = inspect_file(image, '/usr/local/share/postgresql/postgresql.conf.sample')
+        sample_patch = next(patch for patch in pin['postgresql']['source_patches']
+                            if patch['path'] == 'src/backend/utils/misc/postgresql.conf.sample')
+        assert hashlib.sha256(sample).hexdigest() == sample_patch['sha256_after'], 'Installed interface default differs from the declared source patch'
         assert command(image,'postgres --version').strip()=='postgres (PostgreSQL) 18.6'
         assert command(image,'pg_config --version').strip()=='PostgreSQL 18.6'
         assert command(image,'readlink /var/run').strip()=='/run', 'The frozen entrypoint socket path lost its canonical alias'

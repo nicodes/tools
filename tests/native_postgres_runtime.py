@@ -46,6 +46,13 @@ def scan_identity(inspected):
     return {name: inspected[name] for name in ['Id', 'RootFS', 'Config', 'Os', 'Architecture']}
 
 
+def wildcard_listener(table):
+    if not isinstance(table, str) or len(table) > 1 << 20:
+        raise ValueError('kernel listener inventory exceeds its finite boundary')
+    return any(len(fields) >= 4 and fields[1] == '00000000:1538' and fields[3] == '0A'
+               for fields in (line.split() for line in table.splitlines()[1:]))
+
+
 def module(path):
     spec = importlib.util.spec_from_file_location('postgres_constructor_consumer', path)
     value = importlib.util.module_from_spec(spec)
@@ -337,6 +344,11 @@ def startup(native, directory):
     actual = sql('tools_fixture', "SELECT current_setting('server_version_num'),datlocprovider,datcollate,datctype,datcollversion,pg_database_collation_actual_version(oid) FROM pg_database WHERE datname=current_database();").stdout.strip()
     if actual != b'180006|c|en_US.utf8|en_US.utf8|2.41|2.41':
         raise ValueError('actual engine/default client/locale contract changed')
+    if sql('tools_fixture', 'SHOW listen_addresses;').stdout.strip() != b'*':
+        raise ValueError('PostgreSQL lost the original container-interface listen default')
+    listener_table = Path('/proc', str(pid), 'net/tcp').read_text()
+    if not wildcard_listener(listener_table) or native.owned(name)['State']['Pid'] != pid:
+        raise ValueError('exact PostgreSQL namespace has no active wildcard interface listener')
     sql('tools_fixture', 'CREATE ROLE tools_reader LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;')
     native.execute(['exec', name, 'createdb', '-U', 'tools_owner', '-T', 'template0', 'tools_source'])
     sql('tools_source', "CREATE TABLE rows(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,value text NOT NULL); INSERT INTO rows(value) VALUES('alpha'),('beta'),('gamma'); GRANT SELECT ON rows TO tools_reader;")
@@ -353,6 +365,8 @@ def startup(native, directory):
     return {'server_version_num': 180006, 'uid': 999, 'gid': 999, 'locale': 'en_US.utf8',
             'collation_version': '2.41', 'default_socket_clients': True, 'restored_rows': 3,
             'next_identity': 4, 'reader_select': True, 'reader_insert_refused': True,
+            'listen_addresses': '*', 'kernel_ipv4_listener': '0.0.0.0:5432',
+            'peer_network_connection_claim': False,
             'apparmor': profile, 'memory_bytes': 256 << 20, 'swap_bytes': 0, 'cpu_millis': 500, 'pids': 128}
 
 
