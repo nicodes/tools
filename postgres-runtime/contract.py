@@ -26,10 +26,10 @@ def native():
     return RUNTIME
 
 
-def run(command):
+def run(command, *, input=None):
     if command[:2] != ['podman', '--remote=false']:
         raise ValueError('launcher proof requires the fixed local native runtime')
-    return native().run(command[2:], capture_output=True, text=True, timeout=30)
+    return native().run(command[2:], input=input, capture_output=True, text=True, timeout=30)
 
 
 def verify(image, evidence=None):
@@ -59,7 +59,7 @@ def verify(image, evidence=None):
         ownership = uuid.uuid4().hex
         base = ['podman', '--remote=false', 'run', '--pull=never', '--network=none', '--read-only',
                 '--read-only-tmpfs=false', '--label', 'io.tools.su-exec-proof='+ownership,
-                '--memory=32m', '--pids-limit=32', '--user', '0:0', '--cap-drop=ALL',
+                '--memory=32m', '--pids-limit=32', '--timeout=30', '--user', '0:0', '--cap-drop=ALL',
                 '--cap-add=SETUID', '--cap-add=SETGID', '--security-opt=no-new-privileges',
                 '--entrypoint', '/usr/local/bin/su-exec',
                 '-v', f'{passwd}:/etc/passwd:ro', '-v', f'{group}:/etc/group:ro']
@@ -78,11 +78,23 @@ def verify(image, evidence=None):
         assert (result.returncode, result.stdout, result.stderr) == (73, 'child-output', 'child-error')
         results.append({'case': 'streams-and-child-exit-status', 'passed': True})
         for case in ('oversized-passwd', 'oversized-group'):
-            accounts(normal_passwd if case != 'oversized-passwd' else 'sample:x:123:456:' + 'a' * (128 << 10),
-                     normal_group if case != 'oversized-group' else 'sample:x:456:' + 'a' * (2 << 20))
-            result = run([*base, '--rm', image_id, 'sample', '/bin/sh', '-c', 'echo unexpected-child'])
-            assert result.returncode != 0 and not result.stdout.strip(), f'{case}: oversized account accepted'
-            assert 'account record exceeds limit' in result.stderr, f'{case}: refused before bounded-read guard'
+            # OCI must resolve the original normal accounts before the actual
+            # launcher guard sees oversized bytes. Mutate only our private bind
+            # after PID 1 started; no second OCI exec/account parser intervenes.
+            accounts()
+            account = 'passwd' if case == 'oversized-passwd' else 'group'
+            path = passwd if account == 'passwd' else group
+            launch = list(base)
+            launch[launch.index('--entrypoint') + 1] = '/bin/sh'
+            launch[launch.index(f'{path}:/etc/{account}:ro')] = f'{path}:/etc/{account}:rw'
+            contents = ('sample:x:123:456:' + 'a' * (128 << 10) if account == 'passwd'
+                        else 'sample:x:456:' + 'a' * (2 << 20))
+            script = ('printf "fixture-initial-uid=%s\\n" "$(id -u)"; cat > /etc/' + account
+                      + '; exec /usr/local/bin/su-exec sample /bin/sh -c "echo unexpected-child"')
+            result = run([*launch, '--interactive', '--rm', image_id, '-euc', script], input=contents)
+            diagnostic = (case, result.returncode, result.stdout[-4096:], result.stderr[-4096:])
+            assert result.returncode != 0 and result.stdout == 'fixture-initial-uid=0\n', diagnostic
+            assert 'account record exceeds limit' in result.stderr, diagnostic
             results.append({'case': case, 'passed': True})
         accounts()
         container = 'tools-su-exec-signal-' + uuid.uuid4().hex
