@@ -36,6 +36,16 @@ def digest(path):
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
 
+def source_reference(token, revision):
+    if not re.fullmatch('[a-f0-9]{32}', token) or not re.fullmatch('[a-f0-9]{40}', revision):
+        raise ValueError('native source reference requires its exact nonce and tested Git revision')
+    return 'localhost/tools-postgres-runtime-' + token + ':' + revision
+
+
+def scan_identity(inspected):
+    return {name: inspected[name] for name in ['Id', 'RootFS', 'Config', 'Os', 'Architecture']}
+
+
 def module(path):
     spec = importlib.util.spec_from_file_location('postgres_constructor_consumer', path)
     value = importlib.util.module_from_spec(spec)
@@ -239,9 +249,11 @@ def scan(native, directory, image, reference, revision):
                         check=True, capture_output=True, timeout=180)
         admitted.unchanged()
     after = native.inspect_images([image])[0]
+    if before != after:
+        raise ValueError('actual native image metadata changed during the offline scan')
     context = {'reference': reference, 'source': revision, 'scanner': scanner,
                'started_at': started, 'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-               'before': before, 'after': after,
+               'before': scan_identity(before), 'after': scan_identity(after),
                'archive': {'sha256': metadata['archive_sha256'], 'target': '/inputs/image.oci'}}
     report = json.loads((directory / 'security.json').read_bytes())
     sbom = json.loads((directory / 'sbom.json').read_bytes())
@@ -389,7 +401,7 @@ def main():
         loaded = True
         if APPARMOR + ' (enforce)' not in PROFILES.read_text().splitlines():
             raise ValueError('reviewed native profile is not enforcing')
-        reference = 'localhost/tools-postgres-runtime:' + token
+        reference = source_reference(token, args.revision)
         native.phase = 'build_exact_consumer'
         native.execute(['build', '--format=oci', '--layers', '--force-rm', '--label', LABEL + '=' + token,
             '--build-arg', 'SOURCE_REVISION=' + args.revision, '-f', str(wrapper),

@@ -254,6 +254,24 @@ class ImmutableConsumer(unittest.TestCase):
 
 
 class NativeDiagnosticBoundary(unittest.TestCase):
+    def test_native_fixture_obeys_the_actual_strict_scan_context_contract(self):
+        spec = importlib.util.spec_from_file_location('postgres_native_context', ROOT / 'tests/native_postgres_runtime.py')
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        import image_scan_context
+        reference = fixture.source_reference('a' * 32, 'b' * 40)
+        self.assertTrue(reference.endswith(':' + 'b' * 40))
+        with self.assertRaises(ValueError):
+            fixture.source_reference('a' * 32, 'main')
+        raw = {'Id': 'sha256:' + 'c' * 64, 'RootFS': {'Type': 'layers', 'Layers': ['sha256:' + 'd' * 64]},
+               'Config': {}, 'Os': 'linux', 'Architecture': 'amd64', 'RepoTags': [reference], 'Size': 1234}
+        original = copy.deepcopy(raw)
+        selected = fixture.scan_identity(raw)
+        self.assertEqual(image_scan_context.identity(selected), selected)
+        self.assertEqual(raw, original)
+        with self.assertRaises(ValueError):
+            image_scan_context.identity(raw)
+
     def test_fixture_adapter_and_error_evidence_never_emit_environment_values(self):
         path = ROOT / 'tests/native_postgres_runtime.py'
         spec = importlib.util.spec_from_file_location('postgres_native_fixture', path)
