@@ -105,7 +105,7 @@ s=socket.socket(socket.AF_UNIX);s.settimeout(4);s.connect(sys.argv[1]);s.sendall
             self.assertEqual(receipt['status'],'ambiguous')
             with self.assertRaises(ValueError):authority.use(1234,message)
 
-    def test_service_owned_listener_survives_kill_and_slow_client_does_not_block_reports(self):
+    def test_service_owned_listener_survives_kill_and_slow_client_does_not_block_merges(self):
         # A retained listener models the service manager, with only synthetic
         # fixed callbacks. No installed socket, credential or GitHub call.
         with tempfile.TemporaryDirectory() as directory:
@@ -114,7 +114,7 @@ s=socket.socket(socket.AF_UNIX);s.settimeout(4);s.connect(sys.argv[1]);s.sendall
             path=root/'operator.sock'
             listener=socket.socket(socket.AF_UNIX);listener.bind(str(path));path.chmod(0o666);listener.listen(8)
             uid=os.getuid() if os.getuid() else 65534
-            request={'operation':'host_report','host':'box.example'}
+            request={'operation':'merge','repository':'owner/product','pull_request':1,'head':'b'*40}
             grant_id='a'*32
             grant={'version':1,'id':grant_id,'uid':uid,'issued':time.time(),'expires':time.time()+60,
                    'state':'issued','request':request,'reviewer':'synthetic process fixture'}
@@ -145,6 +145,21 @@ s=socket.socket(socket.AF_UNIX);s.settimeout(3);s.connect(sys.argv[1]);s.sendall
                 slow.close();listener.close()
                 if child.poll() is None:os.killpg(child.pid,signal.SIGKILL)
                 child.wait(timeout=5)
+    def test_retired_requests_cannot_consume_merge_grants_or_reconcile_history(self):
+        for request in [{'operation':'host_report','host':'box.example'},
+                        {'operation':'authorize_owner','repository':'owner/product','revision':'b'*40,'run_id':42},
+                        {'operation':'delivery','repository':'owner/product','revision':'b'*40},
+                        {'operation':'publish','repository':'owner/product','revision':'b'*40,'run_id':42,'artifact_id':55}]:
+            with self.subTest(operation=request['operation']),tempfile.TemporaryDirectory() as directory:
+                authority,message,grant,path,calls=self.fixture(directory)
+                message['request']=request
+                with self.assertRaises(ValueError):authority.use(1234,message)
+                self.assertEqual(json.loads(path.read_text())['state'],'issued');self.assertEqual(calls,[])
+                grant.update(state='claimed',request=request);path.write_text(json.dumps(grant))
+                original=path.read_bytes()
+                with self.assertRaises(ValueError):authority.inspect(grant['id'],lambda _:self.fail('retired grant must not reconcile'))
+                self.assertEqual(path.read_bytes(),original)
+
     def fixture(self, root):
         grant_id = 'a'*32
         request = {'operation': 'merge', 'repository': 'nicodes/example', 'pull_request': 1, 'head': 'b'*40}

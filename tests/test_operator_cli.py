@@ -52,11 +52,11 @@ class OperatorCLI(unittest.TestCase):
             report = json.loads(result.stdout)
             self.assertEqual(report["version"], 1)
             self.assertEqual(report["directory"], str(stage))
-            helpers={name:ROOT/'helpers'/name for name in ['container_runtime.py','oci_archive.py','oci_registry.py','release_packet.py']}
-            original={name:ASSETS/name for name in ['fleet_operator.py','fleet_broker.py','fleet_publisher.py',
+            original={name:ASSETS/name for name in ['fleet_operator.py','fleet_broker.py',
                        'fleet-operator.service','fleet-operator.socket','fleet-operator.conf']}
-            sources={**original,**helpers}
+            sources=original
             self.assertEqual(set(report['files']),set(sources))
+            self.assertEqual({path.name for path in stage.iterdir()},set(sources))
             self.assertEqual(stat.S_IMODE(stage.stat().st_mode), 0o700)
             for name, expected in report["files"].items():
                 self.assertEqual((stage / name).read_bytes(), sources[name].read_bytes())
@@ -78,7 +78,7 @@ class OperatorCLI(unittest.TestCase):
             self.assertEqual(self.cli("export", "--directory", directory).returncode, 1)
 
     def test_invalid_flags_never_dispatch_lifecycle_or_consume_a_grant(self):
-        for args in [("metadata", "extra"), ("unknown",), ("export", "--expected-plan", "a" * 64),
+        for args in [("metadata", "extra"), ("unknown",), ("publish",), ("host_report",), ("authorize_owner",), ("delivery",), ("export", "--expected-plan", "a" * 64),
                      ("status", "--expected-plan", "a" * 64), ("plan", "--directory", "/unusable"),
                      ("export", "--unknown"), ("export", "positional")]:
             result = self.cli(*args)

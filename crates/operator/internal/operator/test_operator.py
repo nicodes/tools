@@ -13,32 +13,23 @@ spec=importlib.util.spec_from_file_location('operator_tool',Path(__file__).resol
 operator=importlib.util.module_from_spec(spec);spec.loader.exec_module(operator)
 HEAD='a'*40
 CONTRACT={'workflow_id':100,'workflow_path':'.github/workflows/ci.yml','app_id':15368,'event':'pull_request','jobs':['check'],'integration_job':'test'}
-POLICY={'version':3,'repositories':{'owner/product':CONTRACT},'hosts':['box.example']}
+POLICY={'version':3,'repositories':{'owner/product':CONTRACT}}
 
 
 class OperatorBoundary(unittest.TestCase):
-    def test_delivery_is_issued_only_after_actual_merge_tree_matches(self):
-        policy={**POLICY,'deployments':{'owner/product':{'host':'box.example','app':'product','repository_id':'123'}}}
+    def test_actual_merged_tree_must_match_tested_source_without_host_authority(self):
         request={'operation':'merge','repository':'owner/product','pull_request':12,'head':HEAD}
-        result=operator.execute(request,policy,self.backend)
-        self.assertTrue(result['delivery_authorized'])
-        deliveries=[call for call in self.calls if call[0]=='ssh']
-        self.assertEqual(len(deliveries),1)
-        import base64
-        wire=deliveries[0][-1].split(' --authorization ')[1]
-        authorization=json.loads(base64.b64decode(wire))
-        self.retention.assert_called_once_with(authorization)
-        self.assertEqual(authorization['revision'],self.pr['merge_commit_sha'])
-        self.assertEqual(authorization['tree'],self.integration['tree'])
-        self.assertEqual(authorization['integration_artifact_id'],55)
-        self.setUp()
-        original=self.backend
+        result=operator.execute(request,POLICY,self.backend)
+        self.assertEqual(result['tested_tree'],self.integration['tree'])
+        self.assertNotIn('delivery_authorized',result)
+        self.assertTrue(all(call[0]=='gh' for call in self.calls))
+        self.setUp();original=self.backend
         def raced(args):
             result=original(args)
             if '/git/commits/' in args[-1] and self.pr['merged']:result['tree']['sha']='9'*40
             return result
-        with self.assertRaises(ValueError):operator.execute(request,policy,raced)
-        self.assertFalse(any(call[0]=='ssh' for call in self.calls))
+        with self.assertRaises(ValueError):operator.execute(request,POLICY,raced)
+        self.assertTrue(all(call[0]=='gh' for call in self.calls))
 
     def test_standalone_entrypoint_refuses_invalid_json_without_import_failure(self):
         result = subprocess.run([sys.executable, str(Path(operator.__file__))],
@@ -63,8 +54,6 @@ class OperatorBoundary(unittest.TestCase):
                 operator.command(['gh','-c','import time;time.sleep(10)'])
 
     def setUp(self):
-        retention=patch.object(operator, 'retain_delivery')
-        self.retention=retention.start();self.addCleanup(retention.stop)
         self.pr={'state':'open','draft':False,'merged':False,'base':{'ref':'main'},'head':{'sha':HEAD,'repo':{'full_name':'owner/product'}},'merge_commit_sha':'b'*40}
         self.evidence={'headRefOid':HEAD,'statusCheckRollup':[{'__typename':'CheckRun','name':'check','status':'COMPLETED','conclusion':'SUCCESS','detailsUrl':'https://github.com/owner/product/actions/runs/42/job/101'}]}
         self.workflow={'id':42,'workflow_id':100,'path':'.github/workflows/ci.yml','event':'pull_request','head_sha':HEAD,'repository':{'full_name':'owner/product'},'head_repository':{'full_name':'owner/product'},'status':'completed','conclusion':'success','run_attempt':2,'check_suite_id':300}
@@ -92,7 +81,6 @@ class OperatorBoundary(unittest.TestCase):
         if '/attempts/' in args[-1]:return {'total_count':1,'jobs':[self.job]}
         if '/actions/runs/' in args[-1]:return self.workflow
         if '/check-runs/' in args[-1]:return self.producer
-        if args[0]=='ssh':return {'apps':[{'name':'product','version':HEAD,'stopped':False,'secrets':{'token':'do-not-return'}}]}
         if args[:3]==['gh','pr','view']:return self.evidence
         if args[:3]==['gh','pr','merge']:self.pr['merged']=True;return None
         return self.pr
@@ -174,7 +162,7 @@ class OperatorBoundary(unittest.TestCase):
             if '/git/commits/' in args[-1] and self.pr['merged']:
                 result['parents'][0]['sha']='9'*40
             return result
-        with self.assertRaisesRegex(ValueError,'delivery authorization refused'):
+        with self.assertRaisesRegex(ValueError,'merged integration differs from verified source'):
             operator.execute({'operation':'merge','repository':'owner/product','pull_request':12,'head':HEAD},POLICY,raced)
         self.assertTrue(self.pr['merged']) # GitHub has no atomic expected-base guard.
 
@@ -191,19 +179,32 @@ class OperatorBoundary(unittest.TestCase):
         self.assertFalse(second.wait(.1));leave.set();one.join(2);two.join(2)
         self.assertTrue(second.is_set())
 
-    def test_host_report_is_fixed_argv_and_filters_credentials(self):
-        report=operator.execute({'operation':'host_report','host':'box.example'},POLICY,self.backend)
-        self.assertNotIn('do-not-return',json.dumps(report))
-        self.assertEqual(self.calls[0][-1],'komizo-box report')
-        for host in ['other.example','box.example;cat /etc/secret','-oProxyCommand=bad']:
-            with self.assertRaises(ValueError):operator.execute({'operation':'host_report','host':host},POLICY,self.backend)
-    def test_unknown_actions_extra_fields_and_unscoped_repos_refuse(self):
-        for request in [{'operation':'shell','command':'anything'},{'operation':'host_report','host':'box.example','command':'anything'},{'operation':'delivery','repository':'other/product','revision':HEAD}]:
-            with self.assertRaises(ValueError):operator.execute(request,POLICY,self.backend)
+    def test_retired_host_owner_delivery_and_publication_requests_refuse_without_effect(self):
+        for request in [{'operation':'host_report','host':'box.example'},
+                        {'operation':'authorize_owner','repository':'owner/product','revision':HEAD,'run_id':42},
+                        {'operation':'delivery','repository':'owner/product','revision':HEAD},
+                        {'operation':'publish','repository':'owner/product','revision':HEAD,'run_id':42,'artifact_id':55},
+                        {'operation':'shell','command':'anything'}]:
+            with self.subTest(operation=request['operation']),self.assertRaises(ValueError):
+                operator.execute(request,POLICY,self.backend)
+            with self.subTest(inspect=request['operation']),self.assertRaises(ValueError):
+                operator.inspect_outcome(request,POLICY,self.backend)
         self.assertEqual(self.calls,[])
-    def test_delivery_does_not_accept_another_revision(self):
-        observed=operator.execute({'operation':'delivery','repository':'owner/product','revision':HEAD},POLICY,lambda _: {'workflow_runs':[{'head_branch':'main','head_sha':'c'*40,'status':'completed','conclusion':'success'}]})
-        self.assertEqual(observed['status'],'missing')
+        with self.assertRaises(ValueError):operator.command(['ssh','root@box.example','komizo-box report'])
+
+    def test_retired_host_and_owner_policy_fields_refuse_even_when_empty(self):
+        for name,value in [('hosts',[]),('deployments',{}),('owner_workflows',{})]:
+            with self.subTest(field=name),self.assertRaises(ValueError):
+                operator.validate_policy(POLICY|{name:value})
+            with self.subTest(dispatch=name),self.assertRaises(ValueError):
+                operator.execute({'operation':'merge','repository':'owner/product','pull_request':12,'head':HEAD},POLICY|{name:value},self.backend)
+        self.assertEqual(self.calls,[])
+
+    def test_direct_main_integration_receipt_cannot_replace_pr_integration(self):
+        self.integration['version']=2
+        with self.assertRaises(ValueError):self.merge()
+        self.assertFalse(self.pr['merged'])
+
     def test_verification_changes_need_a_private_review(self):
         original = self.backend
         def changed(args):
@@ -270,52 +271,6 @@ class OperatorBoundary(unittest.TestCase):
                     operator.execute({'operation':'merge','repository':'owner/product','pull_request':12,'head':HEAD},POLICY,changed)
                 self.assertFalse(self.pr['merged'])
 
-    def test_owner_delivery_authenticates_main_and_refuses_races_before_host_effects(self):
-        import copy
-        import base64
-        for failure in (None, 'unapproved', 'run', 'pending', 'attempt', 'tree', 'review', 'race'):
-            self.setUp()
-            contract = {**CONTRACT, 'event':'push'}
-            policy = {**POLICY, 'owner_workflows':{'owner/product':contract},
-                      'deployments':{'owner/product':{'host':'box.example','app':'product','repository_id':'123'}}}
-            self.base = HEAD
-            self.workflow.update(event='push', head_branch='main', status='in_progress', conclusion=None)
-            self.integration.update(version=2, head=HEAD, commit=HEAD, base='c'*40)
-            review = {'version':1, 'repository':'owner/product', 'revision':HEAD, 'tree':'d'*40,
-                      'ci_run_id':42, 'ci_attempt':2, 'integration_artifact_id':55,
-                      'inputs_sha256':'e'*64, 'owner_authorized':True}
-            if failure == 'unapproved':policy.pop('owner_workflows')
-            if failure == 'pending':self.job['status']='in_progress'
-            if failure == 'attempt':self.integration['attempt']=1
-            if failure == 'tree':self.integration['tree']='9'*40
-            if failure == 'review':review['tree']='9'*40
-            original=self.backend
-            def main_backend(args):
-                if '/commits/' in args[-1] and '/check-runs?' in args[-1]:
-                    self.calls.append(args)
-                    return {'total_count':1, 'check_runs':[copy.deepcopy(self.producer)]}
-                if '/git/commits/' in args[-1]:
-                    self.calls.append(args)
-                    return {'sha':HEAD, 'tree':{'sha':'d'*40}, 'parents':[{'sha':'c'*40}]}
-                result=original(args)
-                if failure=='race' and '/git/ref/heads/main' in args[-1] and self.base_reads==2:
-                    return {'object':{'sha':'9'*40}}
-                return result
-            request={'operation':'authorize_owner','repository':'owner/product','revision':HEAD,
-                     'run_id':43 if failure=='run' else 42}
-            with patch.object(operator, 'private_json', return_value=review):
-                if failure:
-                    with self.assertRaises(ValueError):operator.execute(request,policy,main_backend)
-                    self.assertFalse(any(c[0]=='ssh' for c in self.calls), failure)
-                else:
-                    result=operator.execute(request,policy,main_backend)
-                    self.assertTrue(result['delivery_authorized'])
-                    call=next(c for c in self.calls if c[0]=='ssh')
-                    grant=json.loads(base64.b64decode(call[-1].split(' --authorization ')[1]))
-                    self.assertEqual(grant['kind'],'owner')
-                    self.assertEqual(grant['revision'],HEAD)
-                    self.assertEqual(grant['tree'],'d'*40)
-                    self.assertFalse(any(c[:3]==['gh','pr','merge'] for c in self.calls))
 
     def test_private_fifo_refuses_without_waiting_for_a_writer(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -377,7 +332,7 @@ class TrustedWorkflowDelegation(unittest.TestCase):
         return operator.request_trusted_merge('owner/product',7,self.head,'b'*40,self.contract,self.backend)
 
     def test_v5_is_explicit_and_legacy_policy_cannot_claim_cheap_checks_as_full_acceptance(self):
-        policy=dict(version=5,repositories={'owner/product':self.contract},hosts=[])
+        policy=dict(version=5,repositories={'owner/product':self.contract})
         self.assertEqual(operator.validate_policy(policy),policy)
         for change in [{'version':3},{'version':4}]:
             with self.subTest(change=change),self.assertRaises(ValueError):operator.validate_policy(policy|change)
@@ -388,7 +343,7 @@ class TrustedWorkflowDelegation(unittest.TestCase):
     def test_exact_protected_request_is_dispatched_without_merge_host_or_delivery_authority(self):
         result=self.request()
         self.assertEqual(result['status'],'full_validation_requested')
-        self.assertFalse(result['full_validation_complete']);self.assertFalse(result['delivery_authorized'])
+        self.assertFalse(result['full_validation_complete']);self.assertNotIn('delivery_authorized',result)
         self.assertEqual(self.calls[-1],['gh','api','--method','POST',
             'repos/owner/product/actions/workflows/20/dispatches','-f','ref=main','-f','inputs[pull-request]=7',
             '-f','inputs[expected-head]='+self.head,'-f','inputs[expected-base]='+self.base])
@@ -406,8 +361,8 @@ class TrustedWorkflowDelegation(unittest.TestCase):
             self.assertFalse(any(call[:4]==['gh','api','--method','POST'] for call in self.calls))
 
 
-class TrustedWorkflowCompatibility(unittest.TestCase):
-    def test_normal_v3_v4_integration_policies_remain_unchanged(self):
+class TrustedWorkflowSourceContracts(unittest.TestCase):
+    def test_reviewed_v3_v4_source_integration_contracts_stay_available(self):
         for version in [3, 4]:
             policy = dict(POLICY, version=version)
             self.assertEqual(operator.validate_policy(policy), policy)
@@ -418,7 +373,7 @@ class TrustedWorkflowCompatibility(unittest.TestCase):
         contract = dict(fixture.contract, protocol='cookbook-request-v1', cookbook_commit='c'*40)
         contract.pop('source'); contract.pop('request_workflow_path')
         with self.assertRaisesRegex(ValueError, 'retired Cookbook-specific'):
-            operator.validate_policy(dict(version=4, repositories={'owner/product':contract}, hosts=[]))
+            operator.validate_policy(dict(version=4, repositories={'owner/product':contract}))
 
     def test_real_source_repository_and_revision_are_bound_to_ancestry_request_and_result(self):
         fixture = TrustedWorkflowDelegation()

@@ -44,10 +44,23 @@ class InstallationTests(unittest.TestCase):
             self.assertEqual(installation.plan()['before'],before['before'])
             self.assertEqual(grant.read_text(),'synthetic claimed grant')
 
+    def test_retired_installed_code_requires_owner_reconciliation_before_effects(self):
+        for name in module.RETIRED_CODE:
+            with self.subTest(name=name),tempfile.TemporaryDirectory() as directory:
+                installation,calls,grant=self.fixture(directory,True)
+                retired=installation.root/'usr/local/libexec/fleet'/name
+                retired.parent.mkdir(parents=True,exist_ok=True);retired.write_bytes(b'prior reviewed code')
+                history=installation.state/'deliveries/prior.json';history.parent.mkdir(parents=True);history.write_bytes(b'preserved history')
+                for action in [installation.plan,lambda:installation.apply('0'*64)]:
+                    with self.assertRaisesRegex(ValueError,'explicit owner reconciliation'):action()
+                self.assertEqual(calls,[]);self.assertEqual(retired.read_bytes(),b'prior reviewed code')
+                self.assertEqual(history.read_bytes(),b'preserved history');self.assertEqual(grant.read_text(),'synthetic claimed grant')
+                self.assertFalse((installation.state/'installation.json').exists())
+
     def fixture(self, directory, old=False):
         root=Path(directory)
         (root/'etc').mkdir()
-        (root/'etc/fleet-operator.json').write_text('{"version":3,"repositories":{},"hosts":[]}')
+        (root/'etc/fleet-operator.json').write_text('{"version":3,"repositories":{}}')
         (root/'etc/fleet-operator-broker').write_text('FLEET_EDITOR_GID=123\n')
         for path in ('etc/fleet-operator.json','etc/fleet-operator-broker'):
             (root/path).chmod(0o600)
