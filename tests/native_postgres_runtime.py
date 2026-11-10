@@ -289,6 +289,14 @@ def startup(native, directory):
     while native.execute(['exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'tools_owner',
                           '-d', 'tools_fixture'], check=False, timeout=5).returncode:
         if not native.owned(name)['State']['Running'] or time.monotonic() >= deadline:
+            # Observe only the exact owned subject before cleanup; never emit
+            # inspect Config/Env or an unredacted database log.
+            stopped = native.owned(name)
+            logs = native.execute(['logs', stopped['Id']], check=False, timeout=10)
+            native.last_error = {'verb': 'startup', 'container_id': stopped['Id'],
+                'state': {key: stopped['State'].get(key) for key in
+                          ['Status', 'Running', 'ExitCode', 'OOMKilled', 'Pid']},
+                'stdout_tail': native.clean(logs.stdout), 'stderr_tail': native.clean(logs.stderr)}
             raise ValueError('bounded native PostgreSQL startup did not become ready')
         time.sleep(.1)
     value = native.owned(name)
@@ -441,6 +449,9 @@ def main():
         mark('scan_exact_oci')
         scan_result = scan(native, directory, subject, reference, args.revision)
         contract.RUNTIME = native
+        mark('startup_and_restore')
+        behavior = startup(native, directory)
+        native.cleanup()
         mark('runtime_image_contract')
         contract.image_contract(subject)
         mark('old_data_bind_refusal')
@@ -449,8 +460,6 @@ def main():
         contract.verify(subject)
         mark('source_wrapper_contract')
         wrapper_contract(native, directory, reference)
-        mark('startup_and_restore')
-        behavior = startup(native, directory)
         mark('owned_cleanup_and_foreign_preservation')
         native.cleanup()
         after = json.loads(native.execute(['container', 'inspect', foreign_name]).stdout)[0]
