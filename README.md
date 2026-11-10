@@ -143,6 +143,18 @@ Cookbook consumers bind Cookbook independently. Their `COOKBOOK_ROOT` and `.arti
 
 The generic `podman-ci` action prepares the native local Podman engine and compiler caches when invoked. Builds use operation-owned registry authentication and job-local image layers. The caller owns build declarations and resource limits. OCI archives retain exact manifest, configuration and layer identities for scanning and publication without a shared engine socket.
 
+`postgres-runtime/Containerfile` constructs a minimal PostgreSQL 18.6 runtime from authenticated upstream and Debian source with a pinned base, explicit runtime packages and retained package/source inventories. The runtime provides the standard entrypoint, UID/GID 999, the `en_US.utf8` libc locale and the canonical `/run/postgresql` socket directory. Products own their database features, storage declarations, resource policy, image labels, scanning, publication and application assertions.
+
+The constructor is an independently pinned build dependency. From a reviewed Tools checkout, render a consumer Containerfile with the exact Tools Git commit and its independently verified source archive SHA256:
+
+```sh
+python3 -I -B postgres-runtime/consumer.py \
+  --revision "$TOOLS_BUILD_REF" \
+  --archive-sha256 "$TOOLS_ARCHIVE_SHA256" > Containerfile.postgres
+```
+
+The generated file verifies that archive before extracting the shared constructor and preserves both source identities as image labels. Add product source/revision labels in the consuming declaration. Products select their runtime/helper dependencies separately; using this constructor does not change those selections.
+
 The generic authenticated image archive implementation checks closed tags, config IDs, RootFS layers and complete archive bytes before deriving a no-op, load or scoped repair. Existing aliases, digests and containers stay protected. Its caller supplies the already-admitted complete image set and retains the single total deadline; no recipe or product policy is discovered.
 
 Source-policy SDK preparation is available through `helpers/source_policy.py setup`; it uses the caller's exact pinned Python and existing hash-locked parser requirements. Read-only checks consume that prepared SDK and refuse stale identity. Recipe declaration selection belongs to Cookbook.

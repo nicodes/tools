@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "builder": "docker.io/library/debian:13-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2",
+  "runtime_base": "gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e",
+  "entrypoint_base": "docker.io/library/postgres:18.6-trixie@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280",
+  "postgresql": {
+    "version": "18.6",
+    "url": "https://ftp.postgresql.org/pub/source/v18.6/postgresql-18.6.tar.bz2",
+    "sha256": "555610c24d53e4316da5b7d3fc25c279d96856d5e0e23ee308c328c5fa881d9f",
+    "configure": [
+      "--prefix=/usr/local",
+      "--with-openssl",
+      "--with-lz4",
+      "--with-zstd",
+      "--with-system-tzdata=/usr/share/zoneinfo",
+      "--without-readline",
+      "--without-icu",
+      "--without-libxml",
+      "--without-libxslt",
+      "--without-gssapi",
+      "--without-ldap",
+      "--without-pam",
+      "--without-systemd",
+      "--without-llvm",
+      "--without-perl",
+      "--without-python",
+      "--without-tcl"
+    ],
+    "source_patches": [
+      {
+        "path": "src/include/pg_config_manual.h",
+        "sha256_before": "3b513dda5408337ef7c31bca491844650b4ea2cdb1b688d6b99ab74ba3f06700",
+        "sha256_after": "790bd9dad293964f23aa51d748afc33be677223a1e4b41b64e3f81f88eed161b",
+        "old": "#define DEFAULT_PGSOCKET_DIR  \"/tmp\"",
+        "new": "#define DEFAULT_PGSOCKET_DIR  \"/run/postgresql\""
+      },
+      {
+        "path": "src/backend/utils/misc/postgresql.conf.sample",
+        "sha256_before": "93e3da1fc8d667ba086ee239e5f053581739648a90566f191666cc63de16357f",
+        "sha256_after": "a69ec850143ad87a56799f9f07abf68d0935f34325344fe6b85f10c80adc4891",
+        "old": "#listen_addresses = 'localhost'",
+        "new": "listen_addresses = '*'"
+      }
+    ]
+  },
+  "debian_sources": {
+    "bash": "5.2.37-2",
+    "coreutils": "9.7-3"
+  },
+  "runtime_packages": [
+    "libc6",
+    "libc-bin",
+    "libc-l10n",
+    "locales",
+    "libgcc-s1",
+    "libstdc++6",
+    "libssl3t64",
+    "openssl-provider-legacy",
+    "ca-certificates",
+    "zlib1g",
+    "liblz4-1",
+    "libxxhash0",
+    "libzstd1",
+    "libpcre2-8-0",
+    "libselinux1",
+    "findutils",
+    "grep",
+    "gzip",
+    "xz-utils",
+    "liblzma5",
+    "zstd",
+    "dash",
+    "mawk",
+    "tzdata"
+  ],
+  "database_uid": 999,
+  "database_gid": 999,
+  "locale": "en_US.utf8",
+  "collation_version": "2.41",
+  "entrypoint_source": {
+    "repository": "docker-library/postgres",
+    "revision": "dfc76bb299b057785026eb2eea39556b6fe52983",
+    "files_sha256": {
+      "docker-entrypoint.sh": "9c440299ae04a0a79d55b8bf03307036d890a40979d2fb698073c9050d4b20a5",
+      "LICENSE": "87ffd2c45e3f90cfa3407b5c40ef8333e87c3e875e4895f8b64df758198deafc",
+      "AUTHORS": "a016549e5373f5fd36b698ac4d73a894e7818b50a0c0837f18788cccd6a6da1a"
+    }
+  }
+}

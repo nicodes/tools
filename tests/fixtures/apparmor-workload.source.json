@@ -1,0 +1,9 @@
+{
+  "files": {
+    "src/deployment/apparmor-workload": "06065f42a27508c46fef9f68f93a44351ab97555a60859f10829099880a5c799",
+    "src/deployment/apparmor-workload.LICENSE": "b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1"
+  },
+  "repository": "nicodes/komizo",
+  "revision": "ce6a34bb72521ce8673702cc4e02a27fd5c406b4",
+  "scope": "Test-only enforcing fixture; not a runtime source dependency"
+}
