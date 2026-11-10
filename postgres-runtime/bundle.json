@@ -1,0 +1,61 @@
+{
+  "files": {
+    "Containerfile": {
+      "sha256": "260ac91051fe91370c33667c415541adba22a99ff085697853809037a7302f70",
+      "size": 973
+    },
+    "build-launcher.sh": {
+      "sha256": "4620aa796975df7b2975bcbfecd96b2782e9379c47df0b7b1a876ff14d11645d",
+      "size": 532
+    },
+    "consumer.py": {
+      "sha256": "2bc202d9e56ab5afd8c7cad955c368e3de7870b3e8a2e6f67b15ec666e2792b7",
+      "size": 5848
+    },
+    "prepare-build.sh": {
+      "sha256": "4652bfdf6c57e00be55ba61fa5ed5859620b38828916ea00dc548d3a2b956593",
+      "size": 1405
+    },
+    "runtime/PIN.json": {
+      "sha256": "5a8b39253d709845c0dd5f9ab94e1a278c5464afd6f8f412c08daf732ec6cb53",
+      "size": 2504
+    },
+    "runtime/build.py": {
+      "sha256": "4b89cf2e444b10e959bd9dfcbefbfcd819b871f3573b73f847f1102d4e0630a2",
+      "size": 21049
+    },
+    "runtime/entrypoint/AUTHORS": {
+      "sha256": "a016549e5373f5fd36b698ac4d73a894e7818b50a0c0837f18788cccd6a6da1a",
+      "size": 186
+    },
+    "runtime/entrypoint/LICENSE": {
+      "sha256": "87ffd2c45e3f90cfa3407b5c40ef8333e87c3e875e4895f8b64df758198deafc",
+      "size": 1084
+    },
+    "runtime/entrypoint/docker-entrypoint.sh": {
+      "sha256": "9c440299ae04a0a79d55b8bf03307036d890a40979d2fb698073c9050d4b20a5",
+      "size": 14577
+    },
+    "su-exec/PIN.json": {
+      "sha256": "f77815490d415c0a9a4d5c1f62600bacc8cf3c7f45aeb3a074a922889dc64e76",
+      "size": 1161
+    },
+    "su-exec/SHA256SUMS": {
+      "sha256": "cf427866e1bbd3b0afbc1329adda903e080f1167257223bd42c7be211977e2c4",
+      "size": 232
+    },
+    "su-exec/source/LICENSE": {
+      "sha256": "a0f3f75e286f08be153fd2b7a91788f0bbcd7d5155a40cdca6952742c293fb14",
+      "size": 1073
+    },
+    "su-exec/source/account-files.h": {
+      "sha256": "92aabce8d222868120917c7af37ca62e44070d537c8173ab6b3767875abd7fb4",
+      "size": 1338
+    },
+    "su-exec/source/su-exec.c": {
+      "sha256": "f4c8c9a67ee538c0023f43265d8c087abd339b492c34387c77d59aaa5cf053bf",
+      "size": 2000
+    }
+  },
+  "version": 1
+}

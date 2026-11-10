@@ -1,0 +1,21 @@
+FROM docker.io/library/alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a AS launcher
+COPY postgres-runtime/ /inputs/
+RUN /inputs/build-launcher.sh
+
+FROM docker.io/library/debian:13-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime-builder
+COPY postgres-runtime/ /inputs/
+COPY --from=launcher /out/ /build/launcher/
+RUN /inputs/prepare-build.sh
+
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e
+COPY --from=runtime-builder /out/rootfs/ /
+ENV PG_MAJOR=18 PG_VERSION=18.6 PGDATA=/var/lib/postgresql/18/docker LANG=en_US.utf8
+USER 0:0
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["postgres"]
+STOPSIGNAL SIGINT
+EXPOSE 5432
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.source="https://github.com/nicodes/tools" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.version="18.6"

@@ -1,0 +1,24 @@
+{
+  "upstream": "https://github.com/ncopa/su-exec",
+  "version": "0.3",
+  "commit": "89c016e6e08749d583efdeda04b9f73e1218e253",
+  "license": "MIT",
+  "upstream_files_sha256": {
+    "su-exec.c": "0c90fe15804f2670037b90e72eb496579fe00d2c15765e5fe2ddec0f5afa35fa",
+    "LICENSE": "a0f3f75e286f08be153fd2b7a91788f0bbcd7d5155a40cdca6952742c293fb14"
+  },
+  "source_sha256": {
+    "LICENSE": "a0f3f75e286f08be153fd2b7a91788f0bbcd7d5155a40cdca6952742c293fb14",
+    "account-files.h": "92aabce8d222868120917c7af37ca62e44070d537c8173ab6b3767875abd7fb4",
+    "su-exec.c": "f4c8c9a67ee538c0023f43265d8c087abd339b492c34387c77d59aaa5cf053bf"
+  },
+  "builder_image": "alpine:3.24.3@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a",
+  "build": "cc -static -Os -Wall -Wextra -Werror",
+  "binary_path": "/usr/local/bin/su-exec",
+  "account_file_limit_bytes": 10485760,
+  "account_line_limit_bytes": 65536,
+  "changes": [
+    "Validate regular /etc/passwd and /etc/group files before libc account lookup, retaining bounded-record refusal from the previous launcher.",
+    "Upstream user/group selection, HOME setup and direct exec remain unchanged."
+  ]
+}

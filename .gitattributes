@@ -1,1 +1,3 @@
 * -text
+# Preserve the exact upstream license bytes, including its trailing blank line.
+postgres-runtime/su-exec/source/LICENSE whitespace=-blank-at-eof

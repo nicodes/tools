@@ -16,6 +16,33 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  native-postgres:
+    name: Source-built PostgreSQL runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Prepare native Podman
+      uses: ./podman-ci
+    - name: Build, scan and exercise the exact shared constructor
+      timeout-minutes: 32
+      run: sudo -n /usr/bin/python3 -I -B tests/native_postgres_runtime.py --directory "$RUNNER_TEMP/postgres-runtime-native" --revision "$GITHUB_SHA"
+    - name: Retain finite native runtime evidence
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: postgres-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          .artifacts/postgres-runtime-proof/proof.json
+          .artifacts/postgres-runtime-proof/su-exec-image.json
+          .artifacts/postgres-runtime-proof/security.json
+          .artifacts/postgres-runtime-proof/sbom.json
+          .artifacts/postgres-runtime-proof/scan-context.json
+        if-no-files-found: error
+        retention-days: 7
   snapshot-crypto:
     name: Large snapshot cryptography
     runs-on: ubuntu-24.04
