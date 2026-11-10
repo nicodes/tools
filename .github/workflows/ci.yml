@@ -90,7 +90,7 @@ jobs:
         python3 -I -B -c 'import runpy,sys; sys.version_info >= (3,11) or sys.exit("Private SDK preparation requires host Python 3.11 or newer"); sys.argv=["helpers/private_directory.py","prepare"]; runpy.run_path(sys.argv[0],run_name="__main__")'
         python3 -I -B helpers/rust_install_context.py --github-env
     - name: "Set up tools"
-      uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
+      uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b
       with:
         version: '2026.9.12'
         sha256: e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a
