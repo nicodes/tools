@@ -52,6 +52,7 @@
     "ca-certificates",
     "zlib1g",
     "liblz4-1",
+    "libxxhash0",
     "libzstd1",
     "libpcre2-8-0",
     "libselinux1",

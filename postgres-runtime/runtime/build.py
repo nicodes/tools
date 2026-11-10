@@ -323,11 +323,75 @@ def identity_and_entrypoint():
     run(['ldconfig', '-r', str(ROOT)])
 
 
-def validate_dependencies():
+def elf_dependencies(path):
+    relative = '/' + path.relative_to(ROOT).as_posix()
+    dynamic = run(['readelf', '--dynamic', '--wide', str(path)], capture=True)
+    needed = re.findall(r'\(NEEDED\).*Shared library: \[([A-Za-z0-9_.+-]+)\]', dynamic)
+    if dynamic.count('(NEEDED)') != len(needed) or len(needed) > 128:
+        raise ValueError('runtime ELF dependency inventory is ambiguous: ' + relative)
+    if 'There is no dynamic section in this file.' in dynamic:
+        if needed:
+            raise ValueError('static runtime ELF declares dynamic dependencies')
+        return {'kind': 'static', 'needed': [], 'dynamic_dependencies': []}
+    if 'Dynamic section at offset ' not in dynamic:
+        raise ValueError('runtime ELF dynamic classification is unknown: ' + relative)
+    # Resolve inside the runtime. Host ldd can silently use builder libraries.
+    linked = run(['chroot', str(ROOT), '/usr/bin/ldd', relative], capture=True,
+                 environment={key: value for key, value in ENV.items()
+                              if key not in {'LD_LIBRARY_PATH', 'LD_PRELOAD', 'LD_AUDIT'}})
     forbidden = ['libxml', 'libxslt', 'libsystemd', 'libudev', 'libtinfo', 'libncurses',
                  'libreadline', 'libacl', 'libldap', 'libgssapi', 'libicu', 'libsqlite', 'libcap', 'libgmp']
+    if any(item in linked for item in forbidden) or 'not found' in linked:
+        raise ValueError('runtime ELF retained an excluded or missing dependency: ' + relative)
+    return {'kind': 'dynamic', 'needed': needed,
+            'dynamic_dependencies': [re.sub(r' \(0x[a-f0-9]+\)', '', line.strip())
+                                     for line in linked.splitlines()]}
+
+
+def missing_library_control():
+    # Reproduce the builder-fallback trap with a real selected runtime dependency.
+    candidates = [path for path in ROOT.rglob('libxxhash.so.*') if path.is_file() and not path.is_symlink()]
+    if len(candidates) != 1:
+        raise ValueError('runtime isolation control requires the exact selected xxhash payload')
+    library = candidates[0]
+    before = digest(library)
+    held = WORK / 'isolation-control-libxxhash'
+    if held.exists():
+        raise ValueError('runtime isolation control staging is not fresh')
+    library.rename(held)
+    try:
+        multiarch = run(['dpkg-architecture', '-qDEB_HOST_MULTIARCH'], capture=True).strip()
+        host = run(['ldd', str(ROOT / 'usr/local/bin/postgres')], capture=True,
+                   environment=ENV | {'LD_LIBRARY_PATH': ':'.join([
+                       str(ROOT / 'usr/local/lib'), str(ROOT / 'usr/lib' / multiarch)])})
+        if 'libxxhash.so.0 =>' not in host or 'not found' in host:
+            raise ValueError('builder fallback isolation counterexample did not execute')
+        result = subprocess.run(['chroot', str(ROOT), '/usr/bin/ldd', '/usr/local/bin/postgres'],
+            cwd=WORK, env={key: value for key, value in ENV.items()
+                          if key not in {'LD_LIBRARY_PATH', 'LD_PRELOAD', 'LD_AUDIT'}},
+            capture_output=True, text=True, timeout=30)
+        if 'libxxhash.so.0 => not found' not in result.stdout + result.stderr:
+            raise ValueError('root-contained loader accepted a missing runtime library')
+    finally:
+        held.rename(library)
+        if digest(library) != before:
+            raise ValueError('runtime isolation control did not restore exact library bytes')
+    return {'library': 'libxxhash.so.0', 'host_builder_would_resolve': True,
+            'runtime_missing_library_refused': True, 'selected_library_restored': True}
+
+
+def validate_dependencies():
+    payloads = {}
+    for path in sorted(ROOT.rglob('*')):
+        if path.is_symlink() or not path.is_file():
+            continue
+        with path.open('rb') as stream:
+            if stream.read(4) != b'\x7fELF':
+                continue
+        if len(payloads) >= 1024:
+            raise ValueError('runtime ELF payload inventory exceeds its bound')
+        payloads['/' + path.relative_to(ROOT).as_posix()] = {'sha256': digest(path), **elf_dependencies(path)}
     proof = {}
-    multiarch = run(['dpkg-architecture', '-qDEB_HOST_MULTIARCH'], capture=True).strip()
     for name in EXECUTABLES:
         paths = [ROOT / directory / name for directory in ['usr/local/bin', 'usr/bin']]
         path = next((path for path in paths if path.is_file()), None)
@@ -335,16 +399,11 @@ def validate_dependencies():
             raise ValueError('required runtime executable is missing: ' + name)
         with path.open('rb') as stream:
             elf = stream.read(4) == b'\x7fELF'
-        linked = run(['ldd', str(path)], capture=True,
-                     environment=ENV | {'LD_LIBRARY_PATH': ':'.join([
-                         str(ROOT / 'usr/local/lib'), str(ROOT / 'usr/lib' / multiarch)])}) if elf else ''
-        if any(item in linked for item in forbidden) or 'not found' in linked:
-            raise ValueError('runtime executable retained an excluded or missing dependency: ' + name)
+        dependencies = elf_dependencies(path) if elf else {'dynamic_dependencies': []}
         proof[name] = {'path': '/' + path.relative_to(ROOT).as_posix(), 'sha256': digest(path),
                        'kind': 'elf' if elf else 'script',
-                       'dynamic_dependencies': [re.sub(r' \(0x[a-f0-9]+\)', '', line.strip())
-                                                for line in linked.splitlines()]}
-    return proof
+                       'dynamic_dependencies': dependencies['dynamic_dependencies']}
+    return proof, payloads, missing_library_control()
 
 
 def main():
@@ -364,12 +423,13 @@ def main():
     for path in (ROOT / 'usr/local/lib').glob('*.a'):
         path.unlink()
     identity_and_entrypoint()
-    proof = validate_dependencies()
+    proof, payloads, isolation = validate_dependencies()
     record = {'kind': 'komizo.postgres-runtime', 'version': 1, 'pin': PIN,
               'components': COMPONENTS, 'runtime_packages': PACKAGES,
               'compiler': run(['cc', '--version'], capture=True).splitlines()[0],
               'cflags': ENV['CFLAGS'], 'ldflags': ENV['LDFLAGS'], 'executables': proof,
-              'configure_logs': CONFIGURE_LOGS}
+              'configure_logs': CONFIGURE_LOGS, 'elf_payloads': payloads,
+              'dependency_isolation_control': isolation}
     put('/usr/local/share/komizo-postgres-runtime.json', json.dumps(record, sort_keys=True, indent=2) + '\n')
 
 

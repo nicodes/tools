@@ -382,13 +382,18 @@ def main():
     output = ROOT / '.artifacts/postgres-runtime-proof'
     output.mkdir(parents=True, exist_ok=True)
     native.output = output
+
+    def mark(phase):
+        native.phase = phase
+        print('Native PostgreSQL proof phase: ' + phase, flush=True)
+
     profile_input = directory / 'apparmor-workload'
     try:
-        native.phase = 'authenticate_source_archive'
+        mark('authenticate_source_archive')
         archive_sha256 = source_archive(directory, args.revision, consumer)
         wrapper = directory / 'Containerfile'
         wrapper.write_text(consumer.render(args.revision, archive_sha256))
-        native.phase = 'admit_enforcing_profile'
+        mark('admit_enforcing_profile')
         if (digest(PROFILE) != PROFILE_SHA256 or any(row.startswith(APPARMOR + ' ')
                 for row in PROFILES.read_text().splitlines())):
             raise ValueError('native proof refuses changed or already installed profile state')
@@ -402,7 +407,7 @@ def main():
         if APPARMOR + ' (enforce)' not in PROFILES.read_text().splitlines():
             raise ValueError('reviewed native profile is not enforcing')
         reference = source_reference(token, args.revision)
-        native.phase = 'build_exact_consumer'
+        mark('build_exact_consumer')
         native.execute(['build', '--format=oci', '--layers', '--force-rm', '--label', LABEL + '=' + token,
             '--build-arg', 'SOURCE_REVISION=' + args.revision, '-f', str(wrapper),
             '-t', reference, str(ROOT)], timeout=1800)
@@ -433,20 +438,20 @@ def main():
         finally:
             native.intents.pop(foreign_name)
         # Keep source-reference evidence while using immutable configs for all execution.
-        native.phase = 'scan_exact_oci'
+        mark('scan_exact_oci')
         scan_result = scan(native, directory, subject, reference, args.revision)
         contract.RUNTIME = native
-        native.phase = 'runtime_image_contract'
+        mark('runtime_image_contract')
         contract.image_contract(subject)
-        native.phase = 'old_data_bind_refusal'
+        mark('old_data_bind_refusal')
         contract.old_data_bind_refusal(subject)
-        native.phase = 'launcher_contract'
+        mark('launcher_contract')
         contract.verify(subject)
-        native.phase = 'source_wrapper_contract'
+        mark('source_wrapper_contract')
         wrapper_contract(native, directory, reference)
-        native.phase = 'startup_and_restore'
+        mark('startup_and_restore')
         behavior = startup(native, directory)
-        native.phase = 'owned_cleanup_and_foreign_preservation'
+        mark('owned_cleanup_and_foreign_preservation')
         native.cleanup()
         after = json.loads(native.execute(['container', 'inspect', foreign_name]).stdout)[0]
         if any(after[key] != foreign[key] for key in ['Id', 'Image', 'Name', 'State']):

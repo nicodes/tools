@@ -324,6 +324,21 @@ class SourceOwnedEntrypoint(unittest.TestCase):
                 self.contract.wrapper_input({'path': '/usr/local/bin/project-postgres', 'source': source})
         self.assertEqual(self.contract.wrapper_input(None), ('/usr/local/bin/docker-entrypoint.sh', None))
 
+    def test_image_reader_refuses_changed_identity_or_foreign_scope(self):
+        image = 'sha256:' + 'a' * 64
+        value = {'Id': 'b' * 64, 'Name': 'tools-pg-image-test', 'Image': image,
+                 'Config': {'Labels': {'io.tools.pg-image-contract': 'owned-token'}}}
+        adapter = type('Adapter', (), {'config_digest': staticmethod(lambda value: value)})()
+        with patch.object(self.contract, 'RUNTIME', adapter):
+            self.assertEqual(self.contract.reader_identity(value, image, value['Name'], 'owned-token', value['Id']), value['Id'])
+            variants = []
+            for key, changed in [('Id', 'c' * 64), ('Image', 'sha256:' + 'd' * 64), ('Name', 'foreign')]:
+                current = copy.deepcopy(value);current[key] = changed;variants.append(current)
+            current = copy.deepcopy(value);current['Config']['Labels']['io.tools.pg-image-contract'] = 'foreign-token';variants.append(current)
+            for current in variants:
+                with self.assertRaises(ValueError):
+                    self.contract.reader_identity(current, image, value['Name'], 'owned-token', value['Id'])
+
 
 if __name__ == '__main__':
     unittest.main()
