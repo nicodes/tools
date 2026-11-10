@@ -148,6 +148,14 @@ def verify_wrapper(path, expected, read_file, command):
             raise ValueError('installed entrypoint wrapper differs from its exact source or protected mode')
 
 
+def payload_path(path):
+    # GNU coreutils ships the ordinary '[' executable. Fixed argv reads and
+    # shlex.quote for the shell loader check preserve its literal filename.
+    return (isinstance(path, str) and len(path) <= 4096
+            and re.fullmatch(r'/[A-Za-z0-9_./+\[\]-]+', path) is not None
+            and '..' not in Path(path).parts)
+
+
 def reader_identity(value, image, name, token, expected_id=None):
     if (not isinstance(value, dict) or not re.fullmatch('[a-f0-9]{64}', str(value.get('Id', '')))
             or (expected_id is not None and value['Id'] != expected_id)
@@ -269,7 +277,7 @@ def image_contract(image, *, wrapper=None):
         payloads = runtime['elf_payloads']
         assert isinstance(payloads, dict) and 1 <= len(payloads) <= 1024
         for path, record in payloads.items():
-            assert re.fullmatch(r'/[A-Za-z0-9_./+-]+', path) and '..' not in Path(path).parts
+            assert payload_path(path), 'Invalid runtime ELF payload inventory path: ' + repr(path)[:4096]
             assert set(record) == {'sha256', 'kind', 'needed', 'dynamic_dependencies'}
             raw = inspect_file(image, path)
             assert raw.startswith(b'\x7fELF') and hashlib.sha256(raw).hexdigest() == record['sha256']

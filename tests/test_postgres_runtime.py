@@ -300,6 +300,14 @@ class SourceOwnedEntrypoint(unittest.TestCase):
         cls.contract = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(cls.contract)
 
+    def test_literal_coreutils_bracket_path_keeps_shell_and_traversal_boundaries(self):
+        self.assertTrue(self.contract.payload_path('/usr/local/bin/['))
+        self.assertTrue(self.contract.payload_path('/usr/lib/x86_64-linux-gnu/libxxhash.so.0.8.3'))
+        for path in ['relative', '/usr/../outside', '/usr/bin/x;id', '/usr/bin/$(id)',
+                     '/usr/bin/x\nsecret', '/usr/bin/x y', '/usr/bin/' + 'a' * 4096]:
+            with self.subTest(path=path[:64]):
+                self.assertFalse(self.contract.payload_path(path))
+
     def test_exact_caller_source_mode_and_bytes_remain_mandatory(self):
         with tempfile.TemporaryDirectory(prefix='postgres-wrapper-source-') as directory:
             source = Path(directory) / 'entrypoint.sh'
