@@ -11,6 +11,9 @@ import tempfile
 import time
 import uuid
 import shlex
+import stat
+
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = None
@@ -113,7 +116,39 @@ def verify(image, evidence=None):
     (artifacts / 'su-exec-image.json').write_text(json.dumps(receipt, indent=2) + '\n')
     print('Shipped su-exec preserved user/group, HOME, PID 1, streams and signal behavior; oversized records refused.')
 
-def image_contract(image):
+def wrapper_input(wrapper):
+    """Admit one explicit caller-owned entrypoint without changing the runtime contract."""
+    if wrapper is None:
+        return '/usr/local/bin/docker-entrypoint.sh', None
+    if (not isinstance(wrapper, dict) or set(wrapper) != {'path', 'source'}
+            or not isinstance(wrapper['path'], str)
+            or not re.fullmatch(r'/usr/local/bin/[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}', wrapper['path'])
+            or wrapper['path'] == '/usr/local/bin/docker-entrypoint.sh'):
+        raise ValueError('entrypoint wrapper requires its exact installed path and source')
+    source = Path(wrapper['source'])
+    if any(parent.is_symlink() for parent in (source, *source.parents)):
+        raise ValueError('entrypoint wrapper source contains a link')
+    before = source.lstat()
+    if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+            or not 0 < before.st_size <= 65536):
+        raise ValueError('entrypoint wrapper source must be one bounded ordinary file')
+    raw = source.read_bytes()
+    after = source.lstat()
+    signature = lambda info: (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
+                              info.st_gid, info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    if signature(before) != signature(after) or len(raw) != before.st_size or not raw.startswith(b'#!'):
+        raise ValueError('entrypoint wrapper source changed or is not an executable script')
+    return wrapper['path'], raw
+
+
+def verify_wrapper(path, expected, read_file, command):
+    if expected is not None:
+        if read_file(path) != expected or command('stat -c %u:%g:%a:%h ' + path).strip() != '0:0:555:1':
+            raise ValueError('installed entrypoint wrapper differs from its exact source or protected mode')
+
+
+def image_contract(image, *, wrapper=None):
+    entrypoint, wrapper_bytes = wrapper_input(wrapper)
     pin = json.loads((ROOT/'postgres-runtime/runtime/PIN.json').read_text())
     base_reference = pin['runtime_base']
     native().run(['pull', base_reference], check=True, capture_output=True, timeout=300)
@@ -126,7 +161,7 @@ def image_contract(image):
     assert {k:v for k,v in base['Config'].items() if k not in authored} == {
         k:v for k,v in actual['Config'].items() if k not in authored}, 'Undeclared minimal base configuration changed'
     assert actual['Config']['User'] == '0:0'
-    assert actual['Config']['Entrypoint'] == ['/usr/local/bin/docker-entrypoint.sh']
+    assert actual['Config']['Entrypoint'] == [entrypoint], 'The declared final entrypoint changed'
     assert actual['Config']['Cmd'] == ['postgres'] and actual['Config']['StopSignal'] == 'SIGINT'
     assert actual['Config']['ExposedPorts'] == {'5432/tcp':{}}
     environment = lambda config: dict(item.split('=',1) for item in config.get('Env',[]))
@@ -150,6 +185,8 @@ def image_contract(image):
     assert upstream.count(b'exec gosu postgres ') == 1
     assert inspect_file(image,'/usr/local/bin/docker-entrypoint.sh') == upstream.replace(
         b'exec gosu postgres ',b'exec su-exec postgres '), 'Entrypoint changed beyond the reviewed launcher replacement'
+    verify_wrapper(entrypoint, wrapper_bytes, lambda path: inspect_file(image, path),
+                   lambda text: command(image, text))
     runtime = json.loads(inspect_file(image,'/usr/local/share/komizo-postgres-runtime.json'))
     assert runtime['kind']=='komizo.postgres-runtime' and runtime['version']==1 and runtime['pin']==pin
     packages = {item['name']:item for item in runtime['runtime_packages']}

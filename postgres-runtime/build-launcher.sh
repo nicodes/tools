@@ -2,7 +2,7 @@
 set -eu
 inputs=$(CDPATH="" cd -- "$(dirname -- "$0")" && pwd)
 cd "$inputs/su-exec/source"
-sha256sum --check ../SHA256SUMS
+sha256sum -c ../SHA256SUMS
 apk add --no-cache gcc musl-dev
 mkdir /out
 cc -static -Os -Wall -Wextra -Werror -o /out/su-exec su-exec.c

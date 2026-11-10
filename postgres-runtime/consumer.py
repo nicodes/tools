@@ -63,7 +63,7 @@ def render(revision, archive_sha256):
     prefix = f'''# Exact shared build source; no PostgreSQL image package is downloaded.
 FROM {base} AS source-input
 ADD https://codeload.github.com/nicodes/tools/tar.gz/{revision} /tmp/tools-source.tar.gz
-RUN printf '%s\\n' '{archive_sha256}  /tmp/tools-source.tar.gz' | sha256sum --check - \\
+RUN printf '%s\\n' '{archive_sha256}  /tmp/tools-source.tar.gz' | sha256sum -c - \\
  && mkdir /source \\
  && tar -xzf /tmp/tools-source.tar.gz -C /source --strip-components=1 tools-{revision}/postgres-runtime
 

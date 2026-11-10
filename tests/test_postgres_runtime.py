@@ -190,7 +190,7 @@ class ImmutableConsumer(unittest.TestCase):
         self.assertIn('runtime/build.py', record['files'])
         result = self.consumer.render('a' * 40, 'b' * 64)
         self.assertIn('https://codeload.github.com/nicodes/tools/tar.gz/' + 'a' * 40, result)
-        self.assertLess(result.index('sha256sum --check'), result.index('tar -xzf'))
+        self.assertLess(result.index('sha256sum -c'), result.index('tar -xzf'))
         self.assertEqual(result.count('RUN /inputs/prepare-build.sh'), 1)
         self.assertEqual(result.count('RUN /inputs/build-launcher.sh'), 1)
         self.assertNotIn('ADD --checksum', result)
@@ -273,6 +273,38 @@ class NativeDiagnosticBoundary(unittest.TestCase):
             self.assertNotIn(b'do-not-retain', raw)
             self.assertIn(b'synthetic-failure', raw)
             self.assertIn(b'build', raw)
+
+
+class SourceOwnedEntrypoint(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('postgres_shared_contract', ROOT / 'postgres-runtime/contract.py')
+        cls.contract = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.contract)
+
+    def test_exact_caller_source_mode_and_bytes_remain_mandatory(self):
+        with tempfile.TemporaryDirectory(prefix='postgres-wrapper-source-') as directory:
+            source = Path(directory) / 'entrypoint.sh'
+            raw = b'#!/bin/sh\nexec /usr/local/bin/docker-entrypoint.sh "$@"\n'
+            source.write_bytes(raw)
+            path, expected = self.contract.wrapper_input({'path': '/usr/local/bin/project-postgres', 'source': source})
+            self.contract.verify_wrapper(path, expected, lambda _: raw, lambda _: '0:0:555:1\n')
+            for changed, mode in [(raw + b'# changed\n', '0:0:555:1'), (raw, '0:0:755:1'),
+                                  (raw, '999:999:555:1'), (raw, '0:0:555:2')]:
+                with self.assertRaises(ValueError):
+                    self.contract.verify_wrapper(path, expected, lambda _: changed, lambda _: mode)
+            for path in ['/tmp/entrypoint', '/usr/local/bin/../entrypoint', '/usr/local/bin/docker-entrypoint.sh']:
+                with self.assertRaises(ValueError):
+                    self.contract.wrapper_input({'path': path, 'source': source})
+            linked = Path(directory) / 'alias'
+            linked.symlink_to(source)
+            with self.assertRaises(ValueError):
+                self.contract.wrapper_input({'path': '/usr/local/bin/project-postgres', 'source': linked})
+            linked.unlink()
+            linked.hardlink_to(source)
+            with self.assertRaises(ValueError):
+                self.contract.wrapper_input({'path': '/usr/local/bin/project-postgres', 'source': source})
+        self.assertEqual(self.contract.wrapper_input(None), ('/usr/local/bin/docker-entrypoint.sh', None))
 
 
 if __name__ == '__main__':

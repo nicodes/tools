@@ -46,6 +46,40 @@ def module(path):
 contract = module(ROOT / 'postgres-runtime/contract.py')
 
 
+def wrapper_contract(native, directory, reference):
+    """Exercise a real caller-owned entrypoint layer without replacing upstream checks."""
+    context = directory / 'wrapper-proof'
+    context.mkdir(mode=0o700)
+    source = context / 'wrapper.sh'
+    source.write_bytes(b'#!/bin/sh\nexec /usr/local/bin/docker-entrypoint.sh "$@"\n')
+    target = '/usr/local/bin/project-postgres'
+    (context / 'Containerfile').write_text('FROM ' + reference
+        + '\nCOPY --chmod=0555 wrapper.sh ' + target
+        + '\nENTRYPOINT ["' + target + '"]\n')
+    wrapper_reference = reference + '-wrapper'
+    native.execute(['build', '--format=oci', '--layers', '--force-rm', '--label', LABEL + '=' + native.token,
+                    '-t', wrapper_reference, str(context)], timeout=120)
+    original = native.image
+    inspected = native.inspect_images([wrapper_reference])[0]
+    if inspected['Config'].get('Labels', {}).get(LABEL) != native.token:
+        raise ValueError('source wrapper image ownership changed')
+    native.image = inspected['Id']
+    try:
+        contract.image_contract(native.image, wrapper={'path': target, 'source': source})
+        source.write_bytes(source.read_bytes() + b'# source changed after image construction\n')
+        try:
+            contract.image_contract(native.image, wrapper={'path': target, 'source': source})
+        except ValueError as error:
+            if 'installed entrypoint wrapper differs' not in str(error):
+                raise
+        else:
+            raise ValueError('changed source wrapper was admitted')
+        native.cleanup()
+        native.execute(['rmi', wrapper_reference], timeout=60)
+    finally:
+        native.image = original
+
+
 def source_archive(directory, revision, consumer):
     path = directory / 'tools-source.tar.gz'
     deadline = time.monotonic() + 120
@@ -357,7 +391,7 @@ def main():
             raise ValueError('reviewed native profile is not enforcing')
         reference = 'localhost/tools-postgres-runtime:' + token
         native.phase = 'build_exact_consumer'
-        native.execute(['build', '--force-rm', '--label', LABEL + '=' + token,
+        native.execute(['build', '--format=oci', '--layers', '--force-rm', '--label', LABEL + '=' + token,
             '--build-arg', 'SOURCE_REVISION=' + args.revision, '-f', str(wrapper),
             '-t', reference, str(ROOT)], timeout=1800)
         inspected = native.inspect_images([reference])[0]
@@ -396,6 +430,8 @@ def main():
         contract.old_data_bind_refusal(subject)
         native.phase = 'launcher_contract'
         contract.verify(subject)
+        native.phase = 'source_wrapper_contract'
+        wrapper_contract(native, directory, reference)
         native.phase = 'startup_and_restore'
         behavior = startup(native, directory)
         native.phase = 'owned_cleanup_and_foreign_preservation'
