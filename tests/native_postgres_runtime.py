@@ -65,7 +65,7 @@ def wrapper_contract(native, directory, reference):
     target = '/usr/local/bin/project-postgres'
     (context / 'Containerfile').write_text('FROM ' + reference
         + '\nCOPY --chmod=0555 wrapper.sh ' + target
-        + '\nENTRYPOINT ["' + target + '"]\n')
+        + '\nENTRYPOINT ["' + target + '"]\nCMD ["postgres"]\n')
     wrapper_reference = reference + '-wrapper'
     native.execute(['build', '--format=oci', '--layers', '--force-rm', '--label', LABEL + '=' + native.token,
                     '-t', wrapper_reference, str(context)], timeout=120)
