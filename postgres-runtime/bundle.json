@@ -1,8 +1,8 @@
 {
   "files": {
     "Containerfile": {
-      "sha256": "260ac91051fe91370c33667c415541adba22a99ff085697853809037a7302f70",
-      "size": 973
+      "sha256": "ef711cd2a7bc85ebedfb991ff9ad6808301e0c854bdc30a1fd0274f3757df507",
+      "size": 983
     },
     "build-launcher.sh": {
       "sha256": "606f79345d403e464cbd15381bdd90b10603e22229338120d219e34b4fe36957",
@@ -13,8 +13,8 @@
       "size": 5843
     },
     "contract.py": {
-      "sha256": "71906f7ca86d7cc51eaf976016a08f28527de35fb619bd3129c84de6a2ddb4bb",
-      "size": 22902
+      "sha256": "4c39d4c1bfb1527541b4d7c9ccd9239b41404dc52fbed619c058711f0def9598",
+      "size": 23041
     },
     "prepare-build.sh": {
       "sha256": "4652bfdf6c57e00be55ba61fa5ed5859620b38828916ea00dc548d3a2b956593",

@@ -232,10 +232,11 @@ def image_contract(image, *, wrapper=None):
     assert original and actual['RootFS']['Type'] == base['RootFS']['Type']
     assert actual['RootFS']['Layers'][:len(original)] == original, 'The selected immutable minimal base changed'
     assert len(actual['RootFS']['Layers']) > len(original), 'Expected explicit source-owned runtime layers'
-    authored = {'Labels','Env','User','Entrypoint','Cmd','StopSignal','ExposedPorts'}
+    authored = {'Labels','Env','User','WorkingDir','Entrypoint','Cmd','StopSignal','ExposedPorts'}
     assert {k:v for k,v in base['Config'].items() if k not in authored} == {
         k:v for k,v in actual['Config'].items() if k not in authored}, 'Undeclared minimal base configuration changed'
     assert actual['Config']['User'] == '0:0'
+    assert actual['Config']['WorkingDir'] == '/', 'The PostgreSQL runtime requires its accessible declared working directory'
     assert actual['Config']['Entrypoint'] == [entrypoint], 'The declared final entrypoint changed'
     assert actual['Config']['Cmd'] == ['postgres'] and actual['Config']['StopSignal'] == 'SIGINT'
     assert actual['Config']['ExposedPorts'] == {'5432/tcp':{}}

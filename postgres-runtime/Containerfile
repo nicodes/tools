@@ -10,6 +10,7 @@ RUN /inputs/prepare-build.sh
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e
 COPY --from=runtime-builder /out/rootfs/ /
 ENV PG_MAJOR=18 PG_VERSION=18.6 PGDATA=/var/lib/postgresql/18/docker LANG=en_US.utf8
+WORKDIR /
 USER 0:0
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["postgres"]
