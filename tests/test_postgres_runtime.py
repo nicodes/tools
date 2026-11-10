@@ -253,5 +253,27 @@ class ImmutableConsumer(unittest.TestCase):
                 self.consumer.verify_archive(archive, revision)
 
 
+class NativeDiagnosticBoundary(unittest.TestCase):
+    def test_fixture_adapter_and_error_evidence_never_emit_environment_values(self):
+        path = ROOT / 'tests/native_postgres_runtime.py'
+        spec = importlib.util.spec_from_file_location('postgres_native_fixture', path)
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        native = fixture.Native({}, 'a' * 32)
+        self.assertEqual(native.config_digest('b' * 64), 'sha256:' + 'b' * 64)
+        with tempfile.TemporaryDirectory(prefix='postgres-diagnostic-boundary-') as directory:
+            native.output = Path(directory)
+            native.phase = 'synthetic-failure'
+            native.redactions.add('synthetic-private-canary')
+            native.last_error = {'verb': 'build', 'returncode': 1,
+                'stderr_tail': native.clean(b'\x1b[31mfailed synthetic-private-canary\nSOURCE_TOKEN=do-not-retain\x1b[0m')}
+            native.report(ValueError('bounded synthetic failure'))
+            raw = (native.output / 'error.json').read_bytes()
+            self.assertNotIn(b'synthetic-private-canary', raw)
+            self.assertNotIn(b'do-not-retain', raw)
+            self.assertIn(b'synthetic-failure', raw)
+            self.assertIn(b'build', raw)
+
+
 if __name__ == '__main__':
     unittest.main()

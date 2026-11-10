@@ -23,7 +23,6 @@ import container_runtime as runtime
 import oci_archive
 import image_security_report
 import native_image_security_control as scanner_control
-import postgres_runtime_contract as contract
 
 LABEL = 'io.tools.postgres-native-fixture'
 PROFILE = ROOT / 'tests/fixtures/apparmor-workload'
@@ -42,6 +41,9 @@ def module(path):
     value = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(value)
     return value
+
+
+contract = module(ROOT / 'postgres-runtime/contract.py')
 
 
 def source_archive(directory, revision, consumer):
@@ -70,9 +72,49 @@ class Native:
         self.token = token
         self.image = None
         self.intents = {}
+        self.redactions = set()
+        self.phase = 'prepare'
+        self.last_error = None
+        self.output = None
+
+    def clean(self, value):
+        text = value.decode(errors='replace') if isinstance(value, bytes) else str(value)
+        text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+        for secret in sorted(self.redactions, key=len, reverse=True):
+            text = text.replace(secret, '[redacted]')
+        text = re.sub(r'(?im)^([A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|AUTHORIZATION)[A-Z0-9_]*=).*$',
+                      r'\1[redacted]', text)
+        text = re.sub(r'-----BEGIN[^\n]*PRIVATE KEY-----.*?-----END[^\n]*PRIVATE KEY-----',
+                      '[redacted private key]', text, flags=re.S)
+        return text[-32768:]
+
+    def report(self, error, *, cleanup=False):
+        if self.output is None:
+            return
+        path = self.output / 'error.json'
+        value = json.loads(path.read_bytes()) if path.exists() else {
+            'kind': 'tools.postgres-native-error', 'version': 1, 'errors': []}
+        record = {'phase': self.phase, 'cleanup': cleanup,
+                  'type': type(error).__name__, 'message': self.clean(error)}
+        if self.last_error is not None:
+            record['command'] = self.last_error
+        if isinstance(error, subprocess.CalledProcessError):
+            record['stdout_tail'] = self.clean(error.stdout or b'')
+            record['stderr_tail'] = self.clean(error.stderr or b'')
+        value['errors'].append(record)
+        path.write_text(json.dumps(value, sort_keys=True, indent=2) + '\n')
 
     def run(self, arguments, **kwargs):
         arguments = list(arguments)
+        for index, argument in enumerate(arguments[:-1]):
+            if argument == '--env-file':
+                path = Path(arguments[index + 1])
+                if path.stat().st_size > 128 << 10:
+                    raise ValueError('synthetic environment file exceeds its bound')
+                for line in path.read_text().splitlines():
+                    key, separator, value = line.partition('=')
+                    if separator and value and any(word in key for word in ['PASSWORD', 'SECRET', 'TOKEN']):
+                        self.redactions.add(value)
         if arguments[0] in {'run', 'create'}:
             names = [arguments[i + 1] for i, arg in enumerate(arguments[:-1]) if arg == '--name']
             if len(names) > 1:
@@ -94,6 +136,8 @@ class Native:
         if len(result.stdout) > 64 << 20 or len(result.stderr) > (64 << 20 if arguments[0] == 'build' else 1 << 20):
             raise ValueError('native PostgreSQL proof output exceeded its bound')
         if check and result.returncode:
+            self.last_error = {'verb': arguments[0], 'returncode': result.returncode,
+                               'stdout_tail': self.clean(result.stdout), 'stderr_tail': self.clean(result.stderr)}
             raise ValueError('native PostgreSQL command failed: ' + arguments[0]
                              + ' exit=' + str(result.returncode))
         return result
@@ -107,6 +151,9 @@ class Native:
 
     def inspect_images(self, references):
         return runtime.inspect_images(references, environment=self.environment)
+
+    def config_digest(self, value):
+        return runtime.config_digest(value)
 
     def bind_mount_user_namespace(self, uid, gid):
         return runtime.bind_mount_user_namespace(uid, gid)
@@ -288,11 +335,14 @@ def main():
     foreign = None
     output = ROOT / '.artifacts/postgres-runtime-proof'
     output.mkdir(parents=True, exist_ok=True)
+    native.output = output
     profile_input = directory / 'apparmor-workload'
     try:
+        native.phase = 'authenticate_source_archive'
         archive_sha256 = source_archive(directory, args.revision, consumer)
         wrapper = directory / 'Containerfile'
         wrapper.write_text(consumer.render(args.revision, archive_sha256))
+        native.phase = 'admit_enforcing_profile'
         if (digest(PROFILE) != PROFILE_SHA256 or any(row.startswith(APPARMOR + ' ')
                 for row in PROFILES.read_text().splitlines())):
             raise ValueError('native proof refuses changed or already installed profile state')
@@ -306,6 +356,7 @@ def main():
         if APPARMOR + ' (enforce)' not in PROFILES.read_text().splitlines():
             raise ValueError('reviewed native profile is not enforcing')
         reference = 'localhost/tools-postgres-runtime:' + token
+        native.phase = 'build_exact_consumer'
         native.execute(['build', '--force-rm', '--label', LABEL + '=' + token,
             '--build-arg', 'SOURCE_REVISION=' + args.revision, '-f', str(wrapper),
             '-t', reference, str(ROOT)], timeout=1800)
@@ -336,12 +387,18 @@ def main():
         finally:
             native.intents.pop(foreign_name)
         # Keep source-reference evidence while using immutable configs for all execution.
+        native.phase = 'scan_exact_oci'
         scan_result = scan(native, directory, subject, reference, args.revision)
         contract.RUNTIME = native
+        native.phase = 'runtime_image_contract'
         contract.image_contract(subject)
+        native.phase = 'old_data_bind_refusal'
         contract.old_data_bind_refusal(subject)
+        native.phase = 'launcher_contract'
         contract.verify(subject)
+        native.phase = 'startup_and_restore'
         behavior = startup(native, directory)
+        native.phase = 'owned_cleanup_and_foreign_preservation'
         native.cleanup()
         after = json.loads(native.execute(['container', 'inspect', foreign_name]).stdout)[0]
         if any(after[key] != foreign[key] for key in ['Id', 'Image', 'Name', 'State']):
@@ -358,6 +415,9 @@ def main():
                   'production_data': False}
         (output / 'proof.json').write_text(json.dumps(result, sort_keys=True, indent=2) + '\n')
         print('Native source-built PostgreSQL: strict scanner clean, exact provenance/ELF/launcher/old-bind contracts, default clients, rows/identity/ACL restore and owned cleanup passed.')
+    except BaseException as error:
+        native.report(error)
+        raise
     finally:
         for name in ['security.json', 'sbom.json', 'scan-context.json']:
             if (directory / name).is_file():

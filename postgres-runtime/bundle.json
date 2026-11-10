@@ -12,6 +12,10 @@
       "sha256": "2bc202d9e56ab5afd8c7cad955c368e3de7870b3e8a2e6f67b15ec666e2792b7",
       "size": 5848
     },
+    "contract.py": {
+      "sha256": "75a5c6cd175847b8b18d92f3dee1d9d3fd9be84a26644507b96001b529d99daa",
+      "size": 15743
+    },
     "prepare-build.sh": {
       "sha256": "4652bfdf6c57e00be55ba61fa5ed5859620b38828916ea00dc548d3a2b956593",
       "size": 1405

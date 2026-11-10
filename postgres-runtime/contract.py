@@ -28,7 +28,7 @@ def run(command):
     return native().run(command[2:], capture_output=True, text=True, timeout=30)
 
 
-def verify(image):
+def verify(image, evidence=None):
     if not isinstance(image, str) or not re.fullmatch('sha256:[a-f0-9]{64}', image):
         raise ValueError('launcher proof requires the accepted immutable config ID')
     native().run(['info','--format=json'],check=True,capture_output=True,timeout=30)
@@ -36,7 +36,7 @@ def verify(image):
     image_id = native().config_digest(inspected.stdout.strip())
     if inspected.returncode or image_id != image:
         raise RuntimeError('launcher artifact differs from the accepted image config')
-    artifacts = ROOT / '.artifacts/postgres-runtime-proof'
+    artifacts = Path(evidence) if evidence is not None else Path.cwd() / '.artifacts/postgres-runtime-proof'
     artifacts.mkdir(parents=True, exist_ok=True)
     results = []
     with tempfile.TemporaryDirectory(prefix='su-exec-image-', dir=artifacts) as name:
@@ -200,8 +200,8 @@ def image_contract(image):
     assert all(digest+'  '+name in buildinfo for name,digest in launcher_pin['source_sha256'].items() if name != 'LICENSE')
     print('PostgreSQL image: exact minimal base, authenticated18.6/runtime package/source inventory, declared dependency closure, upstream entrypoint, UID999, libc2.41 locale and reviewed static launcher passed')
 
-def old_data_bind_refusal(image):
-    artifacts=ROOT/'.artifacts/postgres-image-proof'
+def old_data_bind_refusal(image, evidence=None):
+    artifacts=Path(evidence) if evidence is not None else Path.cwd()/'.artifacts/postgres-image-proof'
     artifacts.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='old-layout-',dir=artifacts) as directory:
         directory=Path(directory)

@@ -41,6 +41,7 @@ jobs:
           .artifacts/postgres-runtime-proof/security.json
           .artifacts/postgres-runtime-proof/sbom.json
           .artifacts/postgres-runtime-proof/scan-context.json
+          .artifacts/postgres-runtime-proof/error.json
         if-no-files-found: error
         retention-days: 7
   snapshot-crypto:
