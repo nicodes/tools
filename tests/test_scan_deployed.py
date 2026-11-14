@@ -45,7 +45,7 @@ class DeployedRelease(unittest.TestCase):
         if change:self.operation.update(change)
         output=io.BytesIO()
         with zipfile.ZipFile(output,'w') as archive:
-            archive.writestr('komizo-operation.json',scanner.registry.canonical(self.operation)+b'\n')
+            archive.writestr('komizo-operation.json',scanner.registry.canonical(self.operation))
             for name,body in (extra or {}).items():archive.writestr(name,body)
         self.activation_raw=output.getvalue()
         self.activation_artifact={'id':56,'expired':False,'name':'activation-'+self.source+'-42-2',
@@ -148,10 +148,30 @@ class DeployedRelease(unittest.TestCase):
         self.deployment['state']='failure';self.job['conclusion']='failure'
         with self.assertRaises(ValueError):self.resolve()
 
+    def test_canonical_submission_file_and_uploaded_archive_round_trip_without_newline(self):
+        # The submission producer writes canonical JSON directly to its private
+        # artifact file; its separate stdout print does not change that file.
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'komizo-operation.json'
+            with path.open('x') as record:
+                record.write(scanner.registry.canonical(self.operation).decode())
+            output=io.BytesIO()
+            with zipfile.ZipFile(output,'w') as archive:
+                archive.write(path,path.name)
+            self.activation_raw=output.getvalue()
+        self.activation_artifact.update(size_in_bytes=len(self.activation_raw),
+            digest=scanner.registry.digest(self.activation_raw))
+        with zipfile.ZipFile(io.BytesIO(self.activation_raw)) as archive:
+            body=archive.read('komizo-operation.json')
+        self.assertEqual(body,scanner.registry.canonical(self.operation))
+        self.assertFalse(body.endswith(b'\n'))
+        self.assertEqual(self.resolve()['operation'],self.operation)
+
     def test_staged_failed_reconciliation_foreign_or_noncanonical_receipts_never_claim_activation(self):
         for change in [{'phase':'prepared_stopped'},{'phase':'failed','ok':False},{'reconciliation_required':True},
                 {'application':'foreign'},{'instance':'pr-1'},{'release_digest':'sha256:'+'0'*64},
-                {'operation_id':'main'},{'ok':1},{'previous_release_digest':'wrong'},{'extra':'untrusted'}]:
+                {'operation_id':'main'},{'ok':1},{'version':True},{'kind':'other'},
+                {'previous_release_digest':'wrong'},{'extra':'untrusted'}]:
             self.activation(change=change)
             with self.subTest(change=change),self.assertRaises(ValueError):self.resolve()
         self.activation(extra={'backup/snapshot.cms':b'not metadata'})
@@ -188,14 +208,15 @@ class DeployedRelease(unittest.TestCase):
         with self.assertRaises(ValueError):self.resolve()
 
     def test_operation_canonical_bytes_duplicates_and_linked_members_are_refused(self):
-        for body in [scanner.registry.canonical(self.operation),scanner.registry.canonical(self.operation)+b'\n\n',
-                b'{"kind":"komizo.operation","kind":"other"}\n']:
+        canonical=scanner.registry.canonical(self.operation)
+        for body in [canonical+b'\n',canonical+b'\n\n',b' '+canonical,canonical+b' ',
+                json.dumps(self.operation,indent=2).encode(),b'{"kind":"komizo.operation","kind":"other"}']:
             output=io.BytesIO()
             with zipfile.ZipFile(output,'w') as archive:archive.writestr('komizo-operation.json',body)
             self.activation_raw=output.getvalue();self.activation_artifact.update(size_in_bytes=len(self.activation_raw),digest=scanner.registry.digest(self.activation_raw))
             with self.assertRaises(ValueError):self.resolve()
         output=io.BytesIO();entry=zipfile.ZipInfo('komizo-operation.json');entry.external_attr=(stat.S_IFLNK|0o777)<<16
-        with zipfile.ZipFile(output,'w') as archive:archive.writestr(entry,scanner.registry.canonical(self.operation)+b'\n')
+        with zipfile.ZipFile(output,'w') as archive:archive.writestr(entry,canonical)
         self.activation_raw=output.getvalue();self.activation_artifact.update(size_in_bytes=len(self.activation_raw),digest=scanner.registry.digest(self.activation_raw))
         with self.assertRaises(ValueError):self.resolve()
 
