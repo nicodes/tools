@@ -244,7 +244,7 @@ def activation_for_deployment(config, deployment, environment=None):
             or operation.get('phase')!='ready' or operation.get('ok') is not True or operation.get('reconciliation_required') is not False
             or ('previous_release_digest' in operation and operation['previous_release_digest'] is not None
                 and (not isinstance(operation['previous_release_digest'],str) or not registry.DIGEST.fullmatch(operation['previous_release_digest'])))
-            or body!=registry.canonical(operation)+b'\n'):
+            or body!=registry.canonical(operation)):
         raise ValueError('publication is not bound to an exact successful ready operation')
     return {'scope':'activation_at_time','current_state':'unobserved','descriptor':descriptor,'operation':operation,
         'proof':{'deployment_id':deployment['deployment_id'],'run_id':run['id'],'run_attempt':run['run_attempt'],'job_id':job['id'],
