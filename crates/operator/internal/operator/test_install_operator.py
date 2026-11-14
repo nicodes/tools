@@ -60,7 +60,7 @@ class InstallationTests(unittest.TestCase):
     def fixture(self, directory, old=False):
         root=Path(directory)
         (root/'etc').mkdir()
-        (root/'etc/fleet-operator.json').write_text('{"version":3,"repositories":{}}')
+        (root/'etc/fleet-operator.json').write_text('{"version":5,"repositories":{}}')
         (root/'etc/fleet-operator-broker').write_text('FLEET_EDITOR_GID=123\n')
         for path in ('etc/fleet-operator.json','etc/fleet-operator-broker'):
             (root/path).chmod(0o600)
@@ -94,7 +94,7 @@ class InstallationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             installation,calls,_=self.fixture(directory,True)
             plan=installation.plan()
-            (installation.root/'etc/fleet-operator.json').write_text('{"version":3,"changed":true}')
+            (installation.root/'etc/fleet-operator.json').write_text('{"version":5,"changed":true}')
             with self.assertRaises(ValueError):installation.apply(plan['plan_sha256'])
             self.assertEqual(calls,[])
             self.assertFalse((installation.state/'installation.json').exists())

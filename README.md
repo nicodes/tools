@@ -1,3 +1,5 @@
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 3b2949f49d667f6d51099d38a47a73a2a4f53c784c1bb25b3e85c05c3ce039fa -->
+
 # tools
 
 A collection of reusable tools and GitHub Actions. Recipes and their shared execution contract live in [Cookbook](https://github.com/nicodes/cookbook). Application source, domain algorithms, product policy and product assertions stay in their owning repositories.
@@ -159,4 +161,8 @@ The generic authenticated image archive implementation checks closed tags, confi
 
 Source-policy SDK preparation is available through `helpers/source_policy.py setup`; it uses the caller's exact pinned Python and existing hash-locked parser requirements. Read-only checks consume that prepared SDK and refuse stale identity. Recipe declaration selection belongs to Cookbook.
 
-The optional operator source supports a separately reviewed generic `trusted-workflow-request-v1` contract in policy v5. It binds the actual trusted source repository and revision, the exact protected-main request workflow path and hash, current head/base and required CI producer identity before requesting complete validation. Requesting full validation does not itself merge source. Repository-only v3/v4 integration contracts remain supported; the retired Cookbook-specific request protocol requires a new explicit review. These source changes do not update an installed operator, its credentials or protected policy.
+The optional operator source supports a separately reviewed generic `trusted-workflow-request-v1` contract in policy v5. It binds the actual trusted source repository and revision, the exact protected-main request workflow path and hash, current head/base and required CI producer identity before requesting complete validation. Requesting full validation does not itself merge source. Operator policies use version 5 for both source-integration and trusted-workflow contracts; older policy versions refuse. The retired Cookbook-specific request protocol requires a new explicit review. These source changes do not update an installed operator, its credentials or protected policy.
+
+## License
+
+Tools is available under the [MIT License](LICENSE). Bundled third-party code retains its own license notices.

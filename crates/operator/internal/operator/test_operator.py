@@ -13,7 +13,7 @@ spec=importlib.util.spec_from_file_location('operator_tool',Path(__file__).resol
 operator=importlib.util.module_from_spec(spec);spec.loader.exec_module(operator)
 HEAD='a'*40
 CONTRACT={'workflow_id':100,'workflow_path':'.github/workflows/ci.yml','app_id':15368,'event':'pull_request','jobs':['check'],'integration_job':'test'}
-POLICY={'version':3,'repositories':{'owner/product':CONTRACT}}
+POLICY={'version':5,'repositories':{'owner/product':CONTRACT}}
 
 
 class OperatorBoundary(unittest.TestCase):
@@ -362,10 +362,14 @@ class TrustedWorkflowDelegation(unittest.TestCase):
 
 
 class TrustedWorkflowSourceContracts(unittest.TestCase):
-    def test_reviewed_v3_v4_source_integration_contracts_stay_available(self):
-        for version in [3, 4]:
-            policy = dict(POLICY, version=version)
-            self.assertEqual(operator.validate_policy(policy), policy)
+    def test_current_policy_accepts_source_integration_contract(self):
+        self.assertEqual(operator.validate_policy(POLICY), POLICY)
+
+    def test_old_or_ambiguous_policy_versions_refuse_before_any_effect(self):
+        for version in [1, 2, 3, 4, 6, 5.0, True, None, '5']:
+            with self.subTest(version=version),self.assertRaisesRegex(ValueError, 'operator policy v5'):
+                operator.execute({'operation':'merge','repository':'owner/product','pull_request':12,'head':HEAD},
+                                 dict(POLICY, version=version),lambda _:self.fail('invalid policy must not execute commands'))
 
     def test_retired_recipe_specific_policy_is_refused_without_fake_source_identity(self):
         fixture = TrustedWorkflowDelegation()
@@ -373,7 +377,7 @@ class TrustedWorkflowSourceContracts(unittest.TestCase):
         contract = dict(fixture.contract, protocol='cookbook-request-v1', cookbook_commit='c'*40)
         contract.pop('source'); contract.pop('request_workflow_path')
         with self.assertRaisesRegex(ValueError, 'retired Cookbook-specific'):
-            operator.validate_policy(dict(version=4, repositories={'owner/product':contract}))
+            operator.validate_policy(dict(version=5, repositories={'owner/product':contract}))
 
     def test_real_source_repository_and_revision_are_bound_to_ancestry_request_and_result(self):
         fixture = TrustedWorkflowDelegation()

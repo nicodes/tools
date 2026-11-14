@@ -57,16 +57,15 @@ def private_policy(path):
 
 def validate_policy(value):
     required = {'version', 'repositories'}
-    if not isinstance(value,dict) or value.get('version') not in {3, 4, 5} or set(value) != required:
-        raise ValueError('operator policy permits only repositories and merge authority')
+    if (not isinstance(value,dict) or type(value.get('version')) is not int
+            or value['version'] != 5 or set(value) != required):
+        raise ValueError('operator policy v5 permits only repositories and merge authority')
     if not isinstance(value['repositories'],dict):
         raise ValueError('invalid operator repository scope')
     for repo, contract in value['repositories'].items():
         if isinstance(contract,dict) and contract.get('protocol')=='cookbook-request-v1':
             raise ValueError('retired Cookbook-specific operator protocol requires a separately reviewed generic policy')
         if isinstance(contract,dict) and contract.get('protocol')=='trusted-workflow-request-v1':
-            if value['version']!=5:
-                raise ValueError('trusted workflow requests require explicit operator policy v5')
             validate_trusted_workflow_contract(repo,contract)
             continue
         if (not REPOSITORY.fullmatch(repo) or not isinstance(contract,dict)
