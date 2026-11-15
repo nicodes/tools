@@ -1,8 +1,10 @@
-//! Bounded HTTP errors, request correlation and redacted transport diagnostics.
-//! Install the middleware inside any response-compression layer. Domain success
-//! schemas, authentication, authorization and business error codes remain owned
-//! by the application. Pre-signed RPC payloads retain their own wire contract;
-//! apply this layer to application HTTP routes before signing/compression.
+//! Typed HTTP errors, request correlation and redacted transport diagnostics.
+//! Install `observe` inside any response-compression layer. Applications create
+//! failures with this module's factories; the middleware completes their JSON
+//! body with the server-generated request ID. It never reads an error body.
+//! Domain success schemas, authorization and business codes remain app-owned.
+//! Private component RPC and signed payloads keep their own domain contracts;
+//! install this layer on the application's public HTTP routes.
 use axum::{
     body::Body,
     extract::{MatchedPath, Request},
@@ -10,16 +12,14 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use http_body_util::{BodyExt, Limited};
 use serde_json::{Value, json};
 use std::{
     pin::Pin,
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tracing::Instrument;
 
-const ERROR_BYTES: usize = 64 * 1024;
 const MESSAGE_BYTES: usize = 1024;
 
 /// Enable redacted request diagnostics on stderr without changing machine stdout
@@ -68,14 +68,13 @@ fn default_code(status: StatusCode) -> &'static str {
     }
 }
 
-fn code(value: Option<&Value>) -> Option<&str> {
-    value.and_then(Value::as_str).filter(|text| {
-        !text.is_empty()
-            && text.len() <= 64
-            && text
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
-    })
+fn code(text: &str) -> Option<&str> {
+    (!text.is_empty()
+        && text.len() <= 64
+        && text
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c)))
+    .then_some(text)
 }
 
 fn message(text: &str) -> String {
@@ -86,42 +85,30 @@ fn message(text: &str) -> String {
     text[..end].to_owned()
 }
 
-fn envelope(value: Value, status: StatusCode, request_id: &str) -> Value {
-    let mut root = value.as_object().cloned().unwrap_or_default();
-    let previous = root.remove("error").unwrap_or(Value::Null);
-    let mut error = previous.as_object().cloned().unwrap_or_default();
-    let structured =
-        code(error.get("code")).is_some() && error.get("message").and_then(Value::as_str).is_some();
-    let selected_code = code(error.get("code"))
-        .or_else(|| code(Some(&previous)))
-        .or_else(|| code(root.get("code")))
-        .unwrap_or_else(|| default_code(status))
-        .to_owned();
-    let canonical = status.canonical_reason().unwrap_or("Request failed");
-    let selected_message = if status.is_server_error() && !structured {
-        canonical
-    } else {
-        error
-            .get("message")
-            .and_then(Value::as_str)
-            .or_else(|| root.get("message").and_then(Value::as_str))
-            .or_else(|| root.get("error_message").and_then(Value::as_str))
-            .or_else(|| {
-                previous
-                    .as_str()
-                    .filter(|_| code(Some(&previous)).is_none())
-            })
-            .unwrap_or(canonical)
-    };
-    let selected_message = message(selected_message);
-    for name in ["message", "error_message", "code", "request_id"] {
-        root.remove(name);
+#[derive(Clone, Debug)]
+struct PublicFailure {
+    code: String,
+    message: String,
+}
+
+impl PublicFailure {
+    fn new(status: StatusCode, error_code: &str, description: &str) -> Self {
+        let description = if status.is_server_error() {
+            status.canonical_reason().unwrap_or("Request failed")
+        } else {
+            description
+        };
+        Self {
+            code: code(error_code)
+                .unwrap_or_else(|| default_code(status))
+                .to_owned(),
+            message: message(description),
+        }
     }
-    error.insert("code".into(), Value::String(selected_code));
-    error.insert("message".into(), Value::String(selected_message));
-    error.insert("request_id".into(), Value::String(request_id.to_owned()));
-    root.insert("error".into(), Value::Object(error));
-    Value::Object(root)
+
+    fn into_envelope(self, request_id: &str) -> Value {
+        json!({"error": {"code": self.code, "message": self.message, "request_id": request_id}})
+    }
 }
 
 struct RetainedErrorBody {
@@ -146,18 +133,19 @@ impl http_body::Body for RetainedErrorBody {
     }
 }
 
-async fn normalize(response: Response, request_id: &str, head: bool) -> Response {
-    let (mut parts, mut source) = response.into_parts();
-    let value = match tokio::time::timeout(
-        Duration::from_secs(2),
-        Limited::new(&mut source, ERROR_BYTES).collect(),
-    )
-    .await
-    {
-        Ok(Ok(bytes)) => serde_json::from_slice(&bytes.to_bytes()).unwrap_or(Value::Null),
-        _ => Value::Null,
-    };
-    let value = envelope(value, parts.status, request_id);
+fn render_failure(response: Response, request_id: &str, head: bool) -> Response {
+    let (mut parts, source) = response.into_parts();
+    let failure = parts
+        .extensions
+        .remove::<PublicFailure>()
+        .unwrap_or_else(|| {
+            PublicFailure::new(
+                parts.status,
+                default_code(parts.status),
+                parts.status.canonical_reason().unwrap_or("Request failed"),
+            )
+        });
+    let value = failure.into_envelope(request_id);
     parts.headers.remove(header::CONTENT_LENGTH);
     parts.headers.remove(header::CONTENT_ENCODING);
     parts.headers.insert(
@@ -178,8 +166,9 @@ async fn normalize(response: Response, request_id: &str, head: bool) -> Response
     )
 }
 
-/// Give every response one server-generated correlation ID. Error-body reads are
-/// bounded in time and bytes; successful and streaming payloads are untouched.
+/// Give every response one server-generated correlation ID. Typed failures are
+/// serialized once; framework failures get safe status defaults. Arbitrary error
+/// bodies are never parsed, and successful/streaming payloads stay untouched.
 pub async fn observe(mut request: Request, next: Next) -> Response {
     let started = Instant::now();
     let request_id = uuid::Uuid::new_v4().simple().to_string();
@@ -196,7 +185,7 @@ pub async fn observe(mut request: Request, next: Next) -> Response {
     let span = tracing::info_span!("http_request", request_id = %request_id, method = %method, route = %route);
     let mut response = next.run(request).instrument(span).await;
     if response.status().is_client_error() || response.status().is_server_error() {
-        response = normalize(response, &request_id, method == Method::HEAD).await;
+        response = render_failure(response, &request_id, method == Method::HEAD);
     }
     response.headers_mut().insert("x-request-id", id);
     let exposed = response
@@ -225,14 +214,18 @@ pub async fn observe(mut request: Request, next: Next) -> Response {
 }
 
 pub fn failure(status: StatusCode, error_code: &str, description: &str) -> Response {
-    use axum::response::IntoResponse;
-    let value = Value::String(error_code.to_owned());
-    let error_code = code(Some(&value)).unwrap_or_else(|| default_code(status));
-    (
-        status,
-        axum::Json(json!({"error":{"code":error_code,"message":message(description)}})),
-    )
-        .into_response()
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = status;
+    response
+        .extensions_mut()
+        .insert(PublicFailure::new(status, error_code, description));
+    response
+}
+
+/// Create an application failure with the standard machine code for its status.
+/// Its body is completed by `observe`, alongside the request correlation ID.
+pub fn failure_for_status(status: StatusCode, description: &str) -> Response {
+    failure(status, default_code(status), description)
 }
 
 pub fn health(status: &str, revision: &str) -> axum::Json<Value> {
@@ -243,51 +236,52 @@ pub fn health(status: &str, revision: &str) -> axum::Json<Value> {
 mod tests {
     use super::*;
     use axum::{Router, body::to_bytes, middleware, routing::get};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
     use tower::ServiceExt;
+
+    const ERROR_BYTES: usize = 64 * 1024;
 
     struct LeasedBody {
         body: Body,
-        released: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        released: Arc<AtomicBool>,
     }
     impl Drop for LeasedBody {
         fn drop(&mut self) {
-            self.released
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.released.store(true, Ordering::SeqCst);
         }
     }
     impl axum::body::HttpBody for LeasedBody {
         type Data = axum::body::Bytes;
         type Error = axum::Error;
         fn poll_frame(
-            mut self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-            std::pin::Pin::new(&mut self.body).poll_frame(cx)
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+            Pin::new(&mut self.body).poll_frame(cx)
         }
     }
 
+    async fn body(response: Response) -> Value {
+        serde_json::from_slice(&to_bytes(response.into_body(), ERROR_BYTES).await.unwrap()).unwrap()
+    }
+
     #[tokio::test]
-    async fn retains_response_resource_ownership_until_consumed_or_dropped() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
+    async fn retains_response_lease_until_payload_consumed_or_dropped() {
         for consume in [false, true] {
             let released = Arc::new(AtomicBool::new(false));
             let source = Body::new(LeasedBody {
-                body: Body::from("{}"),
+                body: Body::from("not inspected"),
                 released: released.clone(),
             });
-            let response = normalize(
+            let response = render_failure(
                 Response::builder().status(400).body(source).unwrap(),
                 "id",
                 false,
-            )
-            .await;
-            assert!(
-                !released.load(Ordering::SeqCst),
-                "normalizing the payload must preserve its admission lease"
             );
+            assert!(!released.load(Ordering::SeqCst));
             if consume {
                 let _ = body(response).await;
             } else {
@@ -297,16 +291,24 @@ mod tests {
         }
     }
 
-    async fn body(response: Response) -> Value {
-        serde_json::from_slice(&to_bytes(response.into_body(), ERROR_BYTES).await.unwrap()).unwrap()
-    }
-
     #[tokio::test]
-    async fn correlates_framework_and_structured_errors_without_trusting_input_ids() {
-        let app = Router::new().route("/domain", get(|| async {
-            use axum::response::IntoResponse;
-            (StatusCode::CONFLICT, axum::Json(json!({"error":{"code":"already_saved","message":"Already saved","hint":"reload"},"operation_id":"opaque"}))).into_response()
-        })).layer(middleware::from_fn(observe));
+    async fn correlates_typed_and_framework_failures_without_trusting_input_ids() {
+        let app = Router::new()
+            .route(
+                "/domain",
+                get(|| async {
+                    let mut response = failure(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "daily_notes_exhausted",
+                        "Daily limit reached",
+                    );
+                    response
+                        .headers_mut()
+                        .insert("retry-after", HeaderValue::from_static("5"));
+                    response
+                }),
+            )
+            .layer(middleware::from_fn(observe));
         for path in ["/domain", "/missing"] {
             let response = app
                 .clone()
@@ -325,12 +327,16 @@ mod tests {
                 .to_owned();
             assert_eq!(id.len(), 32);
             assert_ne!(id, "untrusted");
+            if path == "/domain" {
+                assert_eq!(response.headers()["retry-after"], "5");
+            }
             let value = body(response).await;
+            assert_eq!(value.as_object().unwrap().len(), 1);
+            assert_eq!(value["error"].as_object().unwrap().len(), 3);
             assert_eq!(value["error"]["request_id"], id);
             if path == "/domain" {
-                assert_eq!(value["error"]["code"], "already_saved");
-                assert_eq!(value["error"]["hint"], "reload");
-                assert_eq!(value["operation_id"], "opaque");
+                assert_eq!(value["error"]["code"], "daily_notes_exhausted");
+                assert_eq!(value["error"]["message"], "Daily limit reached");
             } else {
                 assert_eq!(value["error"]["code"], "not_found");
             }
@@ -361,32 +367,34 @@ mod tests {
         );
     }
 
-    #[test]
-    fn normalizes_legacy_fields_and_hides_unstructured_server_diagnostics() {
-        let value = envelope(
-            json!({"message":"Safe input hint","success":false}),
-            StatusCode::BAD_REQUEST,
-            "id",
-        );
-        assert_eq!(value["error"]["message"], "Safe input hint");
-        assert_eq!(value["success"], false);
-        assert!(value.get("message").is_none());
-        let value = envelope(
-            json!({"error_message":"private database detail"}),
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "id",
-        );
-        assert_eq!(value["error"]["message"], "Internal Server Error");
-        assert!(!value.to_string().contains("private database"));
+    #[tokio::test]
+    async fn does_not_accept_retired_or_arbitrary_json_body_contracts() {
+        for value in [
+            json!({"message":"old input hint","success":false}),
+            json!({"error_message":"old input hint"}),
+            json!({"error":"old_code"}),
+            json!({"error":{"code":"old_code","message":"old input hint","request_id":"spoofed"}}),
+        ] {
+            let response = Response::builder()
+                .status(400)
+                .body(Body::from(value.to_string()))
+                .unwrap();
+            let result = body(render_failure(response, "server-id", false)).await;
+            assert_eq!(
+                result,
+                json!({"error":{"code":"invalid_input","message":"Bad Request","request_id":"server-id"}})
+            );
+        }
     }
 
-    #[test]
-    fn bounds_unicode_messages_and_rejects_invalid_machine_codes() {
-        let value = envelope(
-            json!({"error":{"code":"not a machine code","message":"é".repeat(800)}}),
+    #[tokio::test]
+    async fn bounds_unicode_messages_and_rejects_invalid_machine_codes() {
+        let response = failure(
             StatusCode::BAD_REQUEST,
-            "id",
+            "not a machine code",
+            &"é".repeat(800),
         );
+        let value = body(render_failure(response, "id", false)).await;
         assert_eq!(value["error"]["code"], "invalid_input");
         assert_eq!(
             value["error"]["message"].as_str().unwrap().len(),
@@ -394,40 +402,48 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn bounds_error_body_time_and_bytes() {
-        let pending = Body::from_stream(futures_util::stream::pending::<
-            Result<axum::body::Bytes, std::io::Error>,
-        >());
-        let response = Response::builder().status(503).body(pending).unwrap();
-        assert_eq!(
-            body(normalize(response, "id", false).await).await["error"]["code"],
-            "service_unavailable"
+    #[tokio::test]
+    async fn redacts_server_diagnostics_even_for_typed_failures() {
+        let response = failure(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "daily_operation_pending",
+            "private database detail",
         );
-        let response = Response::builder()
-            .status(400)
-            .body(Body::from(vec![b'x'; ERROR_BYTES + 1]))
-            .unwrap();
-        assert_eq!(
-            body(normalize(response, "id", false).await).await["error"]["code"],
-            "invalid_input"
-        );
+        let value = body(render_failure(response, "id", false)).await;
+        assert_eq!(value["error"]["code"], "daily_operation_pending");
+        assert_eq!(value["error"]["message"], "Service Unavailable");
+        assert!(!value.to_string().contains("private database"));
+    }
+
+    #[tokio::test]
+    async fn never_polls_error_bodies_or_waits_for_their_streams() {
+        let polled = Arc::new(AtomicBool::new(false));
+        let marker = polled.clone();
+        let source = Body::from_stream(futures_util::stream::poll_fn(move |_| {
+            marker.store(true, Ordering::SeqCst);
+            Poll::<Option<Result<axum::body::Bytes, std::io::Error>>>::Pending
+        }));
+        let response = Response::builder().status(503).body(source).unwrap();
+        let value = body(render_failure(response, "id", false)).await;
+        assert_eq!(value["error"]["code"], "service_unavailable");
+        assert!(!polled.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
     async fn head_error_has_headers_and_no_body() {
-        let response = normalize(
+        let response = render_failure(
             Response::builder()
                 .status(404)
                 .header(header::CONTENT_LENGTH, "999")
+                .header(header::CONTENT_ENCODING, "gzip")
                 .body(Body::from("missing"))
                 .unwrap(),
             "id",
             true,
-        )
-        .await;
+        );
         assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
         assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+        assert!(!response.headers().contains_key(header::CONTENT_ENCODING));
         assert!(
             to_bytes(response.into_body(), 1024)
                 .await

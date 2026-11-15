@@ -395,7 +395,6 @@ dependencies = [
  "axum",
  "futures-util",
  "http-body",
- "http-body-util",
  "serde_json",
  "tokio",
  "tower",
