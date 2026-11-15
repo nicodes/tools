@@ -309,7 +309,7 @@ function validNativeFindings(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options) ||
       Object.keys(options).sort().join(',') !== 'nativeFindings' ||
       !Array.isArray(options.nativeFindings) || options.nativeFindings.length > 128) return false;
-  let bytes = 0;
+  let bytes = 2 + Math.max(0, options.nativeFindings.length - 1);
   for (const finding of options.nativeFindings) {
     if (!finding || typeof finding !== 'object' || Array.isArray(finding) ||
         Object.keys(finding).sort().join(',') !== 'level,text' ||
