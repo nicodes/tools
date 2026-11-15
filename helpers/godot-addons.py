@@ -75,7 +75,7 @@ def declaration(project):
         releases = resolved.get('addons', {})
         if set(releases) != {name + '@' + entry['tag'] for name, entry in lock.items()}:
             raise ValueError('Frozen lock and byte provenance name different releases')
-        parents = {name: {'gdam.json'} for name in lock}
+        parents = {name: {'gdam.toml'} for name in lock}
         for identity, release in releases.items():
             dependencies = release.get('dependencies', {})
             if not isinstance(dependencies, dict):
@@ -176,8 +176,8 @@ def prepare_bindings(project, bindings, archives):
     with tempfile.TemporaryDirectory(prefix='godot-addon-bindings-') as temporary:
         candidate = Path(temporary) / 'project'; candidate.mkdir()
         cache = Path(temporary) / 'cache'; cache.mkdir()
-        # The isolated pinned native generator consumes its immutable JSON ABI.
-        (candidate / 'gdam.json').write_text(json.dumps(source_config.read(project / 'gdam.toml', maximum=1 << 20), indent=2) + '\n')
+        # The isolated native generator reads the exact canonical authored source.
+        shutil.copyfile(project / 'gdam.toml', candidate / 'gdam.toml')
         shutil.copyfile(project / 'gdam.lock', candidate / 'gdam.lock')
         lock = declaration(project)
         for name, entry in lock.items():
