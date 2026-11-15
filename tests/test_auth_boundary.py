@@ -22,47 +22,15 @@ CLERK_API = {'provider': 'clerk', 'api': True, 'enforced': True}
 CLERK_CLIENT = {'provider': 'clerk', 'api': False, 'enforced': True}
 NO_PROVIDER = {'provider': 'none', 'api': False, 'enforced': True}
 
-TAGGED_BYPASS = '''//go:build localdev
-
-package clerkauth
-
-import "os"
-
-func local() string {
-\tif os.Getenv("LOCAL_AUTH") == "1" {
-\t\treturn devClerkID
-\t}
-\treturn ""
-}
-
-const devClerkID = "dev_local_user"
-'''
-
-REFUSAL = '''//go:build !localdev
-
-package config
-
-import (
-\t"fmt"
-\t"os"
-)
-
-func configureLocalAuth() error {
-\tif os.Getenv("LOCAL_AUTH") != "" {
-\t\treturn fmt.Errorf("local authentication requires the separately compiled localdev API")
-\t}
-\treturn nil
-}
-'''
 
 
-def check(root, declared):
+def check(root, declared, native={"nativeFindings": []}):
     program = (
         f'const m = await import({json.dumps(str(HELPER))});'
-        'const [root, declared] = JSON.parse(process.argv[1]);'
-        'console.log(JSON.stringify(m.checkAuthBoundary(root, declared)));'
+        'const [root, declared, native] = JSON.parse(process.argv[1]);'
+        'console.log(JSON.stringify(m.checkAuthBoundary(root, declared, native)));'
     )
-    result = subprocess.run(['bun', '--eval', program, json.dumps([str(root), declared])],
+    result = subprocess.run(['bun', '--eval', program, json.dumps([str(root), declared, native])],
                             capture_output=True, text=True, timeout=60)
     if result.returncode != 0:
         raise AssertionError(result.stderr)
@@ -98,9 +66,7 @@ class Product:
         return self
 
     def compliant(self):
-        """The shape sampleconsole and sampleaddon have between them."""
-        self.go('api/internal/clerkauth/local_auth.go', TAGGED_BYPASS)
-        self.go('api/internal/config/local_auth_disabled.go', REFUSAL)
+        """Generic key and Preview isolation; native assertions are supplied separately."""
         self.workflow('pr-preview.yml',
                       'jobs:\n  p:\n    environment: Preview\n    steps:\n      - env:\n'
                       '          CLERK_SECRET_KEY_DEV: x\n'
@@ -126,7 +92,7 @@ class CompliantProduct(unittest.TestCase):
             write_source(root/'auth.toml', {'provider':'clerk','api':True})
             result=subprocess.run(['bun',str(HELPER),'--policy','auth.toml'],cwd=root,capture_output=True,text=True)
             self.assertNotEqual(result.returncode,0)
-            self.assertIn('no local development path',result.stderr)
+            self.assertIn('product-owned native auth findings',result.stderr)
 
     def test_a_product_with_the_whole_contract_passes(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -134,47 +100,42 @@ class CompliantProduct(unittest.TestCase):
             self.assertEqual(failures(check(directory, CLERK_API)), [])
 
 
-class LocalBypass(unittest.TestCase):
-    def test_a_runtime_flag_with_no_tagged_path_is_refused(self):
-        """A product whose only dev mode is a runtime flag has no tagged
-        path, which is what this reports. It does not try to find the flag:
-        locating a grant by pattern is what made this rule wrong three times
-        over. Whether a shipped binary can produce a development identity is
-        a question for the image scan, which takes the artifact apart."""
-        with tempfile.TemporaryDirectory() as directory:
-            product = Product(directory)
-            product.go('api/cmd/api/auth.go',
-                       'package main\n\nimport "os"\n\nconst devClerkID = "dev_local_user"\n\n'
-                       'func auth() string {\n\tif os.Getenv("APP_DEV") == "1" {\n'
-                       '\t\treturn devClerkID\n\t}\n\treturn ""\n}\n')
-            product.workflow('cd.yml', 'jobs:\n  d:\n    steps:\n      - env:\n          CLERK_SECRET_KEY_PROD: y\n')
-            said = ' '.join(failures(check(directory, CLERK_API)))
-            self.assertIn('no local development path', said)
-
-    def test_having_no_local_path_at_all_is_a_failure_not_a_pass(self):
-        """The first version passed this, which is backwards: no bypass means
-        a developer points a laptop at a real Clerk instance."""
+class NativeResponsibility(unittest.TestCase):
+    def test_missing_native_proof_fails_even_if_a_go_tagged_path_exists(self):
         with tempfile.TemporaryDirectory() as directory:
             product = Product(directory).compliant()
-            (product.root / 'api/internal/clerkauth/local_auth.go').unlink()
-            (product.root / 'api/internal/config/local_auth_disabled.go').unlink()
-            said = ' '.join(failures(check(directory, CLERK_API)))
-            self.assertIn('no local development path', said)
+            product.go('api/auth.go', '//go:build localdev\npackage api\n')
+            self.assertIn('product-owned native auth findings', ' '.join(failures(check(directory, CLERK_API, None))))
 
-    def test_a_bypass_with_no_refusal_counterpart_is_refused(self):
+    def test_product_native_failure_is_preserved_with_generic_and_preview_findings(self):
         with tempfile.TemporaryDirectory() as directory:
             product = Product(directory).compliant()
-            (product.root / 'api/internal/config/local_auth_disabled.go').unlink()
-            said = ' '.join(failures(check(directory, CLERK_API)))
-            self.assertIn('!localdev', said)
+            product.workflow('both.yml', 'jobs:\n  x:\n    steps:\n      - env:\n          CLERK_SECRET_KEY_DEV: a\n          CLERK_SECRET_KEY_PROD: b\n')
+            native = {'nativeFindings': [{'level': 'fail', 'text': 'native shipping guard missing'}]}
+            findings = check(directory, CLERK_API, native)
+            self.assertEqual(findings.count(native['nativeFindings'][0]), 1)
+            self.assertIn('both.yml', ' '.join(failures(findings)))
 
-    def test_a_test_file_does_not_count_as_a_bypass(self):
+    def test_missing_malformed_or_waived_native_results_never_pass(self):
+        invalid = [None, {}, {'skipNative': True}, {'nativeFindings': [], 'skipNative': True},
+                   {'nativeFindings': None}, {'nativeFindings': {}}, {'nativeFindings': [None]},
+                   {'nativeFindings': [{'level': 'warn', 'text': 'native'}]},
+                   {'nativeFindings': [{'level': 'info', 'text': ''}]},
+                   {'nativeFindings': [{'level': 'info', 'text': 'native', 'ignored': True}]},
+                   {'nativeFindings': [{'level': 'info', 'text': 1}]},
+                   {'nativeFindings': [{'level': 'info', 'text': 'x' * 8193}]},
+                   {'nativeFindings': [{'level': 'info', 'text': 'native'}] * 129}]
         with tempfile.TemporaryDirectory() as directory:
-            product = Product(directory).compliant()
-            product.go('api/internal/clerkauth/other_test.go',
-                       'package clerkauth\n\nconst devClerkID = "dev_local_user"\n'
-                       '// LOCAL_AUTH in a test\n')
-            self.assertEqual(failures(check(directory, CLERK_API)), [])
+            Product(directory).compliant()
+            for native in invalid:
+                with self.subTest(native=str(native)[:100]):
+                    self.assertIn('product-owned native auth findings', ' '.join(failures(check(directory, CLERK_API, native))))
+
+    def test_explicit_current_native_success_needs_no_guessed_language(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Product(directory).compliant()
+            native = {'nativeFindings': [{'level': 'info', 'text': 'current owned native assertions passed'}]}
+            self.assertEqual(failures(check(directory, CLERK_API, native)), [])
 
 
 class PublicVariables(unittest.TestCase):
@@ -218,8 +179,6 @@ class KeyRouting(unittest.TestCase):
         asking for one whose branch policy is main."""
         with tempfile.TemporaryDirectory() as directory:
             product = Product(directory)
-            product.go('api/internal/clerkauth/local_auth.go', TAGGED_BYPASS)
-            product.go('api/internal/config/local_auth_disabled.go', REFUSAL)
             product.workflow('cd.yml', 'jobs:\n  d:\n    steps:\n      - env:\n          CLERK_SECRET_KEY: y\n')
             said = ' '.join(failures(check(directory, CLERK_API)))
             self.assertIn('without declaring an environment', said)
@@ -229,8 +188,6 @@ class KeyRouting(unittest.TestCase):
         the fleet's name now, and the environment says which instance."""
         with tempfile.TemporaryDirectory() as directory:
             product = Product(directory)
-            product.go('api/internal/clerkauth/local_auth.go', TAGGED_BYPASS)
-            product.go('api/internal/config/local_auth_disabled.go', REFUSAL)
             product.workflow('cd.yml',
                              'jobs:\n  d:\n    environment: Production\n    steps:\n'
                              '      - env:\n          CLERK_SECRET_KEY: y\n')
@@ -466,42 +423,3 @@ class DeclaredProvider(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
-
-class RecognisesStructureNotSpelling(unittest.TestCase):
-    """The rule is about the build tag, not about a magic string.
-
-    The gate failed sampleaddon's genuine local path because sampleaddon writes
-    "sk_test_local_development_only" with underscores where sampleconsole uses a
-    hyphen. A product should not have to spell a constant a particular way
-    to satisfy a structural rule.
-    """
-
-    def test_a_tagged_bypass_counts_however_it_names_its_key(self):
-        with tempfile.TemporaryDirectory() as directory:
-            product = Product(directory).compliant()
-            (product.root / 'api/internal/clerkauth/local_auth.go').write_text(
-                '//go:build localdev\n\npackage clerkauth\n\nimport "os"\n\n'
-                'func local() string {\n\tif os.Getenv("SAMPLE_ADDON_LOCAL_AUTH") != "1" {\n'
-                '\t\treturn ""\n\t}\n\treturn "sk_test_local_development_only"\n}\n')
-            self.assertEqual(failures(check(directory, CLERK_API)), [])
-
-    def test_a_call_site_of_a_tagged_grant_is_not_a_finding(self):
-        """The rule flagged `devIdentity()` -- the CALL of a correctly tagged
-        grant -- because the name matched its pattern. Structure, not names."""
-        with tempfile.TemporaryDirectory() as directory:
-            product = Product(directory).compliant()
-            product.go('api/cmd/api/auth.go',
-                       'package main\n\nimport "os"\n\n'
-                       'func auth(dev bool) string {\n'
-                       '\tif identity, ok := devIdentity(); ok && dev && os.Getenv("APP_DEV") == "1" {\n'
-                       '\t\treturn identity\n\t}\n\treturn ""\n}\n')
-            self.assertEqual(failures(check(directory, CLERK_API)), [])
-
-    def test_the_refusal_file_is_not_mistaken_for_the_bypass(self):
-        """`//go:build !localdev` contains the word; it is the opposite file."""
-        with tempfile.TemporaryDirectory() as directory:
-            product = Product(directory).compliant()
-            (product.root / 'api/internal/clerkauth/local_auth.go').unlink()
-            said = ' '.join(failures(check(directory, CLERK_API)))
-            self.assertIn('no local development path', said)

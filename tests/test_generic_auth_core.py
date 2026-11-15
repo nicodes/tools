@@ -35,6 +35,26 @@ class GenericAuthCore(unittest.TestCase):
             findings = self.invoke(root,'m.previewNamesItsOwnOrigin(root,[],{provider:"clerk",api:true})')
             self.assertEqual(findings,[{'level':'info','text':'no preview workflow; the preview half of the contract does not apply yet'}])
 
+    def test_native_result_byte_bound_applies_to_the_complete_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            findings = self.invoke(root, 'm.checkAuthBoundaryCore(root,{provider:"clerk",api:true},'
+                '{nativeFindings:Array.from({length:128},()=>({level:"info",text:"x".repeat(8192)}))})')
+            self.assertTrue(any(f['level']=='fail' and 'native auth findings' in f['text'] for f in findings))
+
+    def test_native_array_punctuation_cannot_exceed_the_promised_byte_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = self.invoke(root, '(()=>{const nativeFindings=Array.from({length:128},'
+                '()=>({level:"info",text:"x".repeat(8165)}));return {'
+                'entries:nativeFindings.reduce((n,v)=>n+Buffer.byteLength(JSON.stringify(v)),0),'
+                'complete:Buffer.byteLength(JSON.stringify(nativeFindings)),'
+                'findings:m.checkAuthBoundaryCore(root,{provider:"clerk",api:true},{nativeFindings})};})()')
+            self.assertLessEqual(result['entries'], 1048576)
+            self.assertEqual(result['complete'], 1048577)
+            self.assertTrue(any(f['level']=='fail' and 'native auth findings' in f['text']
+                                for f in result['findings']))
+
 
 if __name__ == '__main__':
     unittest.main()

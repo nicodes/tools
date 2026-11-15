@@ -71,61 +71,6 @@ function noProvider(root, files) {
 }
 
 /**
- * The local bypass must be compiled out of production, not switched off in it.
- *
- * A runtime flag is one environment variable away from being on in
- * production. A build tag is not there at all. sample-console already does this:
- * clerkauth/local_auth.go is `//go:build localdev`, and the `!localdev`
- * counterpart REFUSES TO START if the switch is even present, so a
- * production binary handed the variable stops rather than quietly trusting
- * nobody.
- */
-function bypassIsCompiledOut(root) {
-  const go = sourceFiles(root, { extensions: ['.go'] }).filter(file => !file.endsWith('_test.go'));
-
-  // STRUCTURE, NOT CONTENT. Earlier versions of this rule tried to find the
-  // grant by pattern -- a dev identity constant, a switch name -- and were
-  // wrong three times running: they failed sample-console over a client-side
-  // variable, passed products that had no local path at all, refused a valid API
-  // because it spells a key with underscores, and finally flagged the call
-  // site of a correctly tagged grant because the helper was named
-  // devIdentity. Every one of those was a guess about content.
-  //
-  // What source can actually establish is structure: a local path exists and
-  // is behind the tag, and a counterpart refuses the switch when it is not.
-  // Whether a shipped binary can produce a development identity is a
-  // question about the artifact, and belongs to the image scan, which takes
-  // the built thing apart instead of reading about it.
-  const tagged = go.filter(file => /^\/\/go:build [^\n]*\blocaldev\b/m.test(read(root, file)) &&
-                                   !/^\/\/go:build [^\n]*!localdev/m.test(read(root, file)));
-  const refusal = go.some(file => {
-    const body = read(root, file);
-    return /^\/\/go:build [^\n]*!localdev/m.test(body) &&
-           /(LOCAL_AUTH|_DEV\b)/.test(body) &&
-           /(return .*(fmt\.Errorf|errors\.New)|panic\()/.test(body);
-  });
-
-  const problems = [];
-  if (!tagged.length) {
-    problems.push({
-      level: 'fail',
-      text: 'no local development path behind `//go:build localdev`, so working on this ' +
-            'product locally means pointing at a real Clerk instance. The contract is that ' +
-            "local uses no Clerk tenant: add one, using a loopback-only local issuer.",
-    });
-  }
-  if (!refusal) {
-    problems.push({
-      level: 'fail',
-      text: 'no `//go:build !localdev` counterpart refuses the local switch. Without it a ' +
-            'production binary handed the variable ignores it silently, and nothing ' +
-            'distinguishes "the bypass is absent" from "the bypass did not trigger".',
-    });
-  }
-  return problems;
-}
-
-/**
  * The SERVER may not take a browser-readable variable as proof of anything.
  *
  * EXPO_PUBLIC_* and NEXT_PUBLIC_* are inlined into JavaScript a visitor can
@@ -357,12 +302,25 @@ export function previewNamesItsOwnOrigin(root, files, declared) {
  * Check one product against the contract.
  *
  * Returns findings, each with a level: `fail` is a boundary broken, `info`
- * is a part of the contract that does not apply here yet. The caller decides
- * whether a failure is fatal -- the caller policy's `enforced` flag is how the
- * fleet adopts this one product at a time rather than turning nine
- * repositories red at once.
+ * is a part of the contract that does not apply here. Native compiled-auth
+ * assertions belong to the product and must be supplied explicitly for an API.
  */
-export function checkAuthBoundaryCore(root, declared) {
+function validNativeFindings(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options) ||
+      Object.keys(options).sort().join(',') !== 'nativeFindings' ||
+      !Array.isArray(options.nativeFindings) || options.nativeFindings.length > 128) return false;
+  let bytes = 2 + Math.max(0, options.nativeFindings.length - 1);
+  for (const finding of options.nativeFindings) {
+    if (!finding || typeof finding !== 'object' || Array.isArray(finding) ||
+        Object.keys(finding).sort().join(',') !== 'level,text' ||
+        !['fail', 'info'].includes(finding.level) || typeof finding.text !== 'string' ||
+        !finding.text.trim() || Buffer.byteLength(finding.text, 'utf8') > 8192) return false;
+    bytes += Buffer.byteLength(JSON.stringify(finding), 'utf8');
+  }
+  return bytes <= 1048576;
+}
+
+export function checkAuthBoundaryCore(root, declared, native) {
   if (!declared) {
     return [{ level: 'fail', text: 'this product has no auth declaration in the caller policy. Pass an explicit caller-owned auth policy.' }];
   }
@@ -381,7 +339,8 @@ export function checkAuthBoundaryCore(root, declared) {
   const findings = [];
   findings.push(...noPublicBypassFlag(root, files).map(text => ({ level: 'fail', text })));
   if (declared.api) {
-    findings.push(...bypassIsCompiledOut(root));
+    if (validNativeFindings(native)) findings.push(...native.nativeFindings);
+    else findings.push({level: 'fail', text: 'Clerk APIs require bounded product-owned native auth findings; execute the declared native checker before composing this result'});
     findings.push(...keysDoNotCross(root).map(text => ({ level: 'fail', text })));
   } else {
     findings.push({ level: 'info', text: 'declared api: false -- no server verifies a token here, so there is no secret to route and no bypass to compile out' });
@@ -389,8 +348,8 @@ export function checkAuthBoundaryCore(root, declared) {
   return findings;
 }
 
-export function checkAuthBoundary(root, declared) {
-  const findings = checkAuthBoundaryCore(root, declared);
+export function checkAuthBoundary(root, declared, native) {
+  const findings = checkAuthBoundaryCore(root, declared, native);
   if (declared?.provider !== 'clerk') return findings;
   const files = sourceFiles(root, {
     within: ['api', 'app', 'src', 'scripts', 'golang_api', 'web', 'e2e'],
