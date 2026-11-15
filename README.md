@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: f6033a7921cb1cd8984e006ed727a37fb1809c200326bb7f4dac8ded1675d0b2 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ca05c154a020147c5eca4832b6bba2e7bae5bf33f33f0073b4aba6eadbd9853e -->
 
 # tools
 
@@ -13,7 +13,7 @@ The Cargo workspace contains:
 - `pgbudget` under `crates/pgbudget/`: serving-pool settings, PostgreSQL timeout validation and an operation deadline that retains a tighter parent deadline. Apply all configured fields when constructing your driver pool and wrap the entire operation, including pool acquisition. Query/result semantics and migration credentials remain product-owned.
 - `tools-operator` under `crates/operator/`: the protected operator CLI and bounded dependency-metadata parser.
 
-Reference the required package from this repository at a reviewed full commit in your application's Cargo dependencies. Historical Go module tags remain available. Product users install their application's published distribution directly.
+Reference the required package from this repository at a reviewed full commit in your application's Cargo dependencies. Product users install their application's published distribution directly.
 
 For development, install [mise](https://mise.jdx.dev/) and Podman, then run `mise run setup` and `mise run check`. The pinned Rust toolchain builds and tests the libraries and operator; native local Podman supplies owned disposable PostgreSQL recovery fixtures. `mise run test` runs unit and integration checks, `mise run build` builds the workspace, and `mise run clean` removes declared generated outputs. Go remains a contributor tool for the locked upstream Caddy dependency; Tools contains no owned Go entry point for it. CI builds that upstream command directly, retains its dependency lock, runs the upstream race tests, and scans linked symbols. SDK verification includes signed-session security cases, database-budget contracts, metadata ambiguity refusal and private bundle export checks.
 
@@ -22,6 +22,8 @@ For development, install [mise](https://mise.jdx.dev/) and Podman, then run `mis
 `python3 "$TOOLS_ROOT/helpers/clean.py" --path dist --path .artifacts/build` removes only explicitly named generated outputs from the checkout root. It validates all paths before removal and refuses tracked source, linked paths, traversal and the whole `.artifacts` namespace. Products with a running development session invoke cleanup through their session supervisor.
 
 `python3 "$TOOLS_ROOT/helpers/site-contract.py" dist` checks actual exported HTML for language, title, description, viewport, a main landmark, image alternatives and basic control labels. It complements the product's browser, responsive-layout and performance checks.
+
+`helpers/auth-boundary.mjs` composes shared authentication checks with product-owned native assertions. Clerk APIs call `checkAuthBoundaryCore(root, policy, {nativeFindings})` after executing their native checker. Findings contain only `level` (`fail` or `info`) and nonempty `text`. Missing, malformed or oversized native results fail the check. Products retain their compiled local-auth, shipping-refusal and token-validation assertions; shared helpers do not infer a backend language.
 
 Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your product. It installs the tool versions in the product's `mise.toml` and exposes the reviewed helper directory as `TOOLS_ROOT`. Canonical recipe Mise tasks select the shared implementation; native projects can call helpers independently. The action supports Linux, macOS and Windows on x86_64 and arm64 and verifies the pinned Mise executable. First-party task execution uses Mise on every supported platform; native external build protocols retain their owning tool requirements.
 

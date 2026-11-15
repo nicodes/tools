@@ -35,6 +35,13 @@ class GenericAuthCore(unittest.TestCase):
             findings = self.invoke(root,'m.previewNamesItsOwnOrigin(root,[],{provider:"clerk",api:true})')
             self.assertEqual(findings,[{'level':'info','text':'no preview workflow; the preview half of the contract does not apply yet'}])
 
+    def test_native_result_byte_bound_applies_to_the_complete_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            findings = self.invoke(root, 'm.checkAuthBoundaryCore(root,{provider:"clerk",api:true},'
+                '{nativeFindings:Array.from({length:128},()=>({level:"info",text:"x".repeat(8192)}))})')
+            self.assertTrue(any(f['level']=='fail' and 'native auth findings' in f['text'] for f in findings))
+
 
 if __name__ == '__main__':
     unittest.main()
