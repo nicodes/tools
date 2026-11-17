@@ -76,7 +76,7 @@ def validate_policy(value):
             raise ValueError('explicit merged-main workflow required')
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*', value['integration_job']):
             raise ValueError('explicit integration job required')
-    elif value['request_workflow'] != 'request-merge.yml':
+    elif value['request_workflow'] != 'merge-pr.yml':
         raise ValueError('dependency updates require the trusted requested full-validation workflow')
     checks = value['required_checks']
     if not isinstance(checks, list) or not checks or len(set(checks)) != len(checks) or not all(isinstance(c, str) and c for c in checks):
@@ -214,7 +214,7 @@ def inspect(repo, number, base, policy, apply=False):
     if reason:
         return {**result, 'state': 'review', 'reason': reason}
     files = pages(f'repos/{repo}/pulls/{number}/files')
-    if not files or any(f['filename'] in ('.github/dependency-policy.toml', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', '.github/workflows/request-merge.yml', 'cookbook.toml', 'Makefile', 'mise.toml', '.mise.toml') for f in files):
+    if not files or any(f['filename'] in ('.github/dependency-policy.toml', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', '.github/workflows/merge-pr.yml', 'cookbook.toml', 'Makefile', 'mise.toml', '.mise.toml') for f in files):
         return {**result, 'state': 'review', 'reason': 'merge policy changes require review'}
     if pull.get('mergeable_state') == 'dirty':
         return {**result, 'state': 'blocked', 'reason': 'merge conflict requires a bot rebase'}
@@ -263,7 +263,7 @@ def inspect(repo, number, base, policy, apply=False):
 def request_validation(repo, number, head, base, policy, result):
     """Select the full controller; cheap checks never authorize a merge here."""
     target = api(f"repos/{repo}/actions/workflows/{policy['request_workflow']}")
-    if (target.get('state') != 'active' or target.get('path') != '.github/workflows/request-merge.yml'
+    if (target.get('state') != 'active' or target.get('path') != '.github/workflows/merge-pr.yml'
             or type(target.get('id')) is not int or target['id'] <= 0):
         raise ValueError('the exact requested full-validation workflow must be active')
     fresh = api(f'repos/{repo}/pulls/{number}')

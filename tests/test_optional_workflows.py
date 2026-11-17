@@ -10,7 +10,7 @@ def load(name):
 
 class OptionalWorkflows(unittest.TestCase):
  def test_source_command_is_caller_owned_and_images_are_optional(self):
-  doc=load('reusable-security-scan.yml')
+  doc=load('scan-dependencies.yml')
   self.assertEqual(set(doc['on']),{'workflow_call'})
   inputs=doc['on']['workflow_call']['inputs']
   self.assertTrue(inputs['source-command']['required'])
@@ -22,7 +22,7 @@ class OptionalWorkflows(unittest.TestCase):
   for name in ('Prepare native Podman','Prepare private registry read authority','Scan deployed runtime images'):
    self.assertEqual(next(s for s in job['steps'] if s.get('name')==name)['if'],'inputs.scan-images')
  def test_reusable_helpers_do_not_grant_host_or_oidc_authority(self):
-  for name in ('reusable-security-scan.yml','reusable-dependency-maintenance.yml'):
+  for name in ('scan-dependencies.yml','maintain-dependencies.yml'):
    doc=load(name)
    self.assertEqual(set(doc['on']),{'workflow_call'})
    for job in doc['jobs'].values():

@@ -27,6 +27,8 @@ For development, install [mise](https://mise.jdx.dev/) and Podman, then run `mis
 
 Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your product. It installs the tool versions in the product's `mise.toml` and exposes the reviewed helper directory as `TOOLS_ROOT`. Canonical recipe Mise tasks select the shared implementation; native projects can call helpers independently. The action supports Linux, macOS and Windows on x86_64 and arm64 and verifies the pinned Mise executable. First-party task execution uses Mise on every supported platform; native external build protocols retain their owning tool requirements.
 
+After explicit SDK preparation, `python3 "$TOOLS_ROOT/helpers/source_policy.py" workflows` checks active workflow filenames against their display names, explicit job names and local `workflow_run` references. Use sentence-case titles such as `Build and test` with the matching `build-and-test.yml` filename and spell out `and`.
+
 Check out this repository at a reviewed full commit to use `helpers/integration-identity.py`. Run it from the product checkout with `EXPECTED_HEAD` set to the exact pull request head. It records the actual tested integration commit and raw parents in `.artifacts/fleet-integration.json`, refusing a checkout that does not contain the requested PR head as its second parent. Upload that file from the same job that performs verification. The helper also supports exact `main` delivery identity for push and manual dispatch events.
 
 `nicodes/tools/dependencies@FULL_40_CHARACTER_COMMIT` inspects signed bot updates against the caller's protected `.github/dependency-policy.toml`. Supply a new `output` report path and use `apply: 'true'` only from the trusted policy workflow. It verifies the bot commit, current required checks, integration tree and unchanged base/head before merging. It builds its metadata parser from the pinned action source and never loads the product's tool hooks or PR code.
@@ -89,7 +91,7 @@ For dependency preparation before credential selection, supply an isolated expli
 
 The optional Rust `tools-operator` CLI manages repository-scoped code merges and source validation through the protected engineering operator. It is separate from ordinary build/test setup and requires a root-owned authority policy before installation. Its releases use the `operator-v` tag prefix and the usual Linux/macOS archive names.
 
-Before running the CLI, verify the archive checksum and GitHub attestation against this repository's `cli-release.yml` builder, binding both the signer and source digest to the exact release revision on `main`. Also require the verified certificate's `buildConfigURI` to name `operator-release.yml@refs/heads/main` and its `buildConfigDigest` to match that revision. Then run:
+Before running the CLI, verify the archive checksum and GitHub attestation against this repository's `release-cli.yml` builder, binding both the signer and source digest to the exact release revision on `main`. Also require the verified certificate's `buildConfigURI` to name `release-operator.yml@refs/heads/main` and its `buildConfigDigest` to match that revision. Then run:
 
 ```sh
 sudo ./tools-operator plan
@@ -118,7 +120,7 @@ permissions: {}
 concurrency: release-${{ github.repository }}
 jobs:
   release:
-    uses: nicodes/tools/.github/workflows/cli-release.yml@FULL_40_CHARACTER_COMMIT
+    uses: nicodes/tools/.github/workflows/release-cli.yml@FULL_40_CHARACTER_COMMIT
     permissions:
       contents: write
       attestations: write
@@ -131,7 +133,7 @@ jobs:
       bump: ${{ inputs.bump }}
 ```
 
-The caller supplies its own `mise.toml` and required `check-command`. Verification and builds run with those tools; deployment software and deployment configuration are not required. Optional inputs select supported platforms (`linux,darwin` by default), a Go module directory, Go version/revision string symbols, a tag prefix, or a directory of archives already built and checked by that gate. Repositories with additional acceptance requirements can retain those jobs and call `cli-publish.yml` with their accepted artifact ID, binary name, tag and pinned tools reference. Explicit `extra-files` select additional release assets. For coordinated native jobs, `requested-tag` must match the freshly computed release tag. `prepared-artifact-pattern` downloads artifacts from the same run into a bounded `prepared-artifact-directory` under `.artifacts/` before the caller verification command. That command must verify the complete native set and stage `prepared-assets`. The operator release uses this path while retaining the existing `cli-release.yml` signing identity.
+The caller supplies its own `mise.toml` and required `check-command`. Verification and builds run with those tools; deployment software and deployment configuration are not required. Optional inputs select supported platforms (`linux,darwin` by default), a Go module directory, Go version/revision string symbols, a tag prefix, or a directory of archives already built and checked by that gate. Repositories with additional acceptance requirements can retain those jobs and call `publish-cli.yml` with their accepted artifact ID, binary name, tag and pinned tools reference. Explicit `extra-files` select additional release assets. For coordinated native jobs, `requested-tag` must match the freshly computed release tag. `prepared-artifact-pattern` downloads artifacts from the same run into a bounded `prepared-artifact-directory` under `.artifacts/` before the caller verification command. That command must verify the complete native set and stage `prepared-assets`. The operator release uses this verified-archive path and the `release-cli.yml` signing identity.
 
 Publication requires an explicit dispatch from `main`. It refuses existing tags/releases, checks the complete archive matrix and SHA-256 checksums, stages a draft, verifies every uploaded asset digest, and publishes the draft only after the payload matches. Products own their versions, release assets, installer and additional acceptance checks. Installation does not require a tools checkout, a Go compiler or a server connection.
 

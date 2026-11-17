@@ -1,31 +1,33 @@
-name: Composite runtime admission
+name: Check composite runtime
 'on':
   pull_request:
     paths:
       - podman-ci/**
       - helpers/composite-actions.py
       - tests/test_podman_ci_cache.py
-      - .github/workflows/composite-runtime.yml
+      - .github/workflows/check-composite-runtime.yml
   push:
     branches: [main]
     paths:
       - podman-ci/**
       - helpers/composite-actions.py
       - tests/test_podman_ci_cache.py
-      - .github/workflows/composite-runtime.yml
+      - .github/workflows/check-composite-runtime.yml
   workflow_dispatch: {}
 permissions:
   contents: read
 jobs:
   load:
-    name: Load the native Podman composite on Ubuntu 24
+    name: Test (Podman, Ubuntu 24)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: ./setup
+      - name: Set up tools
+        uses: ./setup
         with:
           tools: python
         env:

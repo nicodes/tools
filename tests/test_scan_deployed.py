@@ -21,19 +21,19 @@ class DeployedRelease(unittest.TestCase):
     def setUp(self):
         self.source='a'*40
         self.config={'repository':'example/widget','application':'widget','components':['worker'],
-                     'environment':'production','workflow':'.github/workflows/cd.yml'}
+                     'environment':'production','workflow':'.github/workflows/deploy.yml'}
         self.deployment={'revision':self.source,'deployment_id':3,'run_id':42,'job_id':101,'state':'success'}
         self.run={'id':42,'head_sha':self.source,'head_branch':'main','event':'push','path':self.config['workflow'],
-                  'referenced_workflows':[{'path':'nicodes/komizo-actions/.github/workflows/cookbook-'+name+'.yml@'+'c'*40,'sha':'c'*40} for name in ['publish','deliver']],
+                  'referenced_workflows':[{'path':'nicodes/komizo-actions/.github/workflows/'+name+'.yml@'+'c'*40,'sha':'c'*40} for name in ['publish','deploy']],
                   'repository':{'id':123,'full_name':'example/widget'},'head_repository':{'full_name':'example/widget'},'run_attempt':2}
-        self.job={'id':101,'run_id':42,'run_attempt':2,'head_sha':self.source,'conclusion':'success','name':'deploy / Deliver exact release'}
+        self.job={'id':101,'run_id':42,'run_attempt':2,'head_sha':self.source,'conclusion':'success','name':'Deploy / Deploy'}
         self.descriptor={'kind':'komizo.release','version':1,'application':'widget',
             'source':{'repository':'example/widget','repository_id':'123','revision':self.source},
             'artifacts':{'worker':{'kind':'image','reference':'ghcr.io/example/widget-worker@sha256:'+'e'*64,
                                  'digest':'sha256:'+'e'*64,'config_digest':'sha256:'+'b'*64,'platform':'linux/amd64'}},
             'workload':{'services':{'worker':{'artifact':'worker'}},'jobs':{},'assets':{}}}
         self.context={'GITHUB_SERVER_URL':'https://github.com','GITHUB_EVENT_NAME':'push','GITHUB_JOB':'publish','GITHUB_REPOSITORY':'example/widget','GITHUB_REPOSITORY_ID':'123','GITHUB_SHA':self.source,
-            'GITHUB_RUN_ID':'42','GITHUB_RUN_ATTEMPT':'2','GITHUB_WORKFLOW_REF':'example/widget/.github/workflows/cd.yml@refs/heads/main',
+            'GITHUB_RUN_ID':'42','GITHUB_RUN_ATTEMPT':'2','GITHUB_WORKFLOW_REF':'example/widget/.github/workflows/deploy.yml@refs/heads/main',
             'GITHUB_WORKFLOW_SHA':self.source}
         self.archive()
         self.activation()
@@ -125,7 +125,7 @@ class DeployedRelease(unittest.TestCase):
             file=Path(directory)/'scan.toml';scanner.source_config.write(file,self.config)
             with patch.dict(os.environ,{'GITHUB_REPOSITORY':'example/widget'}): self.assertEqual(scanner.load_config(file),self.config)
             for change in [{'repository':'a/b/c'},{'components':['worker','worker']},{'components':['../escape']},
-                           {'workflow':'../cd.yml'},{'application':'bad;exit'},{'image_base':'ghcr.io/example/widget'}]:
+                           {'workflow':'../deploy.yml'},{'application':'bad;exit'},{'image_base':'ghcr.io/example/widget'}]:
                 scanner.source_config.write(file,{**self.config,**change})
                 with self.assertRaises(ValueError): scanner.load_config(file)
             scanner.source_config.write(file,self.config)
@@ -184,8 +184,20 @@ class DeployedRelease(unittest.TestCase):
             with self.subTest(field=field),self.assertRaises(ValueError):self.resolve()
         self.activation();self.job['name']='Build release'
         with self.assertRaises(ValueError):self.resolve()
-        self.job['name']='deploy / Deliver exact release';self.run['referenced_workflows']=self.run['referenced_workflows'][:1]
+        self.job['name']='Deploy / Deploy';self.run['referenced_workflows']=self.run['referenced_workflows'][:1]
         with self.assertRaises(ValueError):self.resolve()
+
+    def test_retired_delivery_path_and_label_are_not_authority_aliases(self):
+        original=copy.deepcopy(self.run['referenced_workflows'])
+        for name in ['cookbook-deliver.yml','deliver.yml']:
+            self.run['referenced_workflows']=copy.deepcopy(original)
+            self.run['referenced_workflows'][1]['path']='nicodes/komizo-actions/.github/workflows/'+name+'@'+'c'*40
+            with self.subTest(name=name),self.assertRaisesRegex(ValueError,'immutable delivery adapter'):
+                self.resolve()
+        self.run['referenced_workflows']=original
+        self.job['name']='Deploy / Deliver exact release'
+        with self.assertRaisesRegex(ValueError,'successful exact delivery job'):
+            self.resolve()
 
     def test_complete_native_inventory_has_no_implicit_gate_or_omitted_images(self):
         self.descriptor['artifacts']['postgres']={**self.descriptor['artifacts']['worker'],'reference':'ghcr.io/example/widget-postgres@sha256:'+'e'*64}

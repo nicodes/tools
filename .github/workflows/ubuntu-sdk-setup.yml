@@ -1,10 +1,10 @@
-name: Ubuntu SDK bootstrap
+name: Ubuntu SDK setup
 'on':
   pull_request:
     paths:
       - setup/**
       - helpers/select-tools.py
-      - .github/workflows/ubuntu-bootstrap.yml
+      - .github/workflows/ubuntu-sdk-setup.yml
   workflow_dispatch: {}
 permissions:
   contents: read
@@ -13,11 +13,12 @@ concurrency:
   cancel-in-progress: true
 jobs:
   bootstrap:
-    name: Ubuntu 22 SDK bootstrap
+    name: Set up tools (Ubuntu 22)
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Set up the caller's exact Python and actionlint

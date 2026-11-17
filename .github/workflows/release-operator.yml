@@ -11,7 +11,7 @@ concurrency: operator-release
 jobs:
   version:
     timeout-minutes: 5
-    name: Determine operator version
+    name: Plan
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -32,9 +32,9 @@ jobs:
         [[ "$GITHUB_REF" == refs/heads/main ]]
         python3 scripts/cli_release.py version --bump "$BUMP" --prefix operator-v
   native:
-    name: Native operator
+    name: Build
     needs: version
-    uses: ./.github/workflows/operator-native.yml
+    uses: ./.github/workflows/build-native-operator.yml
     permissions:
       contents: read
     with:
@@ -42,7 +42,7 @@ jobs:
   release:
     name: "Release"
     needs: [version, native]
-    uses: ./.github/workflows/cli-release.yml
+    uses: ./.github/workflows/release-cli.yml
     permissions:
       contents: write
       attestations: write

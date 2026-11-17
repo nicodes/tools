@@ -1,4 +1,4 @@
-name: Build & Test
+name: Build and test
 'on':
   pull_request:
     types:
@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native-postgres:
-    name: Source-built PostgreSQL runtime
+    name: Test PostgreSQL
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -45,7 +45,7 @@ jobs:
         if-no-files-found: error
         retention-days: 7
   snapshot-crypto:
-    name: Large snapshot cryptography
+    name: Test snapshot cryptography
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -64,8 +64,8 @@ jobs:
         if-no-files-found: error
         retention-days: 7
   native-operator:
-    name: "Build native operator"
-    uses: ./.github/workflows/operator-native.yml
+    name: Build
+    uses: ./.github/workflows/build-native-operator.yml
   test:
     name: Test
     needs: native-operator

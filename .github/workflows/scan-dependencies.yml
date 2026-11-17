@@ -1,4 +1,4 @@
-name: Reusable Security Scan
+name: Scan dependencies
 'on':
   workflow_call:
     inputs:
@@ -41,7 +41,7 @@ jobs:
       timeout-minutes: 5
       with:
         persist-credentials: false
-    - name: Set up development tools
+    - name: Set up tools
       uses: nicodes/tools/setup@e45263e72e813cb02251f92d8971f11a1b0398e4
       env:
         GH_TOKEN: ${{ github.token }}
@@ -81,7 +81,7 @@ jobs:
     env:
       MISE_GITHUB_TOKEN: ${{ github.token }}
   report:
-    name: Report failure
+    name: Report
     needs:
     - scan
     if: failure()
@@ -96,7 +96,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-    - name: Set up development tools
+    - name: Set up tools
       uses: nicodes/tools/setup@e45263e72e813cb02251f92d8971f11a1b0398e4
       env:
         GH_TOKEN: ${{ github.token }}

@@ -182,14 +182,14 @@ def _publication_for_deployment(config, deployment, environment=None):
     producer=publication['execution_context']['GITHUB_JOB']
     if producer not in {'publish','deliver'}:
         raise ValueError('release evidence has an unknown protected publication producer')
-    provider='nicodes/komizo-actions/.github/workflows/cookbook-'+producer+'.yml@'
+    provider='nicodes/komizo-actions/.github/workflows/'+{'publish':'publish.yml','deliver':'deploy.yml'}[producer]+'@'
     references=run.get('referenced_workflows')
     if (not isinstance(references,list) or not 1<=len(references)<=100
             or not any(isinstance(row,dict) and isinstance(row.get('sha'),str) and SHA.fullmatch(row['sha'])
                        and row.get('path')==provider+row['sha'] for row in references)):
         raise ValueError('release producer did not execute its immutable protected adapter')
     if producer=='deliver' and (not isinstance(job.get('name'),str)
-            or job['name'].split(' / ')[-1]!='Deliver exact release'):
+            or job['name'].split(' / ')[-1]!='Deploy'):
         raise ValueError('combined publication must belong to the exact deployed delivery job')
     validate_acceptance(documents,descriptor,publication,context,release_raw)
     commit=api(f'repos/{repository}/git/commits/{revision}',environment)
@@ -208,9 +208,9 @@ def activation_for_deployment(config, deployment, environment=None):
     """
     descriptor,run,job,artifacts=_publication_for_deployment(config,deployment,environment)
     if (deployment['state']!='success' or job.get('conclusion')!='success'
-            or not isinstance(job.get('name'),str) or job['name'].split(' / ')[-1]!='Deliver exact release'):
+            or not isinstance(job.get('name'),str) or job['name'].split(' / ')[-1]!='Deploy'):
         raise ValueError('historical activation requires its successful exact delivery job')
-    provider='nicodes/komizo-actions/.github/workflows/cookbook-deliver.yml@'
+    provider='nicodes/komizo-actions/.github/workflows/deploy.yml@'
     if not any(isinstance(row,dict) and isinstance(row.get('sha'),str) and SHA.fullmatch(row['sha'])
             and row.get('path')==provider+row['sha'] for row in run['referenced_workflows']):
         raise ValueError('historical activation did not execute its immutable delivery adapter')

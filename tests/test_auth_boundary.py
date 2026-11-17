@@ -71,7 +71,7 @@ class Product:
                       'jobs:\n  p:\n    environment: Preview\n    steps:\n      - env:\n'
                       '          CLERK_SECRET_KEY_DEV: x\n'
                       '          CLERK_AUTHORIZED_PARTIES: https://pr-1.preview.example\n')
-        self.workflow('cd.yml',
+        self.workflow('deploy.yml',
                       'jobs:\n  d:\n    environment: Production\n    steps:\n'
                       '      - env:\n          CLERK_SECRET_KEY_PROD: y\n')
         return self
@@ -179,7 +179,7 @@ class KeyRouting(unittest.TestCase):
         asking for one whose branch policy is main."""
         with tempfile.TemporaryDirectory() as directory:
             product = Product(directory)
-            product.workflow('cd.yml', 'jobs:\n  d:\n    steps:\n      - env:\n          CLERK_SECRET_KEY: y\n')
+            product.workflow('deploy.yml', 'jobs:\n  d:\n    steps:\n      - env:\n          CLERK_SECRET_KEY: y\n')
             said = ' '.join(failures(check(directory, CLERK_API)))
             self.assertIn('without declaring an environment', said)
 
@@ -188,7 +188,7 @@ class KeyRouting(unittest.TestCase):
         the fleet's name now, and the environment says which instance."""
         with tempfile.TemporaryDirectory() as directory:
             product = Product(directory)
-            product.workflow('cd.yml',
+            product.workflow('deploy.yml',
                              'jobs:\n  d:\n    environment: Production\n    steps:\n'
                              '      - env:\n          CLERK_SECRET_KEY: y\n')
             said = ' '.join(failures(check(directory, CLERK_API)))
@@ -199,7 +199,7 @@ class KeyRouting(unittest.TestCase):
         file, so an untouched lint job does not have to declare anything."""
         with tempfile.TemporaryDirectory() as directory:
             product = Product(directory).compliant()
-            product.workflow('cd.yml',
+            product.workflow('deploy.yml',
                              'jobs:\n  lint:\n    steps:\n      - run: echo hi\n'
                              '  d:\n    environment: Production\n    steps:\n'
                              '      - env:\n          CLERK_SECRET_KEY: y\n')
@@ -367,7 +367,7 @@ class BrowserOnlyClerk(unittest.TestCase):
             product = Product(directory)
             product.web('app/src/session.ts', 'import { useClerk } from "@clerk/clerk-react";\n')
             product.workflow('pr-preview.yml', PREVIEW_WORKFLOW)
-            product.workflow('ci.yml', BUILD_WITH_DEV_KEY)
+            product.workflow('build-and-test.yml', BUILD_WITH_DEV_KEY)
             self.assertEqual(failures(check(directory, CLERK_CLIENT)), [])
 
     def test_a_build_that_bakes_one_key_for_every_event_is_refused(self):
@@ -378,7 +378,7 @@ class BrowserOnlyClerk(unittest.TestCase):
             product = Product(directory)
             product.web('app/src/session.ts', 'import { useClerk } from "@clerk/clerk-react";\n')
             product.workflow('pr-preview.yml', PREVIEW_WORKFLOW)
-            product.workflow('ci.yml', BUILD_WITH_ONE_KEY)
+            product.workflow('build-and-test.yml', BUILD_WITH_ONE_KEY)
             said = ' '.join(failures(check(directory, CLERK_CLIENT)))
             self.assertIn('development instance', said)
 
@@ -391,7 +391,7 @@ class BrowserOnlyClerk(unittest.TestCase):
             product = Product(directory)
             product.web('app/src/session.ts', 'import { useClerk } from "@clerk/clerk-react";\n')
             product.workflow('pr-preview.yml', PREVIEW_WORKFLOW)
-            product.workflow('ci.yml', BUILD_WITH_DEV_KEY)
+            product.workflow('build-and-test.yml', BUILD_WITH_DEV_KEY)
             said = ' '.join(f['text'] for f in check(directory, CLERK_CLIENT))
             self.assertNotIn('per-PR origin', said)
 
