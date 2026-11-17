@@ -72,6 +72,9 @@ if __name__ == '__main__':
     elif sys.argv[1:] == ['actions']:
         subprocess.run([interpreter(root), '-I', str(TOOLS / 'helpers/composite-actions.py'), str(root)], check=True,
                        env=dict(os.environ), timeout=60)
+    elif sys.argv[1:] == ['workflows']:
+        subprocess.run([interpreter(root), '-I', str(TOOLS / 'helpers/workflow-names.py'), str(root)], check=True,
+                       env=dict(os.environ), timeout=60)
     elif sys.argv[1:] == ['test']:
         subprocess.run(['bash', str(TOOLS / 'tests/source-secret-policy.test.sh')], check=True,
                        env=dict(os.environ, SOURCE_POLICY_PYTHON=interpreter(root)), timeout=180)
@@ -86,4 +89,4 @@ if __name__ == '__main__':
         raise SystemExit(subprocess.run([interpreter(sdk_root), '-I', str(CHECKER), *arguments],
                                        cwd=root, env=dict(os.environ), timeout=180).returncode)
     else:
-        raise SystemExit('usage: source_policy.py setup|actions|test|check [checker arguments]')
+        raise SystemExit('usage: source_policy.py setup|actions|workflows|test|check [checker arguments]')

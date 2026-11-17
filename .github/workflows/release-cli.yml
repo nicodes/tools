@@ -72,7 +72,7 @@ name: Release CLI
 permissions: {}
 jobs:
   build:
-    name: Build release
+    name: Build
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -191,9 +191,9 @@ jobs:
         if-no-files-found: error
         retention-days: 7
   publish:
-    name: Publish release
+    name: Publish
     needs: build
-    uses: ./.github/workflows/cli-publish.yml
+    uses: ./.github/workflows/publish-cli.yml
     permissions:
       contents: write
     with:

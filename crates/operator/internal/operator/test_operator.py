@@ -12,7 +12,7 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('operator_tool',Path(__file__).resolve().parent/'assets/fleet_operator.py')
 operator=importlib.util.module_from_spec(spec);spec.loader.exec_module(operator)
 HEAD='a'*40
-CONTRACT={'workflow_id':100,'workflow_path':'.github/workflows/ci.yml','app_id':15368,'event':'pull_request','jobs':['check'],'integration_job':'test'}
+CONTRACT={'workflow_id':100,'workflow_path':'.github/workflows/build-and-test.yml','app_id':15368,'event':'pull_request','jobs':['check'],'integration_job':'test'}
 POLICY={'version':5,'repositories':{'owner/product':CONTRACT}}
 
 
@@ -56,7 +56,7 @@ class OperatorBoundary(unittest.TestCase):
     def setUp(self):
         self.pr={'state':'open','draft':False,'merged':False,'base':{'ref':'main'},'head':{'sha':HEAD,'repo':{'full_name':'owner/product'}},'merge_commit_sha':'b'*40}
         self.evidence={'headRefOid':HEAD,'statusCheckRollup':[{'__typename':'CheckRun','name':'check','status':'COMPLETED','conclusion':'SUCCESS','detailsUrl':'https://github.com/owner/product/actions/runs/42/job/101'}]}
-        self.workflow={'id':42,'workflow_id':100,'path':'.github/workflows/ci.yml','event':'pull_request','head_sha':HEAD,'repository':{'full_name':'owner/product'},'head_repository':{'full_name':'owner/product'},'status':'completed','conclusion':'success','run_attempt':2,'check_suite_id':300}
+        self.workflow={'id':42,'workflow_id':100,'path':'.github/workflows/build-and-test.yml','event':'pull_request','head_sha':HEAD,'repository':{'full_name':'owner/product'},'head_repository':{'full_name':'owner/product'},'status':'completed','conclusion':'success','run_attempt':2,'check_suite_id':300}
         self.job={'id':101,'name':'check','run_attempt':2,'head_sha':HEAD,'status':'completed','conclusion':'success','check_run_url':'https://api.github.com/repos/owner/product/check-runs/201'}
         self.producer={'app':{'id':15368},'name':'check','head_sha':HEAD,'check_suite':{'id':300},'details_url':self.evidence['statusCheckRollup'][0]['detailsUrl'],'status':'completed','conclusion':'success'}
         self.integration={'version':1,'repository':'owner/product','run_id':42,'attempt':2,'job':'test','head':HEAD,'base':'c'*40,'commit':'f'*40,'tree':'d'*40,'inputs_sha256':'e'*64}
@@ -208,7 +208,7 @@ class OperatorBoundary(unittest.TestCase):
     def test_verification_changes_need_a_private_review(self):
         original = self.backend
         def changed(args):
-            return [{'filename':'.github/workflows/ci.yml'}] if '/files?' in args[-1] else original(args)
+            return [{'filename':'.github/workflows/build-and-test.yml'}] if '/files?' in args[-1] else original(args)
         with self.assertRaises(ValueError):
             operator.execute({'operation':'merge','repository':'owner/product','pull_request':12,'head':HEAD},POLICY,changed)
         self.assertFalse(self.pr['merged'])
@@ -305,13 +305,13 @@ class TrustedWorkflowDelegation(unittest.TestCase):
     def setUp(self):
         self.source=b'reviewed immutable main caller\n'
         self.base='b'*40; self.head='a'*40; self.calls=[]
-        self.contract=dict(protocol='trusted-workflow-request-v1',workflow_id=10,workflow_path='.github/workflows/ci.yml',
+        self.contract=dict(protocol='trusted-workflow-request-v1',workflow_id=10,workflow_path='.github/workflows/build-and-test.yml',
             app_id=15368,event='pull_request',jobs=['validate / Fast source checks / Make fast'],
             request_workflow_id=20,request_sha256=hashlib.sha256(self.source).hexdigest(),
-            request_workflow_path='.github/workflows/request-merge.yml',
+            request_workflow_path='.github/workflows/merge-pr.yml',
             source={'repository':'owner/reusable-acceptance','revision':'c'*40})
         self.pull=dict(state='open',draft=False,head={'sha':self.head,'repo':{'full_name':'owner/product'}},base={'ref':'main'})
-        self.target=dict(id=20,state='active',path='.github/workflows/request-merge.yml')
+        self.target=dict(id=20,state='active',path='.github/workflows/merge-pr.yml')
         self.relation='ahead'
         self.body=self.source
 

@@ -1,4 +1,4 @@
-name: Reusable Dependency Maintenance
+name: Maintain dependencies
 'on':
   workflow_call:
     inputs:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 jobs:
   watch:
-    name: Check tool versions
+    name: Check versions
     if: github.ref == 'refs/heads/main'
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 40
@@ -25,7 +25,7 @@ jobs:
       with:
         persist-credentials: false
       timeout-minutes: 3
-    - name: Set up development tools
+    - name: Set up tools
       uses: nicodes/tools/setup@f412061a7a3f0914db9e09d1159e69504aee8706
       env:
         GH_TOKEN: ${{ github.token }}

@@ -11,13 +11,13 @@ fixture() {
   rm -rf "${tmp:?}/app"
   mkdir -p "$tmp/app/deploy" "$tmp/app/.github/workflows"
   printf '%s' "$1" > "$tmp/app/deploy/application.toml"
-  printf '%s' "$2" > "$tmp/app/.github/workflows/cd.yml"
+  printf '%s' "$2" > "$tmp/app/.github/workflows/deploy.yml"
   if [[ $# -ge 3 ]]; then printf '%s' "$3" > "$tmp/app/host-keys"; fi
 }
 check() {
   local want="$1" label="$2" needle="$3" out rc
   shift 3
-  out=$(cd "$tmp/app" && "$parser" -I "$root/helpers/source-secret-policy.py" --application deploy/application.toml --workflow .github/workflows/cd.yml "$@" 2>&1)
+  out=$(cd "$tmp/app" && "$parser" -I "$root/helpers/source-secret-policy.py" --application deploy/application.toml --workflow .github/workflows/deploy.yml "$@" 2>&1)
   rc=$?
   if [[ "$rc" != "$want" ]] || { [[ -n "$needle" ]] && ! printf '%s' "$out" | grep -qF "$needle"; }; then
     printf 'FAIL %s: expected rc %s containing %s, got %s\n%s\n' "$label" "$want" "$needle" "$rc" "$out"

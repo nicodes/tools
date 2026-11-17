@@ -19,14 +19,18 @@ fn scalar(value: String, style: TScalarStyle) -> Result<(Value, bool)> {
         "false" | "False" | "FALSE" => return Ok((Value::Bool(false), false)),
         _ => {}
     }
-    if let Ok(date) = chrono::DateTime::parse_from_rfc3339(&value) {
-        return Ok((
-            Value::String(date.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
-            false,
-        ));
-    }
-    if let Ok(date) = chrono::NaiveDate::parse_from_str(&value, "%Y-%m-%d") {
-        return Ok((Value::String(format!("{date}T00:00:00Z")), false));
+    let plain = value.trim_start_matches(['+', '-']).as_bytes();
+    if plain.get(..10).is_some_and(|date| {
+        date[4] == b'-'
+            && date[7] == b'-'
+            && date[..4].iter().all(u8::is_ascii_digit)
+            && date[5..7].iter().all(u8::is_ascii_digit)
+            && date[8..10].iter().all(u8::is_ascii_digit)
+    }) && plain
+        .get(10)
+        .is_none_or(|next| matches!(next, b'T' | b't' | b' '))
+    {
+        return Err("implicit dates are unsupported in dependency metadata; quote date and timestamp strings".into());
     }
     if value
         .as_bytes()
@@ -150,6 +154,42 @@ pub fn metadata(body: &[u8]) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn implicit_dates_refuse_in_keys_and_values_while_quoted_dates_stay_literal() {
+        for date in [
+            "2026-10-31",
+            "2026-10-31T12:30:00Z",
+            "2026-10-31t12:30:00.123+02:00",
+            "2026-10-31 12:30:00+02:00",
+        ] {
+            for source in [
+                format!("updated-dependencies: [{{{date}: example}}]"),
+                format!("updated-dependencies: [{{dependency-version: {date}}}]"),
+            ] {
+                assert!(
+                    metadata(source.as_bytes())
+                        .unwrap_err()
+                        .contains("quote date"),
+                    "{source}"
+                );
+            }
+            for quote in ['\'', '"'] {
+                let source = format!(
+                    "updated-dependencies: [{{{quote}{date}{quote}: {quote}{date}{quote}}}]"
+                );
+                assert_eq!(
+                    metadata(source.as_bytes()).unwrap()["updated-dependencies"][0][date],
+                    date
+                );
+            }
+        }
+        assert_eq!(
+            metadata(b"updated-dependencies: [true, null, 0x10, 1.5, example, 2026-10-31-release]")
+                .unwrap()["updated-dependencies"],
+            serde_json::json!([true, null, 16, 1.5, "example", "2026-10-31-release"])
+        );
+    }
+
     #[test]
     fn ambiguous_or_indirect_metadata_never_produces_an_authority_document() {
         let valid=b"updated-dependencies:\n- dependency-name: example\n  dependency-version: 1.2.3\n  update-type: version-update:semver-patch\n";

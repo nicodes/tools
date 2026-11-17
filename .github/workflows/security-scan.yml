@@ -1,4 +1,4 @@
-name: Security Scan
+name: Security scan
 'on':
   workflow_dispatch: null
 permissions:
@@ -22,10 +22,10 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-    - name: Set up development tools
+    - name: Set up tools
       uses: ./setup
       timeout-minutes: 5
-    - name: Security Scan
+    - name: Scan dependencies
       run: mise run install && mise run vuln
       env:
         GH_TOKEN: ${{ github.token }}

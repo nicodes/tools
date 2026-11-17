@@ -93,8 +93,8 @@ class DependencyGroups(unittest.TestCase):
 
 class MergeBoundaries(unittest.TestCase):
     def setUp(self):
-        self.policy = {'version': 1, 'mode': 'auto', 'ci_workflow': 'ci.yml', 'required_checks': ['Test', 'Build'],
-                       'integration_job': 'test', 'dispatch_workflow': 'cd.yml', 'max_group_size': 10,
+        self.policy = {'version': 1, 'mode': 'auto', 'ci_workflow': 'build-and-test.yml', 'required_checks': ['Test', 'Build'],
+                       'integration_job': 'test', 'dispatch_workflow': 'deploy.yml', 'max_group_size': 10,
                        'managed_dependencies': [], 'sensitive_dependencies': []}
         self.repo, self.head, self.base, self.merged = 'example/widget', 'a'*40, 'b'*40, 'c'*40
         self.pull = {'state': 'open', 'draft': False, 'user': {'login': 'dependabot[bot]'},
@@ -104,7 +104,7 @@ class MergeBoundaries(unittest.TestCase):
 
     def test_policy_fails_closed(self):
         self.assertEqual(reconcile.validate_policy(self.policy), self.policy)
-        for key, value in (('required_checks', []), ('max_group_size', 21), ('ci_workflow', '../ci.yml'),
+        for key, value in (('required_checks', []), ('max_group_size', 21), ('ci_workflow', '../build-and-test.yml'),
                            ('integration_job', 'test;true'), ('dispatch_workflow', ''), ('managed_dependencies', 'all')):
             policy = copy.deepcopy(self.policy); policy[key] = value
             with self.subTest(key=key), self.assertRaises(ValueError): reconcile.validate_policy(policy)
@@ -149,7 +149,7 @@ class MergeBoundaries(unittest.TestCase):
         with self.assertRaises(ValueError): reconcile.candidates(self.repo, {}, 'issue_comment', self.policy)
 
     def test_ci_identity_and_required_jobs_are_enforced(self):
-        run = {'id': 123, 'run_attempt': 2, 'workflow_id': 4, 'path': '.github/workflows/ci.yml',
+        run = {'id': 123, 'run_attempt': 2, 'workflow_id': 4, 'path': '.github/workflows/build-and-test.yml',
                'head_sha': self.head, 'event': 'pull_request', 'head_repository': {'full_name': self.repo},
                'repository': {'full_name': self.repo},
                'status': 'completed', 'conclusion': 'success'}

@@ -1,4 +1,4 @@
-name: "Native operator"
+name: Build native operator
 on:
   workflow_call:
     inputs:
@@ -9,7 +9,7 @@ permissions:
   contents: read
 jobs:
   native:
-    name: Operator (${{ matrix.platform }})
+    name: Build (${{ matrix.platform }})
     strategy:
       fail-fast: false
       matrix:

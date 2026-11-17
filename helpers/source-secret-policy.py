@@ -253,7 +253,7 @@ def check_readers(services, scoped_dir, host_only, secrets_env_readers, findings
 def check_drift(delivered, host_keys_path, findings):
     """The half a repository cannot see: what is actually on the box.
 
-    set-secret writes and never deletes, so removing a name from cd.yml leaves
+    set-secret writes and never deletes, so removing a name from deploy.yml leaves
     the value on the host indefinitely. Extra keys are the interesting
     direction: each one is either a credential nobody is rotating or a
     hand-placed value, and both are the thing this rule exists to prevent.

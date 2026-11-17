@@ -2,6 +2,7 @@
 set -euo pipefail
 actionlint
 python3 helpers/source_policy.py actions
+python3 helpers/source_policy.py workflows
 shellcheck scripts/*.sh tests/*.sh dependencies/*.sh
 shellcheck helpers/*.sh
 shellcheck postgres-runtime/*.sh

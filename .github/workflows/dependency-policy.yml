@@ -1,4 +1,4 @@
-name: Dependency Policy
+name: Dependency policy
 'on':
   pull_request_target:
     types:
@@ -8,7 +8,7 @@ name: Dependency Policy
     - ready_for_review
   workflow_run:
     workflows:
-    - Build & Test
+    - Build and test
     types:
     - completed
   workflow_dispatch: null

@@ -1,4 +1,4 @@
-name: Windows SDK bootstrap
+name: Windows SDK setup
 'on':
   pull_request:
     paths:
@@ -26,7 +26,7 @@ name: Windows SDK bootstrap
       - tests/test_sdk_bootstrap_transport.py
       - tests/test_sdk_bootstrap_child.py
       - tests/test_source_config.py
-      - .github/workflows/windows-bootstrap.yml
+      - .github/workflows/windows-sdk-setup.yml
   workflow_dispatch: {}
 permissions:
   contents: read
@@ -35,7 +35,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   bootstrap:
-    name: Windows bootstrap (${{ matrix.runner }})
+    name: Set up tools (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
@@ -46,7 +46,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
       - name: Set up exact Python and Mise
