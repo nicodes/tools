@@ -52,6 +52,15 @@ class WorkflowNames(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'nonempty mapping'):
             module.validate(self.documents)
 
+    def test_executable_steps_require_clear_names_while_reusable_jobs_need_no_steps(self):
+        job = self.documents['.github/workflows/build-and-test.yml']['jobs']['test']
+        job['steps'] = [{'name': 'Check out source', 'uses': 'actions/checkout@' + 'a' * 40}]
+        module.validate(self.documents)
+        for value in [[], [None], [{}], [{'name': 'Build & test'}]]:
+            job['steps'] = value
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'step'):
+                module.validate(self.documents)
+
 
 if __name__ == '__main__':
     unittest.main()

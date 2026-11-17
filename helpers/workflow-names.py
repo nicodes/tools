@@ -35,6 +35,13 @@ def validate(documents):
             if not isinstance(job, dict):
                 raise ValueError(f'{path}: job {job_id} must be a mapping')
             title(job.get('name'), f'{path}: job {job_id}')
+            if 'steps' in job:
+                if not isinstance(job['steps'], list) or not job['steps']:
+                    raise ValueError(f'{path}: job {job_id} steps must be a nonempty list')
+                for index, step in enumerate(job['steps'], 1):
+                    if not isinstance(step, dict):
+                        raise ValueError(f'{path}: job {job_id} step {index} must be a mapping')
+                    title(step.get('name'), f'{path}: job {job_id} step {index}')
     for path, document in documents.items():
         # The pinned PyYAML SDK follows YAML 1.1 and interprets `on` as True.
         triggers = document.get('on', document.get(True, {}))
