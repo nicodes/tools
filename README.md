@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ca05c154a020147c5eca4832b6bba2e7bae5bf33f33f0073b4aba6eadbd9853e -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 004c21d555d2fc664a72a4fbf96be42fd1749bca1e4bdc01994050428f788e82 -->
 
 # tools
 
@@ -28,6 +28,8 @@ For development, install [mise](https://mise.jdx.dev/) and Podman, then run `mis
 Use `nicodes/tools/setup@FULL_40_CHARACTER_COMMIT` after checking out your product. It installs the tool versions in the product's `mise.toml` and exposes the reviewed helper directory as `TOOLS_ROOT`. Canonical recipe Mise tasks select the shared implementation; native projects can call helpers independently. The action supports Linux, macOS and Windows on x86_64 and arm64 and verifies the pinned Mise executable. First-party task execution uses Mise on every supported platform; native external build protocols retain their owning tool requirements.
 
 After explicit SDK preparation, `python3 "$TOOLS_ROOT/helpers/source_policy.py" workflows` checks active workflow filenames against their display names, explicit job and step names and local `workflow_run` references. Use sentence-case titles such as `Build and test` with the matching `build-and-test.yml` filename and spell out `and`.
+
+`nicodes/tools/documentation-policy@FULL_40_CHARACTER_COMMIT` checks the caller's documentation layout, reviewed README digest and declared public-history boundary. Run it after checking out the source, with full Git history for public repositories. The runner supplies Python 3.11 or newer. The action selects the public-history requirement from the repository visibility and calls the same canonical checker used by recipes; it installs no SDKs.
 
 Check out this repository at a reviewed full commit to use `helpers/integration-identity.py`. Run it from the product checkout with `EXPECTED_HEAD` set to the exact pull request head. It records the actual tested integration commit and raw parents in `.artifacts/fleet-integration.json`, refusing a checkout that does not contain the requested PR head as its second parent. Upload that file from the same job that performs verification. The helper also supports exact `main` delivery identity for push and manual dispatch events.
 

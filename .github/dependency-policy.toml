@@ -1,7 +1,7 @@
 version = 1
 mode = "review"
 ci_workflow = "build-and-test.yml"
-required_checks = ["Test"]
+required_checks = ["Build and test"]
 integration_job = "test"
 dispatch_workflow = "build-and-test.yml"
 max_group_size = 10

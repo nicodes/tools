@@ -7,19 +7,20 @@ on:
       task:
         description: Maintenance task
         type: choice
-        default: versions
+        required: true
+        default: dependencies
         options:
-        - versions
+        - dependencies
         - security
 permissions:
   contents: read
 concurrency:
-  group: maintenance-${{ github.event_name == 'schedule' && 'versions' || inputs.task }}
+  group: maintenance-${{ github.event_name == 'schedule' && 'dependencies' || inputs.task }}
   cancel-in-progress: false
 jobs:
-  versions:
+  dependencies:
     name: "Check dependencies"
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.task == 'versions')
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.task == 'dependencies')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
