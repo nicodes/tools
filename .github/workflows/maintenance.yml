@@ -1,0 +1,64 @@
+name: Maintenance
+on:
+  schedule:
+  - cron: 31 11 * * 1
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Maintenance task
+        type: choice
+        default: versions
+        options:
+        - versions
+        - security
+permissions:
+  contents: read
+concurrency:
+  group: maintenance-${{ github.event_name == 'schedule' && 'versions' || inputs.task }}
+  cancel-in-progress: false
+jobs:
+  versions:
+    name: "Check dependencies"
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.task == 'versions')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      attestations: read
+      issues: write
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Set up tools
+      uses: ./setup
+      timeout-minutes: 5
+    - name: Check versions
+      run: python3 helpers/watch-tools.py
+      env:
+        GH_TOKEN: ${{ github.token }}
+  security:
+    name: "Scan dependencies"
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.task == 'security'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      attestations: read
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Set up tools
+      uses: ./setup
+      timeout-minutes: 5
+    - name: Scan dependencies
+      run: mise run install && mise run vuln
+      env:
+        GH_TOKEN: ${{ github.token }}

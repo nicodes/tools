@@ -7,8 +7,8 @@ name: Build and test
     - reopened
     - ready_for_review
   push:
-    branches:
-    - main
+    branches: [main]
+  merge_group: null
   workflow_dispatch: null
 permissions:
   contents: read
@@ -16,6 +16,23 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      composite: ${{ steps.paths.outputs.composite }}
+      ubuntu: ${{ steps.paths.outputs.ubuntu }}
+      windows: ${{ steps.paths.outputs.windows }}
+    steps:
+    - name: Check out source and event history
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+        fetch-depth: 0
+    - name: Select platform self-checks from exact changed paths
+      id: paths
+      run: python3 .github/scripts/plan-ci.py
   native-postgres:
     name: Test PostgreSQL
     runs-on: ubuntu-24.04
@@ -155,3 +172,161 @@ jobs:
       run: python3 tests/standalone_release.py
     - name: Verify operator boot directories
       run: sudo /usr/bin/python3 tests/native_operator_boot.py
+  composite-runtime:
+    name: Test (Podman, Ubuntu 24)
+    needs: plan
+    if: ${{ needs.plan.outputs.composite == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up tools
+        uses: ./setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Admit every composite step before evaluating optional capability conditions
+        uses: ./podman-ci
+      - name: Leave an actually unreadable native fixture through cache post-actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" != 0
+          test "$(id -u)" != 65534
+          fixture="$GITHUB_WORKSPACE/.artifacts/cache-post-control"
+          test ! -e "$fixture"
+          install -d -m 700 "$fixture"
+          sudo install -d -m 700 -o 65534 -g 65534 "$fixture/private"
+          sudo install -m 600 -o 65534 -g 65534 /dev/null "$fixture/private/package.json"
+          sudo install -m 600 -o 65534 -g 65534 /dev/null "$fixture/private/go.mod"
+          test "$(stat -c '%u:%g:%a' "$fixture/private")" = 65534:65534:700
+          test ! -r "$fixture/private/package.json"
+          if LC_ALL=C find "$fixture/private" -type f > "$RUNNER_TEMP/cache-fixture.out" 2> "$RUNNER_TEMP/cache-fixture.err"; then
+            echo 'Native fixture unexpectedly permits runner traversal' >&2
+            exit 1
+          fi
+          grep -q 'Permission denied' "$RUNNER_TEMP/cache-fixture.err"
+          mkdir -p "$GOCACHE" "$FLEET_WEB_CACHE/control/metro-cache"
+          printf '%s\n' 'cache-post-control' > "$GOCACHE/cache-post-control"
+          printf '%s\n' 'cache-post-control' > "$FLEET_WEB_CACHE/control/metro-cache/cache-post-control"
+          printf '%s\n' '{"control":true}' > "$FLEET_WEB_CACHE/control/state.json"
+          # The private tree deliberately survives until both actual cache
+          # post-actions finish; the disposable runner owns final teardown.
+  ubuntu-sdk-setup:
+    name: Set up tools (Ubuntu 22)
+    needs: plan
+    if: ${{ needs.plan.outputs.ubuntu == 'true' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up the caller's exact Python and actionlint
+        uses: ./setup
+        with:
+          tools: python actionlint
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify the selected parser and tools
+        run: |
+          python3 -c 'import tomllib; assert tomllib.loads("version=1")["version"] == 1'
+          python3 helpers/select-tools.py --tools 'python actionlint'
+          actionlint -version
+  windows-sdk-setup:
+    name: Set up tools (${{ matrix.runner }})
+    needs: plan
+    if: ${{ needs.plan.outputs.windows == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up exact Python and Mise
+        uses: ./setup
+        with:
+          tools: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Verify native ACL protection and task execution
+        run: |
+          python3 - <<'PY'
+          import importlib.util
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('windows_verification', Path('helpers/verification.py'))
+          verification = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(verification)
+          directory = verification.protected_directory(Path('.artifacts/bootstrap-control'))
+          verification.protected_windows_acl(verification.windows_access(directory))
+          print('Native owner and DACL validation passed')
+          PY
+          mise --version
+      - name: Verify bounded TOML source identities
+        run: python3 -m unittest discover -s tests -p test_source_config.py -v
+      - name: Verify generic exact Tools source and installed SDK guards
+        run: |
+          python3 tests/bootstrap_shell_diagnostic.py
+          python3 tests/bootstrap_transport_diagnostic.py
+          python3 -m unittest discover -s tests -p test_native_shell.py -v
+          python3 -m unittest discover -s tests -p test_sdk_identity.py -v
+          python3 -m unittest discover -s tests -p test_sdk_bootstrap.py -v
+          python3 -m unittest discover -s tests -p test_sdk_bootstrap_transport.py -v
+          python3 -m unittest discover -s tests -p test_sdk_bootstrap_child.py -v
+          python3 -m unittest discover -s tests -p test_pinned_tools.py -v
+          python3 -m unittest discover -s tests -p test_rust_runtime_context.py -v
+          python3 -m unittest discover -s tests -p test_rust_install_context.py -v
+          python3 -m unittest discover -s tests -p test_private_directory.py -v
+  documentation-policy:
+    name: Documentation policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: ${{ github.event.repository.private && 1 || 0 }}
+      - name: Check documentation boundary
+        uses: ./documentation-policy
+  build-and-test:
+    name: Build and test
+    if: always()
+    needs: [plan, native-postgres, snapshot-crypto, native-operator, test, composite-runtime, ubuntu-sdk-setup, windows-sdk-setup, documentation-policy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+    - name: Require every selected check and reject unexpected skips
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+      run: |
+        python3 - <<'PYTHON'
+        import json, os, sys
+        results = json.loads(os.environ['RESULTS'])
+        plan = results['plan']
+        outputs = plan.get('outputs', {})
+        expected = {job: True for job in ['plan', 'documentation-policy', 'native-postgres', 'snapshot-crypto', 'native-operator', 'test']}
+        for job, group in [('composite-runtime', 'composite'), ('ubuntu-sdk-setup', 'ubuntu'), ('windows-sdk-setup', 'windows')]:
+            expected[job] = outputs.get(group) == 'true'
+        invalid = set(results) != set(expected) or set(outputs) != {'composite', 'ubuntu', 'windows'}
+        invalid = invalid or any(value not in ['true', 'false'] for value in outputs.values())
+        for job, required in expected.items():
+            actual = results.get(job, {}).get('result')
+            wanted = 'success' if required else 'skipped'
+            print(job + ': ' + str(actual) + ' (required ' + wanted + ')')
+            invalid = invalid or actual != wanted
+        sys.exit(1 if invalid else 0)
+        PYTHON
