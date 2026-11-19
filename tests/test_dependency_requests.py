@@ -62,6 +62,26 @@ class DependencyRequests(unittest.TestCase):
             result,api=self.inspect([self.pull],state=state,apply=False)
             self.assertEqual(result['state'],state);self.assertEqual(api.call_count,1)
 
+    def test_unsigned_bot_update_requires_review_and_never_dispatches(self):
+        commit = {'sha': self.head, 'author': {'login': 'dependabot[bot]'},
+                  'commit': {'verification': {'verified': False, 'reason': 'unsigned'}}}
+        with patch.object(module, 'api', return_value=self.pull) as api, \
+             patch.object(module, 'pages', return_value=[commit]) as pages:
+            result = module.inspect(self.repo, 7, self.base, self.policy, apply=True)
+        self.assertEqual(result, {'pull_request': 7, 'head': self.head, 'state': 'review',
+                                  'reason': 'unsigned Dependabot commit requires review'})
+        api.assert_called_once_with(f'repos/{self.repo}/pulls/7')
+        pages.assert_called_once_with(f'repos/{self.repo}/pulls/7/commits')
+
+    def test_signature_service_failure_still_fails_reconciliation(self):
+        commit = {'sha': self.head, 'author': {'login': 'dependabot[bot]'},
+                  'commit': {'verification': {'verified': False, 'reason': 'gpgverify_unavailable'}}}
+        with patch.object(module, 'api', return_value=self.pull) as api, \
+             patch.object(module, 'pages', return_value=[commit]), \
+             self.assertRaisesRegex(ValueError, 'verified Dependabot commit required'):
+            module.inspect(self.repo, 7, self.base, self.policy, apply=True)
+        api.assert_called_once_with(f'repos/{self.repo}/pulls/7')
+
     def test_request_evidence_does_not_claim_integration_receipts(self):
         run=dict(id=123,run_attempt=2,workflow_id=4,path='.github/workflows/build-and-test.yml',head_sha=self.head,
             event='pull_request',head_repository={'full_name':self.repo},repository={'full_name':self.repo},
