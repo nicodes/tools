@@ -24,6 +24,10 @@ WORKFLOW = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*\.ya?ml')
 MAX_BYTES = 1024 * 1024
 
 
+class UnsignedDependabotCommit(ValueError):
+    """An unsigned bot commit needs review before it can proceed."""
+
+
 def api(path, method='GET', body=None, binary=False):
     command = ['gh', 'api', '--method', method, '-H', 'Accept: application/vnd.github+json', path]
     if body is not None:
@@ -95,8 +99,11 @@ def metadata(commits, head):
         raise ValueError('automatic updates require one unchanged bot commit')
     commit = commits[0]
     verification = commit['commit'].get('verification', {})
-    if (commit.get('author', {}).get('login') != 'dependabot[bot]'
-            or verification.get('verified') is not True or verification.get('reason') != 'valid'):
+    if commit.get('author', {}).get('login') != 'dependabot[bot]':
+        raise ValueError('verified Dependabot commit required')
+    if verification.get('verified') is False and verification.get('reason') == 'unsigned':
+        raise UnsignedDependabotCommit('unsigned Dependabot commit requires review')
+    if verification.get('verified') is not True or verification.get('reason') != 'valid':
         raise ValueError('verified Dependabot commit required')
     message = commit['commit']['message']
     if len(message) > 65536:
@@ -209,7 +216,11 @@ def inspect(repo, number, base, policy, apply=False):
         return {**result, 'state': 'excluded', 'reason': 'not an open same-repository Dependabot update to main'}
     if policy['mode'] == 'review':
         return {**result, 'state': 'review', 'reason': 'shared-library updates require an agent review'}
-    updates = metadata(pages(f'repos/{repo}/pulls/{number}/commits'), head)
+    commits = pages(f'repos/{repo}/pulls/{number}/commits')
+    try:
+        updates = metadata(commits, head)
+    except UnsignedDependabotCommit as error:
+        return {**result, 'state': 'review', 'reason': str(error)}
     reason = policy_engine.review_reason(updates, policy['max_group_size'], policy['managed_dependencies'], policy['sensitive_dependencies'])
     if reason:
         return {**result, 'state': 'review', 'reason': reason}
