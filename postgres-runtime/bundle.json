@@ -1,8 +1,8 @@
 {
   "files": {
     "Containerfile": {
-      "sha256": "ef711cd2a7bc85ebedfb991ff9ad6808301e0c854bdc30a1fd0274f3757df507",
-      "size": 983
+      "sha256": "4998a4d622e5d9bb51077ef2b7ec3c99769356f9e357ef8024c2ca2500a8c809",
+      "size": 991
     },
     "build-launcher.sh": {
       "sha256": "606f79345d403e464cbd15381bdd90b10603e22229338120d219e34b4fe36957",
@@ -13,20 +13,20 @@
       "size": 5843
     },
     "contract.py": {
-      "sha256": "130cd3c41a7b7fd05165de59dd1b13272f4ecc0abfcd480b3cbc6ec2ea201b0d",
-      "size": 23464
+      "sha256": "079fbcf22121b841fa907ad8a56ca05231f53a8c7a7d6173b0b4cff1dd0fc72a",
+      "size": 23662
     },
     "prepare-build.sh": {
-      "sha256": "4652bfdf6c57e00be55ba61fa5ed5859620b38828916ea00dc548d3a2b956593",
-      "size": 1405
+      "sha256": "091abb6a9ee5a3f9d1fd77dabf03ec0781377c603b983eab7b88c440b2651037",
+      "size": 1394
     },
     "runtime/PIN.json": {
-      "sha256": "a6ab3f09ec0057da2c9fc3a4a9cc2c95c1b4a14ec1c6cd2d6d139e173afbef0e",
-      "size": 2879
+      "sha256": "44db922d96617286a101866b8cf0731c78a0dcbd035dbb1c91a2f8d7aa2f69a9",
+      "size": 2791
     },
     "runtime/build.py": {
-      "sha256": "7377403876aec48b6952d3b29024dc5c310d2658d840f90de364de38d967c956",
-      "size": 24867
+      "sha256": "2bbb068ad4406c608c07685b601d4a10a80bc55fa3edd154badb4ff156573817",
+      "size": 24849
     },
     "runtime/entrypoint/AUTHORS": {
       "sha256": "a016549e5373f5fd36b698ac4d73a894e7818b50a0c0837f18788cccd6a6da1a",
