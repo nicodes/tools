@@ -9,7 +9,6 @@
     "sha256": "555610c24d53e4316da5b7d3fc25c279d96856d5e0e23ee308c328c5fa881d9f",
     "configure": [
       "--prefix=/usr/local",
-      "--without-ssl",
       "--with-lz4",
       "--with-zstd",
       "--with-system-tzdata=/usr/share/zoneinfo",

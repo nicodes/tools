@@ -70,7 +70,7 @@ def validate_pin(value):
                 or any(not isinstance(patch[name], str) or not re.fullmatch('[a-f0-9]{64}', patch[name])
                        for name in ['sha256_before', 'sha256_after'])):
             raise ValueError('runtime constructor requires its exact socket and container-interface defaults')
-    allowed = {'--prefix=/usr/local', '--without-ssl', '--with-lz4', '--with-zstd',
+    allowed = {'--prefix=/usr/local', '--with-lz4', '--with-zstd',
                '--with-system-tzdata=/usr/share/zoneinfo', '--without-readline', '--without-icu',
                '--without-libxml', '--without-libxslt', '--without-gssapi', '--without-ldap',
                '--without-pam', '--without-systemd', '--without-llvm', '--without-perl',

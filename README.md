@@ -151,7 +151,7 @@ Cookbook consumers bind Cookbook independently. Their `COOKBOOK_ROOT` and `.arti
 
 The generic `podman-ci` action prepares the native local Podman engine and compiler caches when invoked. Builds use operation-owned registry authentication and job-local image layers. The caller owns build declarations and resource limits. OCI archives retain exact manifest, configuration and layer identities for scanning and publication without a shared engine socket.
 
-`postgres-runtime/Containerfile` constructs a minimal PostgreSQL 18.6 runtime from authenticated upstream and Debian source with a pinned base, explicit runtime packages and retained package/source inventories. It serves local sockets and private container networks with PostgreSQL TLS disabled. The runtime provides the standard entrypoint, UID/GID 999, the `en_US.utf8` libc locale and the canonical `/run/postgresql` socket directory. Products own their storage declarations, resource policy, image labels, scanning, publication and application assertions.
+`postgres-runtime/Containerfile` constructs a minimal PostgreSQL 18.6 runtime from authenticated upstream and Debian source with a pinned base, explicit runtime packages and retained package/source inventories. The runtime provides the standard entrypoint, UID/GID 999, the `en_US.utf8` libc locale and the canonical `/run/postgresql` socket directory. Products own their database features, storage declarations, resource policy, image labels, scanning, publication and application assertions.
 
 The constructor is an independently pinned build dependency. From a reviewed Tools checkout, render a consumer Containerfile with the exact Tools Git commit and its independently verified source archive SHA256:
 
