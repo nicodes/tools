@@ -7,6 +7,8 @@ from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('image_archive', Path(__file__).parents[1] / 'helpers/oci_archive.py')
 oci = importlib.util.module_from_spec(spec)
@@ -109,6 +111,36 @@ class ImageArchive(unittest.TestCase):
                 write(path, entries)
                 with self.assertRaises(ValueError):
                     oci.inspect_archive(path, REF)
+
+    def test_reuse_requires_the_exact_local_image_and_still_admits_the_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'accepted.oci.tar'
+            entries, _, config, _ = fixture(compressed=True)
+            write(path, entries)
+            metadata = oci.inspect_archive(path, REF)
+            image = {'Id': config['digest'], 'Os': 'linux', 'Architecture': 'amd64',
+                     'RootFS': {'Layers': [record['diff_id'] for record in metadata['layers']]}}
+            for status in (0, 1, 125):
+                with self.subTest(status=status), patch.object(oci.runtime, 'run', return_value=SimpleNamespace(returncode=status)) as run, \
+                        patch.object(oci.runtime, 'inspect_images', return_value=[image]) as inspect:
+                    if status == 125:
+                        with self.assertRaisesRegex(ValueError, 'local store'):
+                            oci.load_image(path, REF, config['digest'], reuse_present=True)
+                        inspect.assert_not_called()
+                    else:
+                        self.assertEqual(oci.load_image(path, REF, config['digest'], reuse_present=True), metadata)
+                        self.assertEqual(inspect.call_args.args[0], [config['digest']])
+                    self.assertEqual(run.call_args_list[0].args[0], ['image', 'exists', config['digest']])
+                    self.assertEqual([call.args[0][0] for call in run.call_args_list], ['image', 'load'] if status == 1 else ['image'])
+            with patch.object(oci.runtime, 'run', return_value=SimpleNamespace(returncode=0)), \
+                    patch.object(oci.runtime, 'inspect_images', return_value=[dict(image, Architecture='arm64')]):
+                with self.assertRaisesRegex(ValueError, 'differs from the accepted OCI archive'):
+                    oci.load_image(path, REF, config['digest'], reuse_present=True)
+            path.write_bytes(b'invalid archive')
+            with patch.object(oci.runtime, 'run') as run:
+                with self.assertRaises((ValueError, tarfile.ReadError)):
+                    oci.load_image(path, REF, config['digest'], reuse_present=True)
+                run.assert_not_called()
 
     def test_foreign_config_or_reference_refuses(self):
         with tempfile.TemporaryDirectory() as directory:

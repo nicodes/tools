@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import subprocess
 import tarfile
 import tempfile
 import time
@@ -307,17 +308,26 @@ def save_image(reference, path, *, environment=None, authfile=None, timeout=600)
         raise
 
 
-def load_image(path, expected_reference=None, expected_config=None, *, environment=None, authfile=None, timeout=600):
+def load_image(path, expected_reference=None, expected_config=None, *, environment=None, authfile=None, timeout=600, reuse_present=False):
+    """Validate the archive and ensure its exact image is in the local store."""
     deadline = time.monotonic() + timeout
     with OCIArchive(path, expected_reference, expected_config, timeout=timeout) as archive:
-        with tempfile.TemporaryDirectory(prefix='oci-import-') as directory:
-            incoming = archive.import_archive(Path(directory) / 'image.oci.tar')
-            runtime.run(['load', '--input', str(incoming)], environment=environment, authfile=authfile,
-                        timeout=remaining(deadline), check=True)
-            archive.unchanged()
         selected = archive.metadata['config_digest']
+        present = False
+        if reuse_present:
+            status = runtime.run(['image', 'exists', selected], environment=environment, authfile=authfile,
+                                 timeout=remaining(deadline), stdout=subprocess.DEVNULL).returncode
+            if status not in (0, 1):
+                raise ValueError('could not determine whether the exact OCI image is in the local store')
+            present = status == 0
+        if not present:
+            with tempfile.TemporaryDirectory(prefix='oci-import-') as directory:
+                incoming = archive.import_archive(Path(directory) / 'image.oci.tar')
+                runtime.run(['load', '--input', str(incoming)], environment=environment, authfile=authfile,
+                            timeout=remaining(deadline), check=True)
         image = runtime.inspect_images([selected], environment=environment, authfile=authfile,
                                        timeout=remaining(deadline))[0]
+        archive.unchanged()
         if (image['Id'] != archive.metadata['config_digest']
                 or image['Os'] + '/' + image['Architecture'] != archive.metadata['platform']
                 or image['RootFS']['Layers'] != [layer['diff_id'] for layer in archive.metadata['layers']]):
