@@ -20,5 +20,5 @@ cd /build
  sed -i 's|http://|https://|g' /etc/apt/sources.list;
  apt-get update;
  apt-get upgrade -y --with-new-pkgs;
- apt-get install -y --no-install-recommends build-essential bison flex pkg-config python3 curl xz-utils bzip2 locales libssl-dev zlib1g-dev liblz4-dev libzstd-dev gettext texinfo help2man autoconf automake libtool m4 gperf patch
+ apt-get install -y --no-install-recommends build-essential bison flex pkg-config python3 curl xz-utils bzip2 locales zlib1g-dev liblz4-dev libzstd-dev gettext texinfo help2man autoconf automake libtool m4 gperf patch
 exec python3 -I -B /build/runtime/build.py

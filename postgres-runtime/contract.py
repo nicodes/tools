@@ -256,6 +256,8 @@ def image_contract(image, *, wrapper=None):
         assert runtime['kind']=='komizo.postgres-runtime' and runtime['version']==1 and runtime['pin']==pin
         packages = {item['name']:item for item in runtime['runtime_packages']}
         assert set(packages)==set(pin['runtime_packages'])
+        command(image, 'test ! -e /var/lib/dpkg/status.d/libssl3t64 && '
+                       'test ! -e /var/lib/dpkg/status.d/openssl-provider-legacy')
         for name, record in packages.items():
             control=inspect_file(image,'/var/lib/dpkg/status.d/'+name).decode()
             assert 'Package: '+name+'\n' in control and 'Version: '+record['version']+'\n' in control
@@ -288,7 +290,8 @@ def image_contract(image, *, wrapper=None):
                 assert actual_bytes[:4]==b'\x7fELF'
                 linked=command(image,'ldd '+path)
                 assert not any(part in linked for part in ['libxml','libxslt','libsystemd','libudev','libtinfo',
-                    'libncurses','libreadline','libacl','libldap','libgssapi','libicu','libsqlite','libcap','libgmp','not found'])
+                    'libncurses','libreadline','libacl','libldap','libgssapi','libicu','libsqlite','libcap','libgmp',
+                    'libssl','libcrypto','not found'])
             else:
                 assert record['kind']=='script' and actual_bytes.startswith(b'#!')
         payloads = runtime['elf_payloads']
