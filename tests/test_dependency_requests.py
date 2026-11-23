@@ -1,4 +1,4 @@
-"""Dependency checks request fresh full validation, never merge directly."""
+"""Version 2 dependency policy validates current checks before merging."""
 import copy
 import importlib.util
 from pathlib import Path
@@ -14,10 +14,10 @@ class DependencyRequests(unittest.TestCase):
     def setUp(self):
         self.repo, self.head, self.base = 'example/widget', 'a'*40, 'b'*40
         self.policy = dict(version=2, mode='auto', ci_workflow='build-and-test.yml', required_checks=['Build and test'],
-            request_workflow='merge-pr.yml', max_group_size=10, managed_dependencies=[], sensitive_dependencies=[])
+            dispatch_workflow='build-and-test.yml', max_group_size=10, managed_dependencies=[], sensitive_dependencies=[])
         self.pull = dict(state='open', draft=False, user={'login':'dependabot[bot]'},
             base={'ref':'main'}, head={'sha':self.head,'repo':{'full_name':self.repo}})
-        self.target = dict(id=9, state='active', path='.github/workflows/merge-pr.yml')
+        self.target = dict(id=9, state='active', path='.github/workflows/build-and-test.yml')
 
     def inspect(self, responses, files=None, updates=None, state='ready', apply=True, receipt=None):
         with patch.object(module,'api',side_effect=responses) as api, \
@@ -28,12 +28,11 @@ class DependencyRequests(unittest.TestCase):
             result=module.inspect(self.repo,7,self.base,self.policy,apply)
         return result,api
 
-    def test_current_policy_decision_dispatches_bound_controller_without_a_merge_call(self):
-        result,api=self.inspect([self.pull,self.target,self.pull,{'object':{'sha':self.base}},None])
-        self.assertEqual(result['state'],'validation-requested')
-        self.assertEqual(api.call_args_list[-1].args,(f'repos/{self.repo}/actions/workflows/9/dispatches','POST',
-            {'ref':'main','inputs':{'pull-request':'7','expected-head':self.head,'expected-base':self.base}}))
-        self.assertFalse(any(call.args[0].endswith('/merge') for call in api.call_args_list))
+    def test_review_mode_requires_a_maintainer_and_performs_no_writes(self):
+        self.policy['mode'] = 'review'
+        result, api = self.inspect([self.pull])
+        self.assertEqual(result['state'], 'review')
+        api.assert_called_once_with(f'repos/{self.repo}/pulls/7')
 
     def test_moved_head_or_base_never_dispatches(self):
         for selection in ['head','base']:
@@ -44,13 +43,13 @@ class DependencyRequests(unittest.TestCase):
             self.assertEqual(result['state'],'stale')
             self.assertFalse(any(len(call.args)>1 for call in api.call_args_list))
 
-    def test_inactive_or_substituted_controller_never_dispatches(self):
+    def test_inactive_or_substituted_main_workflow_prevents_merge(self):
         for change in [{'state':'disabled_manually'},{'path':'.github/workflows/other.yml'},{'id':False}]:
             with self.subTest(change=change),self.assertRaises(ValueError):
                 self.inspect([self.pull,self.target|change])
 
     def test_changed_authority_and_managed_dependencies_stay_in_review(self):
-        for filename in ['Makefile','cookbook.toml','mise.toml','.mise.toml','.github/workflows/merge-pr.yml']:
+        for filename in ['Makefile','cookbook.toml','mise.toml','.mise.toml','.github/dependency-policy.toml']:
             result,api=self.inspect([self.pull],files=[{'filename':filename}])
             self.assertEqual(result['state'],'review');self.assertEqual(api.call_count,1)
         self.policy['managed_dependencies']=['example']
@@ -82,27 +81,14 @@ class DependencyRequests(unittest.TestCase):
             module.inspect(self.repo, 7, self.base, self.policy, apply=True)
         api.assert_called_once_with(f'repos/{self.repo}/pulls/7')
 
-    def test_request_evidence_does_not_claim_integration_receipts(self):
-        run=dict(id=123,run_attempt=2,workflow_id=4,path='.github/workflows/build-and-test.yml',head_sha=self.head,
-            event='pull_request',head_repository={'full_name':self.repo},repository={'full_name':self.repo},
-            status='completed',conclusion='success')
-        job=dict(name='Build and test',conclusion='success',status='completed',head_sha=self.head,run_attempt=2)
-        with patch.object(module,'api',return_value={'id':4}), \
-             patch.object(module,'pages',side_effect=[[run],[job],[],[]]), \
-             patch.object(module,'integration',side_effect=AssertionError('check status cannot replace integration evidence')):
-            state,_,receipt=module.ci_evidence(self.repo,self.head,self.base,self.policy)
-        self.assertEqual(state,'ready');self.assertIsNone(receipt)
-
-    def test_versioned_policy_cannot_confuse_request_and_integration_protocols(self):
+    def test_versioned_policy_rejects_retired_dispatch_and_version_mismatches(self):
         self.assertEqual(module.validate_policy(self.policy),self.policy)
-        for change in [{'version':3},{'request_workflow':'deploy.yml'},{'request_workflow':'request-merge.yml'},
-                       {'integration_job':'test'}, {'dispatch_workflow':'deploy.yml'}]:
+        for change in [{'version':3}, {'request_workflow':'merge-pr.yml'},
+                       {'integration_job':'test'}, {'dispatch_workflow':'other.yml'}]:
             with self.subTest(change=change),self.assertRaises(ValueError):
                 module.validate_policy(self.policy|change)
 
     def test_native_policy_accepts_only_full_checks_and_current_base(self):
-        del self.policy['request_workflow']
-        self.policy['dispatch_workflow'] = 'build-and-test.yml'
         self.assertEqual(module.validate_policy(self.policy), self.policy)
         with self.assertRaises(ValueError):
             module.validate_policy(self.policy | {'ci_workflow': 'other.yml'})
@@ -120,7 +106,6 @@ class DependencyRequests(unittest.TestCase):
             self.assertEqual(receipt, {'tree':tree} if merge_base == self.base else None)
 
     def test_native_policy_squashes_once_and_dispatches_exact_accepted_main(self):
-        del self.policy['request_workflow']
         self.policy['dispatch_workflow'] = 'deploy.yml'
         merged, tree = 'c' * 40, 'd' * 40
         target = dict(id=11, state='active', path='.github/workflows/deploy.yml')
