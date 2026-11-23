@@ -19,12 +19,12 @@ class DependencyRequests(unittest.TestCase):
             base={'ref':'main'}, head={'sha':self.head,'repo':{'full_name':self.repo}})
         self.target = dict(id=9, state='active', path='.github/workflows/merge-pr.yml')
 
-    def inspect(self, responses, files=None, updates=None, state='ready', apply=True):
+    def inspect(self, responses, files=None, updates=None, state='ready', apply=True, receipt=None):
         with patch.object(module,'api',side_effect=responses) as api, \
              patch.object(module,'pages',side_effect=[[],files or [{'filename':'bun.lock'}]]), \
              patch.object(module,'metadata',return_value=updates or [dict(**{'dependency-name':'example',
                  'dependency-version':'1.2.3','update-type':'version-update:semver-patch'})]), \
-             patch.object(module,'ci_evidence',return_value=(state,'cheap decision',None)):
+             patch.object(module,'ci_evidence',return_value=(state,'CI decision',receipt)):
             result=module.inspect(self.repo,7,self.base,self.policy,apply)
         return result,api
 
@@ -95,9 +95,47 @@ class DependencyRequests(unittest.TestCase):
 
     def test_versioned_policy_cannot_confuse_request_and_integration_protocols(self):
         self.assertEqual(module.validate_policy(self.policy),self.policy)
-        for change in [{'version':3},{'request_workflow':'deploy.yml'},{'request_workflow':'request-merge.yml'},{'integration_job':'test'}]:
+        for change in [{'version':3},{'request_workflow':'deploy.yml'},{'request_workflow':'request-merge.yml'},
+                       {'integration_job':'test'}, {'dispatch_workflow':'deploy.yml'}]:
             with self.subTest(change=change),self.assertRaises(ValueError):
                 module.validate_policy(self.policy|change)
+
+    def test_native_policy_accepts_only_full_checks_and_current_base(self):
+        del self.policy['request_workflow']
+        self.policy['dispatch_workflow'] = 'build-and-test.yml'
+        self.assertEqual(module.validate_policy(self.policy), self.policy)
+        with self.assertRaises(ValueError):
+            module.validate_policy(self.policy | {'ci_workflow': 'other.yml'})
+        run = dict(id=123, run_attempt=2, workflow_id=4, path='.github/workflows/build-and-test.yml',
+                   head_sha=self.head, event='pull_request', head_repository={'full_name':self.repo},
+                   repository={'full_name':self.repo}, status='completed', conclusion='success')
+        job = dict(name='Build and test', conclusion='success', status='completed', head_sha=self.head, run_attempt=2)
+        tree = 'c' * 40
+        for merge_base in [self.base, 'd' * 40]:
+            comparison = {'status': 'ahead', 'merge_base_commit': {'sha': merge_base}}
+            with patch.object(module, 'api', side_effect=[{'id':4}, comparison, {'tree': {'sha':tree}}]), \
+                    patch.object(module, 'pages', side_effect=[[run], [job], [], []]):
+                state, _, receipt = module.ci_evidence(self.repo, self.head, self.base, self.policy)
+            self.assertEqual(state, 'ready' if merge_base == self.base else 'stale')
+            self.assertEqual(receipt, {'tree':tree} if merge_base == self.base else None)
+
+    def test_native_policy_squashes_once_and_dispatches_exact_accepted_main(self):
+        del self.policy['request_workflow']
+        self.policy['dispatch_workflow'] = 'deploy.yml'
+        merged, tree = 'c' * 40, 'd' * 40
+        target = dict(id=11, state='active', path='.github/workflows/deploy.yml')
+        current = {'object': {'sha': merged}}
+        result, api = self.inspect([self.pull, target, self.pull, {'object':{'sha':self.base}},
+            {'merged':True,'sha':merged}, {'parents':[{'sha':self.base}], 'tree':{'sha':tree}}, current, current, None],
+            receipt={'tree':tree})
+        self.assertEqual(result['state'], 'merged')
+        writes = [call.args for call in api.call_args_list if len(call.args) > 1]
+        self.assertEqual(writes, [
+            (f'repos/{self.repo}/pulls/7/merge', 'PUT', {'sha':self.head, 'merge_method':'squash'}),
+            (f'repos/{self.repo}/actions/workflows/11/dispatches', 'POST', {'ref':'main','inputs':{'source':merged}})])
+        result, api = self.inspect([self.pull], files=[{'filename':'.github/workflows/build-and-test.yml'}])
+        self.assertEqual(result['state'], 'review')
+        api.assert_called_once()
 
 
 if __name__=='__main__':unittest.main()

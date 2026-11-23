@@ -70,7 +70,12 @@ def validate_policy(value):
               'managed_dependencies', 'sensitive_dependencies'}
     if not isinstance(value, dict) or value.get('version') not in {1, 2}:
         raise ValueError('complete dependency policy v1 or v2 required')
-    keys = common | ({'integration_job', 'dispatch_workflow'} if value['version'] == 1 else {'request_workflow'})
+    if value['version'] == 1:
+        keys = common | {'integration_job', 'dispatch_workflow'}
+    elif 'request_workflow' in value:
+        keys = common | {'request_workflow'}
+    else:
+        keys = common | {'dispatch_workflow'}
     if set(value) != keys:
         raise ValueError('complete versioned dependency policy required')
     if value['mode'] not in ('auto', 'review') or not WORKFLOW.fullmatch(value['ci_workflow']):
@@ -80,8 +85,11 @@ def validate_policy(value):
             raise ValueError('explicit merged-main workflow required')
         if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_-]*', value['integration_job']):
             raise ValueError('explicit integration job required')
-    elif value['request_workflow'] != 'merge-pr.yml':
-        raise ValueError('dependency updates require the trusted requested full-validation workflow')
+    elif 'request_workflow' in value:
+        if value['request_workflow'] != 'merge-pr.yml':
+            raise ValueError('dependency updates require the trusted requested full-validation workflow')
+    elif value['ci_workflow'] != 'build-and-test.yml' or value['dispatch_workflow'] not in {'build-and-test.yml', 'deploy.yml'}:
+        raise ValueError('native dependency merges require full PR CI and an exact main workflow')
     checks = value['required_checks']
     if not isinstance(checks, list) or not checks or len(set(checks)) != len(checks) or not all(isinstance(c, str) and c for c in checks):
         raise ValueError('nonempty unique required checks required')
@@ -199,8 +207,17 @@ def ci_evidence(repo, head, base, policy):
         return 'blocked', 'an external status failed', None
     if any(s['state'] != 'success' for s in latest.values()):
         return 'waiting', 'an external status is pending', None
-    if policy['version'] == 2:
+    if 'request_workflow' in policy:
         return 'ready', 'cheap checks passed; requested full validation is required before merging', None
+    if policy['version'] == 2:
+        comparison = api(f'repos/{repo}/compare/{base}...{head}')
+        if (comparison.get('status') != 'ahead'
+                or comparison.get('merge_base_commit', {}).get('sha') != base):
+            return 'stale', 'PR head must incorporate current main before a native merge', None
+        tree = api(f'repos/{repo}/git/commits/{head}').get('tree', {}).get('sha', '')
+        if not SHA.fullmatch(tree):
+            raise ValueError('PR head must identify one immutable tree')
+        return 'ready', 'complete current PR checks passed', {'tree': tree}
     receipt = integration(repo, head, base, run, policy)
     if receipt is None:
         return 'stale', 'CI tested an older base; rebase and rerun required', None
@@ -225,41 +242,50 @@ def inspect(repo, number, base, policy, apply=False):
     if reason:
         return {**result, 'state': 'review', 'reason': reason}
     files = pages(f'repos/{repo}/pulls/{number}/files')
+    native = policy['version'] == 2 and 'dispatch_workflow' in policy
     if not files or any(f['filename'] in ('.github/dependency-policy.toml', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', '.github/workflows/merge-pr.yml', 'cookbook.toml', 'Makefile', 'mise.toml', '.mise.toml') for f in files):
         return {**result, 'state': 'review', 'reason': 'merge policy changes require review'}
+    if native and any(f['filename'] == '.github/workflows/' + policy['ci_workflow'] for f in files):
+        return {**result, 'state': 'review', 'reason': 'changes to required PR checks require review'}
     if pull.get('mergeable_state') == 'dirty':
         return {**result, 'state': 'blocked', 'reason': 'merge conflict requires a bot rebase'}
     state, reason, receipt = ci_evidence(repo, head, base, policy)
     result.update(state=state, reason=reason)
     if state != 'ready' or not apply:
         return result
-    if policy['version'] == 2:
+    if 'request_workflow' in policy:
         return request_validation(repo, number, head, base, policy, result)
     # Probe the explicitly declared dispatch before an irreversible merge.
     target = api(f"repos/{repo}/actions/workflows/{policy['dispatch_workflow']}")
-    if target.get('state') != 'active':
+    if (target.get('state') != 'active'
+            or (native and target.get('path') != '.github/workflows/' + policy['dispatch_workflow'])):
         raise ValueError('merged-main workflow is not active')
     fresh = api(f'repos/{repo}/pulls/{number}')
     if (fresh['head']['sha'] != head or fresh['state'] != 'open' or fresh.get('draft')
             or api(f'repos/{repo}/git/ref/heads/main')['object']['sha'] != base):
         return {**result, 'state': 'stale', 'reason': 'head or base moved before merge'}
-    merged = api(f'repos/{repo}/pulls/{number}/merge', 'PUT', {'sha': head, 'merge_method': 'merge'})
+    method = 'squash' if native else 'merge'
+    merged = api(f'repos/{repo}/pulls/{number}/merge', 'PUT', {'sha': head, 'merge_method': method})
     if merged.get('merged') is not True or not SHA.fullmatch(merged.get('sha', '')):
         raise ValueError('GitHub did not confirm the exact-head merge')
     commit = api(f"repos/{repo}/git/commits/{merged['sha']}")
-    if ([p.get('sha') for p in commit.get('parents', [])] != [base, head]
+    parents = [base] if native else [base, head]
+    if ([p.get('sha') for p in commit.get('parents', [])] != parents
             or commit.get('tree', {}).get('sha') != receipt['tree']):
         raise ValueError('merged tree differs from tested integration; deployment refused')
     if api(f'repos/{repo}/git/ref/heads/main')['object']['sha'] != merged['sha']:
         raise ValueError('main moved after merge; verify the newer main deployment')
     # Retain the merged identity even if dispatch fails; a red policy run must
     # distinguish a deployment failure from an unmerged pull request.
+    dispatch = {'ref': 'main'}
+    if native:
+        dispatch['inputs'] = {'source': merged['sha']}
     errors = []
     for _ in range(3):
         try:
             if api(f'repos/{repo}/git/ref/heads/main')['object']['sha'] != merged['sha']:
                 raise ValueError('main advanced; review the newer main deployment')
-            api(f"repos/{repo}/actions/workflows/{target['id']}/dispatches", 'POST', {'ref': 'main'})
+            api(f"repos/{repo}/actions/workflows/{target['id']}/dispatches", 'POST', dispatch)
             break
         except ValueError as error:
             errors.append(str(error))
