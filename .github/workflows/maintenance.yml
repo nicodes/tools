@@ -43,9 +43,9 @@ jobs:
         GH_TOKEN: ${{ github.token }}
   security:
     name: "Scan dependencies"
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.task == 'security'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || inputs.task == 'security')
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       attestations: read
@@ -63,3 +63,5 @@ jobs:
       run: mise run install && mise run vuln
       env:
         GH_TOKEN: ${{ github.token }}
+    - name: Scan the locked upstream Caddy build for reachable advisories
+      run: python3 helpers/test-caddy.py --fail-on-advisories
