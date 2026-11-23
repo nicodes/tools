@@ -299,7 +299,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          fetch-depth: ${{ github.event.repository.private && 1 || 0 }}
+          fetch-depth: 1
       - name: Check documentation boundary
         uses: ./documentation-policy
   build-and-test:

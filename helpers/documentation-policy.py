@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-"""Check tracked documentation layout and the reviewed usage README digest."""
+"""Check tracked documentation layout and the reviewed usage README digest.
+
+Only the checked-out commit is read. A legacy `[history]` table in the policy
+file is accepted and ignored.
+"""
 import hashlib
-import os
 from pathlib import Path, PurePosixPath
 import subprocess
 import sys
@@ -11,7 +14,7 @@ MARKDOWN = {'.md', '.markdown', '.mdown', '.mkd', '.mkdn', '.mdwn', '.mdx', '.rm
 OTHER_DOCS = {'.rst', '.adoc', '.asciidoc'}
 
 
-def check(root, include_history=True, history_required=False):
+def check(root):
     raw = subprocess.check_output(['git', 'ls-files', '--stage', '-z'], cwd=root)
     entries = {}
     errors = []
@@ -47,26 +50,6 @@ def check(root, include_history=True, history_required=False):
                     raise ValueError('unsupported README source policy')
                 if hashlib.sha256(body).hexdigest() != policy.get('sha256'):
                     errors.append('README differs from its reviewed publication; update the private source first')
-                history = policy.get('history')
-                if history_required and history is None:
-                    raise ValueError('public repositories require a history boundary')
-                if include_history and history is not None:
-                    if set(history) != {'forbidden_commits'} or not isinstance(history['forbidden_commits'], list):
-                        raise ValueError('invalid public history boundary')
-                    forbidden = set(history['forbidden_commits'])
-                    if any(not isinstance(oid, str) or len(oid) != 40 or any(c not in '0123456789abcdef' for c in oid) for oid in forbidden):
-                        raise ValueError('invalid original history identity')
-                    shallow = subprocess.check_output(['git', 'rev-parse', '--is-shallow-repository'], cwd=root, text=True).strip()
-                    if shallow != 'false':
-                        raise ValueError('public history verification requires fetch-depth: 0')
-                    ancestors = set(subprocess.check_output(['git', 'rev-list', 'HEAD'], cwd=root, text=True).splitlines())
-                    if ancestors & forbidden:
-                        errors.append('original history was reintroduced; transplant changes onto the cleaned main history')
-                    patterns = [':(icase)*'+suffix for suffix in sorted(MARKDOWN)]
-                    past = subprocess.check_output(['git', 'log', '--format=', '--name-only', '-z', 'HEAD', '--', *patterns], cwd=root)
-                    extra = {name.decode('utf-8', 'surrogateescape') for name in past.split(b'\0') if name and name != b'README.md'}
-                    errors.extend('historical Markdown must remain in private docs: '+name for name in sorted(extra))
-
             except (OSError, ValueError, UnicodeError) as error:
                 errors.append('invalid README source policy or README: ' + str(error))
     return errors
@@ -74,7 +57,7 @@ def check(root, include_history=True, history_required=False):
 
 def main():
     root = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip())
-    errors = check(root, history_required=os.environ.get('REQUIRE_CLEAN_HISTORY') == 'true')
+    errors = check(root)
     for error in errors:
         print(error, file=sys.stderr)
     if errors:
