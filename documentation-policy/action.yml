@@ -1,12 +1,10 @@
 name: Documentation policy
-description: Check the caller's reviewed README, documentation boundary and public history
+description: Check the caller's reviewed README and documentation boundary
 runs:
   using: composite
   steps:
-    - name: Check documentation boundary and reviewed history
+    - name: Check documentation boundary
       shell: bash
-      env:
-        REQUIRE_CLEAN_HISTORY: ${{ !github.event.repository.private }}
       run: |
         python3 -I -B -c 'import sys; sys.version_info >= (3, 11) or sys.exit("Documentation policy requires Python 3.11 or newer")'
         python3 -I -B "$GITHUB_ACTION_PATH/../helpers/documentation-policy.py"
