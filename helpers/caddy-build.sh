@@ -16,8 +16,9 @@
 # A patch nobody needs is a patch that rots, so it is gone.
 #
 # What still proves the property the patch existed for: helpers/test-caddy.py
-# runs govulncheck against the built binary and fails on any vulnerable
-# symbol actually linked in. That check is the contract; the overlay was one
+# runs govulncheck against the built binary. Ordinary tests only warn about
+# a vulnerable symbol actually linked in; the weekly security scan
+# (--fail-on-advisories) fails on it. That check is the contract; the overlay was one
 # way of satisfying it.
 set -eu
 export GOTOOLCHAIN=local
