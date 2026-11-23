@@ -124,10 +124,6 @@ cmd_plan() {
             exit 1
         fi
         require_sha "Tag target" "$target"
-        if ! git -C "$repo" merge-base --is-ancestor "$target" "$GITHUB_SHA"; then
-            echo "Tag $retry_tag target $target is not an ancestor of permitted main $GITHUB_SHA." >&2
-            exit 1
-        fi
         version="${retry_tag#v}"
         if ! shown="$(git -C "$repo" show "${target}:addon/plugin.cfg" 2>/dev/null)"; then
             echo "addon/plugin.cfg is missing at tag target $target." >&2

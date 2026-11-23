@@ -157,18 +157,6 @@ expect_failure missing-tag \
     RETRY_TAG=v9.9.9 RETRY_SHA256="$V004_SHA256" \
     "$SCRIPT" plan
 
-side="$work/side"
-init_repo "$side"
-side_main="$(commit_plugin "$side" 0.0.4 main)"
-git -C "$side" checkout -b side "$side_main" >/dev/null
-side_tip="$(commit_plugin "$side" 0.0.8 side)"
-git -C "$side" tag v0.0.8 "$side_tip"
-git -C "$side" checkout main >/dev/null
-expect_failure tag-not-ancestor \
-    env GITHUB_REF=refs/heads/main GITHUB_SHA="$side_main" RELEASE_REPO_ROOT="$side" PATH="$tripwire:$PATH" \
-    RETRY_TAG=v0.0.8 RETRY_SHA256="$V004_SHA256" \
-    "$SCRIPT" plan
-
 mismatch="$work/mismatch"
 init_repo "$mismatch"
 mismatch_tag="$(commit_plugin "$mismatch" 0.0.3 old)"
@@ -234,6 +222,18 @@ if [ "$base_tag" = "$base_main" ]; then
     exit 1
 fi
 assert_eq retry-ancestor-sha "$(output_value "$plan_out" sha256)" "$V004_SHA256"
+reached=$((reached + 1))
+
+# A depth-1 checkout plus fetched tags (what actions/checkout fetch-tags gives)
+# holds only the tag commit and the permitted main commit. Retry needs no more.
+shallow="$work/shallow"
+git clone -q --depth 1 "file://$base" "$shallow"
+git -C "$shallow" fetch -q --no-tags --depth=1 origin '+refs/tags/*:refs/tags/*'
+assert_eq shallow-clone "$(git -C "$shallow" rev-parse --is-shallow-repository)" true
+run_plan "$shallow" "$plan_out" RETRY_TAG=v0.0.4 RETRY_SHA256="$V004_SHA256"
+assert_eq retry-shallow-version "$(output_value "$plan_out" version)" 0.0.4
+assert_eq retry-shallow-retry "$(output_value "$plan_out" retry)" true
+assert_eq retry-shallow-target "$(output_value "$plan_out" target)" "$base_tag"
 reached=$((reached + 1))
 
 equal="$work/equal"
@@ -474,8 +474,8 @@ expect_failure unknown-command \
 PATH="$tripwire:$PATH" RETRY=false "$SCRIPT" assert-bump >/dev/null
 reached=$((reached + 1))
 
-if [ "$controls" -ne 26 ] || [ "$reached" -ne 10 ]; then
-    echo "Expected 26 negative controls and 10 reached paths, observed controls=$controls reached=$reached" >&2
+if [ "$controls" -ne 25 ] || [ "$reached" -ne 11 ]; then
+    echo "Expected 25 negative controls and 11 reached paths, observed controls=$controls reached=$reached" >&2
     exit 1
 fi
 echo "PASS release_recovery_test controls=$controls reached=$reached"

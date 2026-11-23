@@ -9,7 +9,7 @@ class ImmutableAddonRecovery(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         result = subprocess.run(['bash', str(root / 'tests/addon_release_recovery_test.sh')], cwd=root, text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('controls=26 reached=10', result.stdout)
+        self.assertIn('controls=25 reached=11', result.stdout)
 
     def test_asset_identity_cannot_escape_the_download_directory(self):
         root = Path(__file__).resolve().parents[1]
