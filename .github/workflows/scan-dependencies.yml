@@ -47,7 +47,7 @@ jobs:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
     - name: Prepare native Podman
-      uses: nicodes/tools/podman-ci@e45263e72e813cb02251f92d8971f11a1b0398e4
+      uses: nicodes/tools/podman-ci@c49606cb83cc3eeeab91f0354bc74a42b17e9917
       if: inputs.scan-images
     - name: Prepare private registry read authority
       timeout-minutes: 3
