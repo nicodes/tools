@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -40,40 +39,6 @@ def decorated_version(name, version, origin):
     return '.'.join(match.groups())
 
 
-def caddy_updates(root):
-    # Caddy's flat helper lock is maintained centrally. It is not a fake Go
-    # backend in app-only products and Dependabot cannot find this filename.
-    source = root/'helpers'
-    if not (source/'caddy.go.mod').is_file():
-        return []
-    with tempfile.TemporaryDirectory(prefix='caddy-update-watch-') as directory:
-        for extension in ['mod', 'sum']:
-            shutil.copyfile(source/f'caddy.go.{extension}', Path(directory)/f'go.{extension}')
-        output = subprocess.check_output(['go', 'list', '-mod=readonly', '-m', '-u', '-json', 'all'],
-            cwd=directory, text=True, timeout=600, env={**os.environ, 'GOTOOLCHAIN': 'local'})
-    decoder = json.JSONDecoder()
-    pending = []
-    count = 0
-    while output.strip():
-        item, end = decoder.raw_decode(output.lstrip())
-        output = output.lstrip()[end:]
-        count += 1
-        if not isinstance(item, dict) or 'Error' in item or not isinstance(item.get('Path'), str):
-            raise ValueError('Caddy module update lookup failed or changed schema')
-        if 'Update' not in item:
-            continue
-        update = item['Update']
-        if not isinstance(update, dict) or update.get('Path') != item['Path'] or 'Error' in update:
-            raise ValueError('Caddy module update is ambiguous')
-        for version in [item.get('Version'), update.get('Version')]:
-            if not isinstance(version, str) or not re.fullmatch(r'v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.+-]+)?', version):
-                raise ValueError('Caddy module update has an unknown version')
-        pending.append(('Caddy: '+item['Path'], item['Version'], update['Version']))
-    if count < 2:
-        raise ValueError('Caddy module update lookup returned no dependency inventory')
-    return pending
-
-
 def main():
     root = Path.cwd()
     config = root/'mise.toml'
@@ -82,7 +47,7 @@ def main():
     installed = tomllib.loads(config.read_text()).get('tools', {})
     outdated = json.loads(subprocess.check_output(
         ['mise', 'outdated', '--bump', '--local', '--json'], text=True, timeout=600))
-    pending = updates(root, installed, outdated) + caddy_updates(root)
+    pending = updates(root, installed, outdated)
     repo = os.environ['GITHUB_REPOSITORY']
     # Caller identity is checked before any API write.
     if os.environ.get('GITHUB_REPOSITORY', repo) != repo:
@@ -120,10 +85,6 @@ def main():
             'download URL, and binary checksum together. Obtain checksums from the upstream '
             'release and verify the actual downloaded bytes. Keep the Bun packageManager '
             'field and lockfile in sync.\n\n'
-            'Caddy module updates belong in the central `helpers/caddy.go.mod` and '
-            '`caddy.go.sum` lock. Review the matcher compatibility patch and run the '
-            'upstream race tests and actual binary scan, then pin the reviewed '
-            'tools source in consuming repositories.\n\n'
             'Run the repository’s own verification command on the resulting PR and follow the caller repository’s review policy. '
             'This watcher does not authorize or auto-merge updates.\n')
     if len(body) > 15000:
