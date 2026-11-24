@@ -189,7 +189,7 @@ class DeployedRelease(unittest.TestCase):
 
     def test_retired_delivery_path_and_label_are_not_authority_aliases(self):
         original=copy.deepcopy(self.run['referenced_workflows'])
-        for name in ['cookbook-deliver.yml','deliver.yml']:
+        for name in ['cookbook-deliver.yml','deliver-extra.yml']:
             self.run['referenced_workflows']=copy.deepcopy(original)
             self.run['referenced_workflows'][1]['path']='nicodes/komizo-actions/.github/workflows/'+name+'@'+'c'*40
             with self.subTest(name=name),self.assertRaisesRegex(ValueError,'immutable delivery adapter'):
@@ -198,6 +198,27 @@ class DeployedRelease(unittest.TestCase):
         self.job['name']='Deploy / Deliver exact release'
         with self.assertRaisesRegex(ValueError,'successful exact delivery job'):
             self.resolve()
+
+    def use_workflow(self, path, producer='publish'):
+        self.context['GITHUB_JOB']=producer
+        self.run['referenced_workflows']=[{'path':path+'@'+'c'*40,'sha':'c'*40}]
+        self.archive();self.activation()
+
+    def test_single_job_deliver_workflow_is_accepted_for_the_deliver_producer(self):
+        for producer in ['publish','deliver']:
+            self.use_workflow('nicodes/komizo-actions/.github/workflows/deliver.yml',producer)
+            with self.subTest(producer=producer):
+                if producer=='deliver':self.assertEqual(self.resolve()['descriptor'],self.descriptor)
+                else:
+                    with self.assertRaisesRegex(ValueError,'immutable protected adapter'):self.resolve()
+
+    def test_unrelated_or_foreign_delivery_workflows_are_refused(self):
+        for path in ['nicodes/komizo-actions/.github/workflows/other.yml',
+                     'nicodes/komizo-actions/.github/workflows/deliver.yml.evil',
+                     'other/komizo-actions/.github/workflows/deliver.yml',
+                     'nicodes/other-actions/.github/workflows/deliver.yml']:
+            self.use_workflow(path,'deliver')
+            with self.subTest(path=path),self.assertRaises(ValueError):self.resolve()
 
     def test_complete_native_inventory_has_no_implicit_gate_or_omitted_images(self):
         self.descriptor['artifacts']['postgres']={**self.descriptor['artifacts']['worker'],'reference':'ghcr.io/example/widget-postgres@sha256:'+'e'*64}
