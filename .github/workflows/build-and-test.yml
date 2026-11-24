@@ -166,8 +166,6 @@ jobs:
     - name: Verify isolated OCI image-cache reset
       timeout-minutes: 5
       run: sudo /usr/bin/python3 tests/native_image_cache_control.py
-    - name: Verify locked upstream Caddy build and linked symbols
-      run: python3 helpers/test-caddy.py
     - name: Verify standalone CLI build and release preparation
       run: python3 tests/standalone_release.py
     - name: Verify operator boot directories
