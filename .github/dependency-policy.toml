@@ -1,5 +1,5 @@
 version = 1
-mode = "review"
+mode = "merge-on-green"
 ci_workflow = "build-and-test.yml"
 required_checks = ["Build and test"]
 integration_job = "test"
