@@ -75,7 +75,7 @@ def validate_policy(value):
         keys.add('integration_job')
     if set(value) != keys:
         raise ValueError('complete versioned dependency policy required')
-    if value['mode'] not in ('auto', 'review') or not WORKFLOW.fullmatch(value['ci_workflow']):
+    if value['mode'] not in ('auto', 'review', 'merge-on-green') or not WORKFLOW.fullmatch(value['ci_workflow']):
         raise ValueError('invalid dependency mode or workflow')
     if value['version'] == 1:
         if not WORKFLOW.fullmatch(value['dispatch_workflow']):
@@ -230,9 +230,10 @@ def inspect(repo, number, base, policy, apply=False):
         updates = metadata(commits, head)
     except UnsignedDependabotCommit as error:
         return {**result, 'state': 'review', 'reason': str(error)}
-    reason = policy_engine.review_reason(updates, policy['max_group_size'], policy['managed_dependencies'], policy['sensitive_dependencies'])
-    if reason:
-        return {**result, 'state': 'review', 'reason': reason}
+    if policy['mode'] == 'auto':
+        reason = policy_engine.review_reason(updates, policy['max_group_size'], policy['managed_dependencies'], policy['sensitive_dependencies'])
+        if reason:
+            return {**result, 'state': 'review', 'reason': reason}
     files = pages(f'repos/{repo}/pulls/{number}/files')
     native = policy['version'] == 2
     if not files or any(f['filename'] in ('.github/dependency-policy.toml', '.github/workflows/dependency-policy.yml', '.github/workflows/dependabot.yml', 'cookbook.toml', 'Makefile', 'mise.toml', '.mise.toml') for f in files):
