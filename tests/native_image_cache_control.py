@@ -37,7 +37,7 @@ def main():
         def podman(*args, check=True):
             return runtime.run(list(args), environment=environment, timeout=60, check=check, capture_output=True, text=True)
         def fixture_image(path, reference):
-            metadata = oci_archive.load_image(path, reference, environment=environment)
+            metadata = oci_archive.load_image(path, reference, environment=environment, reuse_present=True)
             # Only explicit fixture construction assigns names. Cache imports
             # must preserve all of them, including a stale source alias.
             podman('tag', metadata['config_digest'], reference)
@@ -53,6 +53,8 @@ def main():
                       'rootfs':{'type':'layers','diff_ids':['sha256:' + hashlib.sha256(body).hexdigest() for body in layers]}}
             path = root / (str(number) + '.oci.tar'); fixture.write(path,fixture.contents(reference,config,layers))
             metadata = fixture_image(path,reference)
+            assert oci_archive.load_image(path, reference, metadata['config_digest'],
+                                          environment=environment, reuse_present=True) == metadata
             expected[reference] = metadata['config_digest']; configs[reference] = (config,layers)
             archives.append({'path':path.name,'sha256':metadata['archive_sha256']})
         sentinel = 'registry.example/unrelated:' + source
