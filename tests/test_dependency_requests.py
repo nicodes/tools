@@ -56,6 +56,22 @@ class DependencyRequests(unittest.TestCase):
         result,api=self.inspect([self.pull])
         self.assertEqual(result['state'],'review');self.assertEqual(api.call_count,1)
 
+    def test_merge_on_green_uses_ci_for_managed_major_updates(self):
+        self.policy = module.validate_policy(self.policy | {
+            'mode': 'merge-on-green', 'managed_dependencies': ['example'],
+        })
+        updates = [{'dependency-name': 'example', 'dependency-version': '2.0.0',
+                    'update-type': 'version-update:semver-major'}]
+        for state in ('waiting', 'blocked', 'stale', 'ready'):
+            with self.subTest(state=state):
+                result, api = self.inspect([self.pull], updates=updates, state=state, apply=False)
+                self.assertEqual(result['state'], state)
+                api.assert_called_once()
+        result, api = self.inspect([self.pull], updates=updates,
+                                   files=[{'filename': '.github/workflows/build-and-test.yml'}])
+        self.assertEqual(result['state'], 'review')
+        api.assert_called_once()
+
     def test_waiting_failures_and_read_only_never_dispatch(self):
         for state in ['waiting','blocked','stale','ready']:
             result,api=self.inspect([self.pull],state=state,apply=False)
